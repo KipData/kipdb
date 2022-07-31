@@ -1,4 +1,5 @@
 use std::io;
+use axum::response::IntoResponse;
 use failure::Fail;
 
 /// Error type for kvs
@@ -36,3 +37,15 @@ impl From<serde_json::Error> for KvsError {
 
 /// Result type for kvs
 pub type Result<T> = std::result::Result<T, KvsError>;
+
+impl IntoResponse for KvsError {
+    fn into_response(self) -> axum::response::Response {
+        // match self {
+        //     KvsError::Io(_) => todo!(),
+        //     KvsError::Serde(_) => todo!(),
+        //     KvsError::KeyNotFound => todo!(),
+        //     KvsError::UnexpectedCommandType => todo!(),
+        // }
+        "Error".into_response()
+    }
+}

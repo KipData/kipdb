@@ -14,7 +14,6 @@ pub struct ThreadPool {
 
 /// 线程池工作节点
 struct Worker {
-    id: usize,
     job: Option<thread::JoinHandle<()>>
 }
 
@@ -25,7 +24,7 @@ enum Message {
 }
 
 impl Worker {
-    pub fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
+    pub fn new(receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
         // 初始化Worker的执行闭包，用于响应执行传入的闭包任务
         let handle = thread::spawn(move || loop {
             // 任务阻塞获取
@@ -47,7 +46,6 @@ impl Worker {
         });
 
         Worker {
-            id,
             job: Some(handle)
         }
     }
@@ -67,8 +65,8 @@ impl ThreadPool {
         let mut threads = Vec::with_capacity(size);
         
         // 将接收器克隆并顺序组装工作节点插入工作节点集合中
-        for index in 0..size {
-            threads.push(Worker::new(index, Arc::clone(&receiver)));
+        for _ in 0..size {
+            threads.push(Worker::new(Arc::clone(&receiver)));
         }
 
         ThreadPool { workers: threads, sender }

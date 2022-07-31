@@ -1,5 +1,6 @@
-use std::{io::{Read, Seek, BufReader, Write, BufWriter, SeekFrom, self}, path::{PathBuf, Path}, collections::HashMap, fs::{File, self, OpenOptions}, ffi::OsStr};
+use std::{io::{Read, Write, self}, path::{PathBuf, Path}, collections::HashMap, fs::{File, self, OpenOptions}, ffi::OsStr};
 
+use memmap2::{Mmap, MmapMut};
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
@@ -10,8 +11,8 @@ const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 /// The `KvStore` stores string key/value pairs.
 pub struct KvStore {
     path: PathBuf,
-    readers: HashMap<u64, BufReaderWithPos<File>>,
-    writer: BufWriterWithPos<File>,
+    readers: HashMap<u64, MmapReader>,
+    writer: MmapWriter,
     index: HashMap<String, CommandPos>,
     current_gen: u64,
     //number of bytes than can be saved after a compaction.
@@ -26,7 +27,7 @@ impl KvStore {
         // 创建文件夹（如果他们缺失）
         fs::create_dir_all(&path)?;
         // 创建读入器Map
-        let mut readers = HashMap::<u64, BufReaderWithPos<File>>::new();
+        let mut readers = HashMap::<u64, MmapReader>::new();
         // 创建索引
         let mut index = HashMap::<String, CommandPos>::new();
 
@@ -37,9 +38,11 @@ impl KvStore {
 
         // 对读入其Map进行初始化并计算对应的压缩阈值
         for &gen in &gen_list {
-            let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?)?;
-            uncompacted += load(gen, &mut reader, &mut index)?;
-            readers.insert(gen, reader);
+            let log_file = File::open(log_path(&path, gen))?;
+
+            let mut mmap_kv = MmapReader::new(&log_file)?;
+            uncompacted += load(gen, &mut mmap_kv, &mut index)? as u64;
+            readers.insert(gen, mmap_kv);
         }
         // 获取当前最新的写入序名（之前的+1）
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
@@ -70,7 +73,7 @@ impl KvStore {
         // 当模式匹配cmd为正确时
         if let Command::Set { key, .. } = cmd {
             // 封装为CommandPos
-            let cmd_pos = CommandPos {gen: self.current_gen, pos, len: self.writer.pos - pos };
+            let cmd_pos = CommandPos {gen: self.current_gen, pos: pos as usize, len: self.writer.pos - pos };
             // 将封装ComandPos存入索引Map中
             if let Some(old_cmd) = self.index.insert(key, cmd_pos) {
                 // 将阈值提升至该命令的大小
@@ -89,16 +92,15 @@ impl KvStore {
     }
 
     /// 获取数据
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
+    pub fn get(&self, key: String) -> Result<Option<String>> {
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = self.index.get(&key) {
             // 从读取器Map中通过该命令的序号获取对应的日志读取器
-            let reader = self.readers.get_mut(&cmd_pos.gen)
+            let reader = self.readers.get(&cmd_pos.gen)
                 .expect(format!("Can't find reader: {}", &cmd_pos.gen).as_str());
-            // 将读取器的指针切换到命令的位置中
-            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+            let last_pos = cmd_pos.pos + cmd_pos.len as usize;
             // 获取这段内容
-            let cmd_reader = reader.take(cmd_pos.len);
+            let cmd_reader = reader.read_zone(cmd_pos.pos, last_pos)?;
             // 将命令进行转换
             if let Command::Set { value, .. } = serde_json::from_reader(cmd_reader)? {
                 //返回匹配成功的数据
@@ -141,27 +143,15 @@ impl KvStore {
         self.writer = self.new_log_file(self.current_gen)?;
 
         // 初始化新的写入地址
-        let mut new_pos = 0;
-        // 开启压缩文件的写入器
+        let mut new_pos = 0 as usize;
         let mut compaction_writer = self.new_log_file(compaction_gen)?;
-        // 遍历内存中保存的所有数据
         for cmd_pos in &mut self.index.values_mut() {
-            // 通过该单条命令获取对应的文件读取器
             let reader = self.readers.get_mut(&cmd_pos.gen)
                 .expect(format!("Can't find reader: {}", &cmd_pos.gen).as_str());
-            // 如果当前读取器的地址与指令地址不一致
-            if reader.pos != cmd_pos.pos {
-                // 定位至命令地址
-                reader.seek(SeekFrom::Start(cmd_pos.pos))?;
-            }
-
-            // 获取该命令
-            let mut cmd_reader = reader.take(cmd_pos.len);
-            // 将该命令拷贝到压缩文件中
-            let len = io::copy(&mut cmd_reader, &mut compaction_writer)?;
-            // 该命令解引用并更新为压缩文件中写入的命令
-            *cmd_pos = CommandPos {gen: compaction_gen, pos: new_pos, len };
-            // 写入地址累加
+            let last_pos = new_pos + cmd_pos.len as usize;
+            let mut cmd_reader = reader.read_zone(new_pos, last_pos)?;
+            let len = io::copy(&mut cmd_reader, &mut compaction_writer)? as usize;
+            *cmd_pos = CommandPos {gen: compaction_gen, pos: new_pos, len: len as u64 };
             new_pos += len;
         }
         // 将所有写入刷入压缩文件中
@@ -184,7 +174,7 @@ impl KvStore {
     }
 
     // 新建日志文件方法参数封装
-    fn new_log_file(&mut self, gen: u64) -> Result<BufWriterWithPos<File>> {
+    fn new_log_file(&mut self, gen: u64) -> Result<MmapWriter> {
         new_log_file(&self.path, gen, &mut self.readers)
     }
 
@@ -210,102 +200,102 @@ impl Command {
 #[derive(Debug)]
 struct CommandPos {
     gen: u64,
-    pos: u64,
+    pos: usize,
     len: u64,
 }
 
-struct BufReaderWithPos<R: Read + Seek> {
-    reader: BufReader<R>,
-    pos: u64,
+struct MmapReader {
+    mmap: Mmap,
+    pos: usize
 }
 
-impl <R: Read + Seek> BufReaderWithPos<R> {
-    fn new(mut inner: R) -> Result<Self> {
-        let pos = inner.seek(SeekFrom::Current(0))?;
-        Ok(BufReaderWithPos {
-            reader: BufReader::new(inner),
-            pos
+impl MmapReader {
+
+    fn read_zone(&self, start: usize, end: usize) -> Result<&[u8]> {
+        Ok(&self.mmap[start..end])
+    }
+    
+    fn new(file: &File) -> Result<MmapReader> {
+        let mmap = unsafe{ Mmap::map(file) }?;
+        Ok(MmapReader{
+            mmap,
+            pos: 0
         })
     }
 }
 
-impl <R: Read + Seek> Read for BufReaderWithPos<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let len = self.reader.read(buf)?;
-        self.pos += len as u64;
+impl Read for MmapReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let last_pos = self.pos;
+        let len = (&self.mmap[last_pos..]).read(buf)?;
+        self.pos += len;
         Ok(len)
     }
 }
 
-impl <R: Read + Seek> Seek for BufReaderWithPos<R> {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.pos = self.reader.seek(pos)?;
-        Ok(self.pos)
-    }
+struct MmapWriter {
+    mmap_mut: MmapMut,
+    pos: u64
 }
 
-struct BufWriterWithPos<W: Write + Seek> {
-    writer: BufWriter<W>,
-    pos: u64,
-}
+impl MmapWriter {
 
-impl <W: Write + Seek> BufWriterWithPos<W> {
-    fn new(mut inner: W) -> Result<Self> {
-        let pos = inner.seek(SeekFrom::End(0))?;
-        Ok({
-            BufWriterWithPos {
-                writer: BufWriter::new(inner),
-                pos
-            }
+    fn new(file: &File) -> Result<MmapWriter> {
+        let mmap_mut = unsafe {
+            MmapMut::map_mut(file)?
+        };
+        Ok(MmapWriter{
+            pos: 0,
+            mmap_mut
         })
     }
 }
 
-impl<W: Write + Seek> Write for BufWriterWithPos<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let len = self.writer.write(buf)?;
+impl Write for MmapWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let last_pos = self.pos as usize;
+        let len = (&mut self.mmap_mut[last_pos..]).write(buf)?;
         self.pos += len as u64;
         Ok(len)
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.writer.flush()
-    }
-}
-
-impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.pos = self.writer.seek(pos)?;
-        Ok(self.pos)
+    fn flush(&mut self) -> io::Result<()> {
+        self.mmap_mut.flush()?;
+        Ok(())
     }
 }
 
 /// 通过目录地址加载数据
-fn load(gen: u64, reader: &mut BufReaderWithPos<File>, index: &mut HashMap<String, CommandPos>) -> Result<u64> {
+fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<String, CommandPos>) -> Result<u64> {
     // 将读入器的地址初始化为0
-    let mut pos = reader.seek(SeekFrom::Start(0))?;
+    reader.pos = 0;
     // 流式读取将数据序列化为Command
     let mut stream = Deserializer::from_reader(reader).into_iter::<Command>();
     // 初始化空间占用为0
     let mut uncompacted = 0;
+    let mut pos = 0;
     // 迭代数据
     while let Some(cmd) = stream.next() {
         // 计算这段byte所在位置
-        let new_pos = stream.byte_offset() as u64;
-        match cmd? {
-            Command::Set { key, .. } => {
-                //数据插入索引之中，成功则对空间占用值进行累加
-                if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos, len: new_pos - pos }) {
-                    uncompacted += old_cmd.len;
+        let new_pos = stream.byte_offset();
+        if let Ok(cmd) = cmd {
+            match cmd {
+                Command::Set { key, .. } => {
+                    //数据插入索引之中，成功则对空间占用值进行累加
+                    if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos, len: (new_pos - pos) as u64 }) {
+                        uncompacted += old_cmd.len;
+                    }
+                }
+                Command::Remove { key } => {
+                    //索引删除该数据之中，成功则对空间占用值进行累加
+                    if let Some(old_cmd) = index.remove(&key) {
+                        uncompacted += old_cmd.len;
+                    }
+                    uncompacted += (new_pos - pos) as u64;
                 }
             }
-            Command::Remove { key } => {
-                //索引删除该数据之中，成功则对空间占用值进行累加
-                if let Some(old_cmd) = index.remove(&key) {
-                    uncompacted += old_cmd.len;
-                }
-                uncompacted += new_pos - pos;
-            }
+        } else {
+            break;
         }
         // 写入地址等于new_pos
         pos = new_pos;
@@ -346,17 +336,17 @@ fn log_path(dir: &Path, gen: u64) -> PathBuf {
 /// 新建日志文件
 /// 传入文件夹路径、日志名序号、读取器Map
 /// 返回对应的写入器
-fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, BufReaderWithPos<File>>) -> Result<BufWriterWithPos<File>> {
+fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, MmapReader>) -> Result<MmapWriter> {
     // 得到对应日志的路径
     let path = log_path(path, gen);
     // 通过路径构造写入器
-    let writer = BufWriterWithPos::new(OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(true)
-        .open(&path)?)?;
-    // 构造读取器并填充到读取器Map中
-    readers.insert(gen, BufReaderWithPos::new(File::open(&path)?)?);
-    //返回该写入器
-    Ok(writer)
+    let file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .read(true)
+                    .open(&path)?;         
+    file.set_len(COMPACTION_THRESHOLD).unwrap();  
+
+    readers.insert(gen, MmapReader::new(&file)?);
+    Ok(MmapWriter::new(&file)?)
 }
