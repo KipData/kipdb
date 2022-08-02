@@ -18,11 +18,12 @@ pub struct KvCore {
 
 impl KvCore {
 
-    fn compact(
+    /// 核心压缩方法
+    /// 通过compaction_gen决定压缩位置
+    async fn compact(
         &mut self,
         compaction_gen: u64
     ) -> Result<()> {
-
         let mut compaction_writer = self.new_log_file(compaction_gen)?;
         // 新的写入位置为原位置的向上两位
         self.current_gen = compaction_gen + 1;
@@ -74,7 +75,7 @@ pub struct KvStore {
 
 impl KvStore {
     // 通过文件夹路径开启一个KvStore
-    pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
+    pub async fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
         // 获取地址
         let path = path.into();
         // 创建文件夹（如果他们缺失）
@@ -109,7 +110,7 @@ impl KvStore {
                     current_gen,
                     uncompacted
                 };
-        kv_core.compact(current_gen)?;
+        kv_core.compact(current_gen).await?;
 
         Ok(KvStore{
             kv_core,
@@ -118,7 +119,7 @@ impl KvStore {
     }
 
     /// 存入数据
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
+    pub async fn set(&mut self, key: String, value: String) -> Result<()> {
         let core = &mut self.kv_core;
         //将数据包装为命令
         let cmd = Command::set(key, value);
@@ -143,14 +144,14 @@ impl KvStore {
         }
         // 阈值过高进行压缩
         if core.uncompacted > COMPACTION_THRESHOLD {
-            self.compact()?;
+            
         }
 
         Ok(())
     }
 
     /// 获取数据
-    pub fn get(&self, key: String) -> Result<Option<String>> {
+    pub async fn get(&self, key: String) -> Result<Option<String>> {
         let core = &self.kv_core;
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = core.index.get(&key) {
@@ -174,7 +175,7 @@ impl KvStore {
     }
 
     /// 删除数据
-    pub fn remove(&mut self, key: String) -> Result<()> {
+    pub async fn remove(&mut self, key: String) -> Result<()> {
         let core = &mut self.kv_core;
         // 若index中存在这个key
         if core.index.contains_key(&key) {
@@ -194,12 +195,12 @@ impl KvStore {
         }
     }
 
-    pub fn compact(&mut self) -> Result<()> {
+    pub async fn compact(&mut self) -> Result<()> {
         // 预压缩的数据位置为原文件位置的向上一位
         let core = & mut self.kv_core;
         let compaction_gen = core.current_gen + 1;
         self.writer = core.new_log_file(compaction_gen + 1)?;
-        core.compact(compaction_gen)
+        core.compact(compaction_gen).await
     }
 
 

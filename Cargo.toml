@@ -12,7 +12,6 @@ clap = { version = "3.2.15", features = ["derive"] }
 failure = { version = "0.1.5", features = ["derive"] }
 serde = { version = "1.0.89", features = ["derive"] }
 serde_json = "1.0.39"
-axum = "0.4"
 tokio = { version="1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -23,3 +22,4 @@ assert_cmd = "0.11.0"
 predicates = "1.0.0"
 tempfile = "3.0.7"
 walkdir = "2.2.7"
+tokio-test = "*"

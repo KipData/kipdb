@@ -1,3 +1,3 @@
-pub struct KBaseConfig {
+pub struct KipConfig {
     
 }

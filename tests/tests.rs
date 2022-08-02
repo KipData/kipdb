@@ -2,27 +2,44 @@ use assert_cmd::prelude::*;
 use kvs::{KvStore, Result};
 use predicates::ord::eq;
 use predicates::str::{contains, is_empty, PredicateStrExt};
+use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
-// Should get previously stored value.
+
+fn sync_get(kv_store: &mut KvStore, key: String) -> Result<Option<String>> {
+    tokio_test::block_on(kv_store.get(key))
+}
+
+fn sync_set(kv_store: &mut KvStore, key: String, value: String) -> Result<()> {
+    tokio_test::block_on(kv_store.set(key, value))
+}
+
+fn sync_remove(kv_store: &mut KvStore, key: String) -> Result<()> {
+    tokio_test::block_on(kv_store.remove(key))
+}
+
+fn sync_open(path: impl Into<PathBuf>) -> Result<KvStore> {
+    tokio_test::block_on(KvStore::open(path))
+}
+
 #[test]
 fn get_stored_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = KvStore::open(temp_dir.path())?;
+    let mut kv_store =sync_open(temp_dir.path())?;
 
-    store.set("key1".to_owned(), "value1".to_owned())?;
-    store.set("key2".to_owned(), "value2".to_owned())?;
+    sync_set(&mut kv_store, "key1".to_owned(), "value1".to_owned())?;
+    sync_set(&mut kv_store, "key2".to_owned(), "value2".to_owned())?;
 
-    assert_eq!(store.get("key1".to_owned())?, Some("value1".to_owned()));
-    assert_eq!(store.get("key2".to_owned())?, Some("value2".to_owned()));
+    sync_get(&mut kv_store, "key1".to_owned())?;
+    sync_get(&mut kv_store, "key2".to_owned())?;
 
     // Open from disk again and check persistent data.
-    drop(store);
-    let store = KvStore::open(temp_dir.path())?;
-    assert_eq!(store.get("key1".to_owned())?, Some("value1".to_owned()));
-    assert_eq!(store.get("key2".to_owned())?, Some("value2".to_owned()));
+    drop(kv_store);
+    let mut kv_store =sync_open(temp_dir.path())?;
+    assert_eq!(sync_get(&mut kv_store, "key1".to_owned())?, Some("value1".to_owned()));
+    assert_eq!(sync_get(&mut kv_store, "key2".to_owned())?, Some("value2".to_owned()));
 
     Ok(())
 }
@@ -31,19 +48,19 @@ fn get_stored_value() -> Result<()> {
 #[test]
 fn overwrite_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = KvStore::open(temp_dir.path())?;
+    let mut kv_store =sync_open(temp_dir.path())?;
 
-    store.set("key1".to_owned(), "value1".to_owned())?;
-    assert_eq!(store.get("key1".to_owned())?, Some("value1".to_owned()));
-    store.set("key1".to_owned(), "value2".to_owned())?;
-    assert_eq!(store.get("key1".to_owned())?, Some("value2".to_owned()));
+    sync_set(&mut kv_store, "key1".to_owned(), "value1".to_owned())?;
+    assert_eq!(sync_get(&mut kv_store, "key1".to_owned())?, Some("value1".to_owned()));
+    sync_set(&mut kv_store, "key1".to_owned(), "value2".to_owned())?;
+    assert_eq!(sync_get(&mut kv_store, "key1".to_owned())?, Some("value2".to_owned()));
 
     // Open from disk again and check persistent data.
-    drop(store);
-    let mut store = KvStore::open(temp_dir.path())?;
-    assert_eq!(store.get("key1".to_owned())?, Some("value2".to_owned()));
-    store.set("key1".to_owned(), "value3".to_owned())?;
-    assert_eq!(store.get("key1".to_owned())?, Some("value3".to_owned()));
+    drop(kv_store);
+    let mut kv_store =sync_open(temp_dir.path())?;
+    assert_eq!(sync_get(&mut kv_store, "key1".to_owned())?, Some("value2".to_owned()));
+    sync_set(&mut kv_store, "key1".to_owned(), "value3".to_owned())?;
+    assert_eq!(sync_get(&mut kv_store, "key1".to_owned())?, Some("value3".to_owned()));
 
     Ok(())
 }
@@ -52,15 +69,15 @@ fn overwrite_value() -> Result<()> {
 #[test]
 fn get_non_existent_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = KvStore::open(temp_dir.path())?;
+    let mut kv_store =sync_open(temp_dir.path())?;
 
-    store.set("key1".to_owned(), "value1".to_owned())?;
-    assert_eq!(store.get("key2".to_owned())?, None);
+    sync_set(&mut kv_store, "key1".to_owned(), "value1".to_owned())?;
+    assert_eq!(sync_get(&mut kv_store, "key2".to_owned())?, None);
 
     // Open from disk again and check persistent data.
-    drop(store);
-    let store = KvStore::open(temp_dir.path())?;
-    assert_eq!(store.get("key2".to_owned())?, None);
+    drop(kv_store);
+    let mut kv_store =sync_open(temp_dir.path())?;
+    assert_eq!(sync_get(&mut kv_store, "key2".to_owned())?, None);
 
     Ok(())
 }
@@ -68,18 +85,18 @@ fn get_non_existent_value() -> Result<()> {
 #[test]
 fn remove_non_existent_key() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = KvStore::open(temp_dir.path())?;
-    assert!(store.remove("key1".to_owned()).is_err());
+    let mut kv_store =sync_open(temp_dir.path())?;
+    assert!(sync_remove(&mut kv_store, "key1".to_owned()).is_err());
     Ok(())
 }
 
 #[test]
 fn remove_key() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = KvStore::open(temp_dir.path())?;
-    store.set("key1".to_owned(), "value1".to_owned())?;
-    assert!(store.remove("key1".to_owned()).is_ok());
-    assert_eq!(store.get("key1".to_owned())?, None);
+    let mut kv_store =sync_open(temp_dir.path())?;
+    sync_set(&mut kv_store, "key1".to_owned(), "value1".to_owned())?;
+    assert!(sync_remove(&mut kv_store, "key1".to_owned()).is_ok());
+    assert_eq!(sync_get(&mut kv_store, "key1".to_owned())?, None);
     Ok(())
 }
 
@@ -88,8 +105,7 @@ fn remove_key() -> Result<()> {
 #[test]
 fn compaction() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut store = KvStore::open(temp_dir.path())?;
-
+    let mut kv_store =sync_open(temp_dir.path())?;
     let dir_size = || {
         let entries = WalkDir::new(temp_dir.path()).into_iter();
         let len: walkdir::Result<u64> = entries
@@ -106,7 +122,7 @@ fn compaction() -> Result<()> {
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
             let value = format!("{}", iter);
-            store.set(key, value)?;
+            sync_set(&mut kv_store, key, value)?
         }
 
         let new_size = dir_size();
@@ -116,12 +132,12 @@ fn compaction() -> Result<()> {
         }
         // Compaction triggered.
 
-        drop(store);
+        drop(kv_store);
         // reopen and check content.
-        let store = KvStore::open(temp_dir.path())?;
+        let mut kv_store =sync_open(temp_dir.path())?;
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
-            assert_eq!(store.get(key)?, Some(format!("{}", iter)));
+            assert_eq!(sync_get(&mut kv_store, key)?, Some(format!("{}", iter)));
         }
         return Ok(());
     }

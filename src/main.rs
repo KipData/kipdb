@@ -1,7 +1,4 @@
-use std::sync::{Arc, RwLock};
-
-use axum::{Router, extract::Extension, Server};
-use kvs::{KvStore, handler};
+use kvs::{KvStore};
 
 #[tokio::main]
 async fn main() {
@@ -13,15 +10,8 @@ async fn main() {
     tracing::info!("服务已启动");
 
     let kv_store = KvStore::open("./data")
+        .await
         .expect("初始化存储引擎失败");
 
-    let app = Router::new()
-        .nest("/", handler::router())
-        .layer(Extension(Arc::new(RwLock::new(kv_store))));
-
-    Server::bind(&"127.0.0.1:7036".parse().unwrap())
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
 }
 
