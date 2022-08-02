@@ -55,8 +55,8 @@ impl KvCore {
             self.readers.remove(&stale_gen);
             fs::remove_file(log_path(&self.path, stale_gen))?;
         }
-        // 将压缩阈值调整为0
-        self.uncompacted = 0;
+        // 将压缩阈值调整为为压缩后大小
+        self.uncompacted = new_pos as u64;
 
         Ok(())
     }
@@ -138,13 +138,10 @@ impl KvStore {
                 // 将阈值提升至该命令的大小
                 core.uncompacted += old_cmd.len;
             }
-            if core.uncompacted > COMPACTION_THRESHOLD {
-                // 当阈值达到时
-            }
         }
         // 阈值过高进行压缩
         if core.uncompacted > COMPACTION_THRESHOLD {
-            
+            self.compact().await?
         }
 
         Ok(())
