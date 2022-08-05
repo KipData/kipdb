@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
 use crate::{error::{Result, KvsError}};
+use crate::cmd::Command;
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
@@ -201,22 +202,6 @@ impl KvStore {
     }
 
 
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum Command {
-    Set { key: String, value: String },
-    Remove { key: String },
-}
-
-impl Command {
-    fn set(key: String, value: String) -> Command {
-        Command::Set { key, value }
-    }
-
-    fn remove(key: String) -> Command {
-        Command::Remove { key }
-    }
 }
 
 #[derive(Debug)]
