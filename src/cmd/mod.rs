@@ -3,6 +3,7 @@
 pub enum Command {
     Set { key: String, value: String },
     Remove { key: String },
+    Get {key: String}
 }
 
 impl Command {
@@ -12,5 +13,9 @@ impl Command {
 
     pub fn remove(key: String) -> Command {
         Command::Remove { key }
+    }
+
+    pub fn get(key: String) -> Command {
+        Command::Get { key }
     }
 }
