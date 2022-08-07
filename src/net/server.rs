@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio::time;
@@ -64,7 +64,6 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) {
 impl Listener {
     async fn run(&mut self) -> Result<()> {
         info!("accepting inbound connections");
-
         loop {
             let permit = self
                 .limit_connections
@@ -84,10 +83,15 @@ impl Listener {
             };
 
             tokio::spawn(async move {
+                info!("#### new connection! ####");
+                let start = Instant::now();
                 if let Err(err) = handler.run().await {
                     error!(cause = ?err,"connection error");
                 }
+                let duration = start.elapsed();
                 drop(permit);
+                info!("time: {:?}", duration);
+                info!("#### connection drop! ####")
             });
 
         }
