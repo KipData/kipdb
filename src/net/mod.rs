@@ -8,7 +8,7 @@ mod codec;
 pub mod client;
 pub mod server;
 
-type Result<T> = std::result::Result<T, ConnectionError>;
+pub type Result<T> = std::result::Result<T, ConnectionError>;
 
 #[derive(Serialize,Deserialize)]
 pub enum CommandOption {

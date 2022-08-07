@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use clap::{Subcommand};
 use tokio::sync::RwLock;
 use crate::KvStore;
 use crate::core::Result;
 use crate::net::CommandOption;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Subcommand)]
 pub enum Command {
     Set { key: String, value: String },
     Remove { key: String },
