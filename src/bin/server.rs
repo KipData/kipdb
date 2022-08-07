@@ -2,11 +2,11 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tokio::signal;
 
-use kvs::DEFAULT_PORT;
-use kvs::net::server;
+use kip_db::DEFAULT_PORT;
+use kip_db::net::{server, Result};
 
 #[tokio::main]
-pub async fn main() -> kvs::net::Result<()> {
+pub async fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().unwrap();
 
     let cli = Cli::parse();

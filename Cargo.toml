@@ -1,5 +1,5 @@
 [package]
-name = "kvs"
+name = "kip_db"
 version = "0.1.0"
 edition = "2021"
 authors = ["Kould <2435992353@qq.com>"]

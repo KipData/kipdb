@@ -1,7 +1,7 @@
 use clap::{Parser};
-use kvs::cmd::Command;
-use kvs::DEFAULT_PORT;
-use kvs::net::client::Client;
+use kip_db::cmd::Command;
+use kip_db::DEFAULT_PORT;
+use kip_db::net::{Result, client::Client};
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -32,7 +32,7 @@ struct Cli {
 /// multi-threaded.
 /// 就是说客户端没必要多线程，强制单线程避免产生额外线程
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> kvs::net::Result<()> {
+async fn main() -> Result<()> {
     // Enable logging
     tracing_subscriber::fmt::try_init().unwrap();
     let cli: Cli = Cli::parse();
