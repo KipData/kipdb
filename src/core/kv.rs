@@ -1,11 +1,11 @@
 use std::{io::{Read, Write, self}, path::{PathBuf, Path}, collections::HashMap, fs::{File, self, OpenOptions}, ffi::OsStr};
 
 use memmap2::{Mmap, MmapMut};
-use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
-use crate::{error::{Result, KvsError}};
+use crate::{error::{KvsError}};
 use crate::cmd::Command;
+use crate::core::Result;
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
@@ -300,6 +300,7 @@ fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<String, CommandPo
                     }
                     uncompacted += (new_pos - pos) as u64;
                 }
+                _ => {}
             }
         } else {
             break;

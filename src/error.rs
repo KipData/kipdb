@@ -1,4 +1,5 @@
 use std::io;
+use bincode::ErrorKind;
 use failure::Fail;
 
 /// Error type for kvs
@@ -22,6 +23,26 @@ pub enum KvsError {
 
 }
 
+#[derive(Fail, Debug)]
+pub enum ConnectionError {
+    #[fail(display = "{}", _0)]
+    Io(#[cause] io::Error),
+    #[fail(display = "{}", _0)]
+    Serde(#[cause] Box<ErrorKind>),
+    #[fail(display = "disconnected")]
+    Disconnected,
+    #[fail(display = "write failed")]
+    WriteFailed,
+    #[fail(display = "wrong instruction")]
+    WrongInstruction
+}
+
+impl From<io::Error> for ConnectionError {
+    fn from(err: io::Error) -> Self {
+        ConnectionError::Io(err)
+    }
+}
+
 impl From<io::Error> for KvsError {
     fn from(err: io::Error) -> Self {
         KvsError::Io(err)
@@ -34,5 +55,8 @@ impl From<serde_json::Error> for KvsError {
     }
 }
 
-/// Result type for kvs
-pub type Result<T> = std::result::Result<T, KvsError>;
+impl From<Box<ErrorKind>> for ConnectionError {
+    fn from(err: Box<ErrorKind>) -> Self {
+        ConnectionError::Serde(err)
+    }
+}

@@ -1,20 +1,18 @@
-use std::io;
+use crate::cmd::Command;
+use crate::error::ConnectionError;
+
+use serde::{Deserialize, Serialize};
 
 mod connection;
 mod codec;
 pub mod client;
-
-#[derive(Debug)]
-pub enum ConnectionError {
-    Io(io::Error),
-    Disconnected,
-    WriteFailed
-}
-
-impl From<io::Error> for ConnectionError {
-    fn from(err: io::Error) -> Self {
-        ConnectionError::Io(err)
-    }
-}
+pub mod server;
 
 type Result<T> = std::result::Result<T, ConnectionError>;
+
+#[derive(Serialize,Deserialize)]
+pub enum CommandOption {
+    Cmd(Command),
+    Value(String),
+    None
+}

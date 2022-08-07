@@ -1,30 +1,32 @@
-use futures::AsyncReadExt;
+use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
-use crate::cmd::Command;
-use crate::net::ConnectionError;
+use crate::error::ConnectionError;
+use crate::net::CommandOption;
 
 pub struct CommandCodec;
 
+/// CommandOption编码器
+/// 用于CommandOption网络传输解析抽象
 impl CommandCodec {
     pub fn new() -> CommandCodec{
         CommandCodec{ }
     }
 }
 
-impl Encoder<Command> for CommandCodec {
+impl Encoder<CommandOption> for CommandCodec {
     type Error = ConnectionError;
 
-    fn encode(&mut self, item: Command, dst: &mut bytes::bytes_mut::BytesMut) -> Result<(), Self::Error> {
-        dst.extend(bincode::serialize(&item));
+    fn encode(&mut self, item: CommandOption, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        dst.extend(bincode::serialize(&item)?);
         Ok(())
     }
 }
 
 impl Decoder for CommandCodec {
-    type Item = Command;
+    type Item = CommandOption;
     type Error = ConnectionError;
 
-    fn decode(&mut self, src: &mut bytes::bytes_mut::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<std::option::Option<Self::Item>, Self::Error> {
         if src.is_empty() {
             return Ok(None)
         }
