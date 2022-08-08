@@ -5,6 +5,14 @@ edition = "2021"
 authors = ["Kould <2435992353@qq.com>"]
 description = "A key-value store"
 
+[[bin]]
+name = "kip-db-cli"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "kip-db-server"
+path = "src/bin/server.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

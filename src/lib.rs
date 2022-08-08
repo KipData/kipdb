@@ -7,4 +7,4 @@ pub mod cmd;
 pub use crate::core::kv::KvStore;
 pub use error::{KvsError};
 
-pub const DEFAULT_PORT: u16 = 6379;
+pub const DEFAULT_PORT: u16 = 6333;

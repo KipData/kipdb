@@ -1,5 +1,5 @@
 use assert_cmd::prelude::*;
-use kvs::{KvStore, Result};
+use kip_db::{KvStore, core::Result};
 use predicates::ord::eq;
 use predicates::str::{contains, is_empty, PredicateStrExt};
 use std::path::PathBuf;
