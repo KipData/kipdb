@@ -31,6 +31,7 @@ struct Cli {
 /// threads. The CLI tool use case benefits more by being lighter instead of
 /// multi-threaded.
 /// 就是说客户端没必要多线程，强制单线程避免产生额外线程
+/// 调用方法基本:./kip-db-cli get key1 value1
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     // Enable logging

@@ -73,6 +73,7 @@ impl Listener {
                 .unwrap();
 
             let socket = self.accept().await?;
+            let addr = socket.peer_addr()?;
 
             let mut handler = Handler {
                 kv_store: self.kv_store_root.clone(),
@@ -84,6 +85,9 @@ impl Listener {
 
             tokio::spawn(async move {
                 info!("#### new connection! ####");
+                let id = snowflake::ProcessUniqueId::new();
+                info!("id: {}", &id);
+                info!("ip addr: {}", &addr);
                 let start = Instant::now();
                 if let Err(err) = handler.run().await {
                     error!(cause = ?err,"connection error");

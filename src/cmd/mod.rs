@@ -26,6 +26,11 @@ impl Command {
         Command::Get { key }
     }
 
+    /// 命令消费
+    ///
+    /// Command对象通过调用这个方法调用持久化内核进行命令交互
+    /// 参数Arc<RwLock<KvStore>>为持久化内核
+    /// 内部对该类型进行模式匹配而进行不同命令的相应操作
     pub async fn apply(self, kv_store: &mut Arc<RwLock<KvStore>>) -> Result<CommandOption>{
         match self {
             Command::Set { key, value } => {
@@ -55,6 +60,8 @@ impl Command {
     }
 }
 
+/// Option<String>与CommandOption的转换方法
+/// 能够与CommandOption::None或CommandOption::Value进行转换
 impl From<Option<String>> for CommandOption {
     fn from(item: Option<String>) -> Self {
         match item {

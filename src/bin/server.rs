@@ -5,6 +5,8 @@ use tokio::signal;
 use kip_db::DEFAULT_PORT;
 use kip_db::net::{server, Result};
 
+/// 服务启动方法
+/// 二进制执行文件调用方法:./kip-db-cli
 #[tokio::main]
 pub async fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().unwrap();
