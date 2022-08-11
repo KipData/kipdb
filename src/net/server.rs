@@ -5,8 +5,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio::time;
 use tracing::{debug, error, info};
+use crate::core::hash_kv::HashKvStore;
+use crate::core::KVStore;
 use crate::error::ConnectionError;
-use crate::KvStore;
 use crate::net::connection::Connection;
 use crate::net::Result;
 use crate::net::CommandOption;
@@ -16,7 +17,7 @@ const MAX_CONNECTIONS: usize = 250;
 /// 服务器监听器
 /// 用于监听端口的连接并分发给Handler进行多线程处理连接
 pub struct Listener {
-    kv_store_root: Arc<RwLock<KvStore>>,
+    kv_store_root: Arc<RwLock<dyn KVStore + Send + Sync>>,
     listener: TcpListener,
     limit_connections: Arc<Semaphore>,
     notify_shutdown_sender: broadcast::Sender<()>,
@@ -27,7 +28,7 @@ pub struct Listener {
 /// 连接处理器
 /// 用于每个连接的响应处理
 struct Handler {
-    kv_store: Arc<RwLock<KvStore>>,
+    kv_store: Arc<RwLock<dyn KVStore + Send + Sync>>,
     connection: Connection,
     notify_receiver: broadcast::Receiver<()>,
     shutdown: bool,
@@ -36,7 +37,7 @@ struct Handler {
 }
 
 pub async fn run(listener: TcpListener, shutdown: impl Future) {
-    let store = KvStore::open("./data").await.unwrap();
+    let store = HashKvStore::open("./data").unwrap();
     let (notify_shutdown_sender, _) = broadcast::channel(1);
     let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 

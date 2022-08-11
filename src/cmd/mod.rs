@@ -2,8 +2,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use clap::{Subcommand};
 use tokio::sync::RwLock;
-use crate::KvStore;
-use crate::core::Result;
+use crate::core::{KVStore, Result};
 use crate::net::CommandOption;
 
 #[derive(Serialize, Deserialize, Debug, Subcommand)]
@@ -31,25 +30,25 @@ impl Command {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 参数Arc<RwLock<KvStore>>为持久化内核
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
-    pub async fn apply(self, kv_store: &mut Arc<RwLock<KvStore>>) -> Result<CommandOption>{
+    pub async fn apply(self, kv_store: &mut Arc<RwLock<dyn KVStore + Send + Sync>>) -> Result<CommandOption>{
         match self {
             Command::Set { key, value } => {
                 let mut write_guard = kv_store.write().await;
-                match write_guard.set(key, value).await {
+                match write_guard.set(key, value) {
                     Ok(_) => Ok(CommandOption::None),
                     Err(e) => Err(e)
                 }
             }
             Command::Remove { key } => {
                 let mut write_guard = kv_store.write().await;
-                match write_guard.remove(key).await {
+                match write_guard.remove(key) {
                     Ok(_) => Ok(CommandOption::None),
                     Err(e) => Err(e)
                 }
             }
             Command::Get { key } => {
                 let read_guard = kv_store.read().await;
-                match read_guard.get(key).await {
+                match read_guard.get(key) {
                     Ok(option) => {
                         Ok(CommandOption::from(option))
                     }

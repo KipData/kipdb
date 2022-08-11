@@ -5,7 +5,7 @@ use serde_json::Deserializer;
 
 use crate::{error::{KvsError}};
 use crate::cmd::Command;
-use crate::core::Result;
+use crate::core::{KVStore, Result};
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
@@ -21,7 +21,7 @@ impl KvCore {
 
     /// 核心压缩方法
     /// 通过compaction_gen决定压缩位置
-    async fn compact(
+    fn compact(
         &mut self,
         compaction_gen: u64
     ) -> Result<()> {
@@ -68,15 +68,15 @@ impl KvCore {
     }
 }
 
-/// The `KvStore` stores string key/value pairs.
-pub struct KvStore {
+/// The `HashKvStore` stores string key/value pairs.
+pub struct HashKvStore {
     kv_core: KvCore,
     writer: MmapWriter
 }
 
-impl KvStore {
-    // 通过文件夹路径开启一个KvStore
-    pub async fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
+impl KVStore for HashKvStore {
+    // 通过文件夹路径开启一个HashKvStore
+    fn open(path: impl Into<PathBuf>) -> Result<HashKvStore> where Self: Sized {
         // 获取地址
         let path = path.into();
         // 创建文件夹（如果他们缺失）
@@ -105,22 +105,22 @@ impl KvStore {
         // 以最新的写入序名创建新的日志文件
         let new_writer = new_log_file(&path, current_gen + 1, &mut readers)?;
         let mut kv_core = KvCore {
-                    path,
-                    readers,
-                    index,
-                    current_gen,
-                    uncompacted
-                };
-        kv_core.compact(current_gen).await?;
+            path,
+            readers,
+            index,
+            current_gen,
+            uncompacted
+        };
+        kv_core.compact(current_gen)?;
 
-        Ok(KvStore{
+        Ok(HashKvStore{
             kv_core,
             writer: new_writer
         })
     }
 
     /// 存入数据
-    pub async fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&mut self, key: String, value: String) -> Result<()> {
         let core = &mut self.kv_core;
         //将数据包装为命令
         let cmd = Command::set(key, value);
@@ -142,14 +142,14 @@ impl KvStore {
         }
         // 阈值过高进行压缩
         if core.uncompacted > COMPACTION_THRESHOLD {
-            self.compact().await?
+            self.compact()?
         }
 
         Ok(())
     }
 
     /// 获取数据
-    pub async fn get(&self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: String) -> Result<Option<String>> {
         let core = &self.kv_core;
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = core.index.get(&key) {
@@ -173,7 +173,7 @@ impl KvStore {
     }
 
     /// 删除数据
-    pub async fn remove(&mut self, key: String) -> Result<()> {
+    fn remove(&mut self, key: String) -> Result<()> {
         let core = &mut self.kv_core;
         // 若index中存在这个key
         if core.index.contains_key(&key) {
@@ -192,16 +192,16 @@ impl KvStore {
             Err(KvsError::KeyNotFound)
         }
     }
+}
 
-    pub async fn compact(&mut self) -> Result<()> {
+impl HashKvStore {
+    pub fn compact(&mut self) -> Result<()> {
         // 预压缩的数据位置为原文件位置的向上一位
         let core = & mut self.kv_core;
         let compaction_gen = core.current_gen + 1;
         self.writer = core.new_log_file(compaction_gen + 1)?;
-        core.compact(compaction_gen).await
+        core.compact(compaction_gen)
     }
-
-
 }
 
 #[derive(Debug)]
