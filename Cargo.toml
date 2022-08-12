@@ -6,17 +6,20 @@ authors = ["Kould <2435992353@qq.com>"]
 description = "A key-value store"
 
 [[bin]]
-name = "kip-db-cli"
+name = "cli"
 path = "src/bin/cli.rs"
 
 [[bin]]
-name = "kip-db-server"
+name = "server"
 path = "src/bin/server.rs"
 
 [[bench]]
 name = "server_bench"
 path = "src/bences/server_bench.rs"
 harness = false
+
+[profile.release]
+debug = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

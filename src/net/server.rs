@@ -41,9 +41,11 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) {
     let (notify_shutdown_sender, _) = broadcast::channel(1);
     let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
+    let sync_store = Arc::new(RwLock::new(store));
+
     let mut server = Listener {
         listener,
-        kv_store_root: Arc::new(RwLock::new(store)),
+        kv_store_root: sync_store.clone(),
         limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
         notify_shutdown_sender,
         shutdown_complete_tx,
@@ -57,6 +59,10 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) {
             }
         }
         _ = shutdown => {
+            sync_store.write()
+            .await
+            .shut_down()
+            .expect("persistence exception");
             info!("shutting down");
         }
     }

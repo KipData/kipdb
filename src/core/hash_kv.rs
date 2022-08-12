@@ -119,6 +119,11 @@ impl KVStore for HashKvStore {
         })
     }
 
+    fn flush(&mut self) -> Result<()> {
+        // 刷入文件中
+        Ok(self.writer.flush()?)
+    }
+
     /// 存入数据
     fn set(&mut self, key: String, value: String) -> Result<()> {
         let core = &mut self.kv_core;
@@ -128,8 +133,6 @@ impl KVStore for HashKvStore {
         let pos = self.writer.pos;
         // 以json形式写入该命令
         serde_json::to_writer(&mut self.writer, &cmd)?;
-        // 刷入文件中
-        self.writer.flush()?;
         // 当模式匹配cmd为正确时
         if let Command::Set { key, .. } = cmd {
             // 封装为CommandPos
@@ -192,6 +195,10 @@ impl KVStore for HashKvStore {
             Err(KvsError::KeyNotFound)
         }
     }
+
+    fn shut_down(&mut self) -> Result<()> {
+        Ok(self.writer.flush()?)
+    }
 }
 
 impl HashKvStore {
@@ -199,6 +206,7 @@ impl HashKvStore {
         // 预压缩的数据位置为原文件位置的向上一位
         let core = & mut self.kv_core;
         let compaction_gen = core.current_gen + 1;
+        self.writer.flush()?;
         self.writer = core.new_log_file(compaction_gen + 1)?;
         core.compact(compaction_gen)
     }
