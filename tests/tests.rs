@@ -19,7 +19,6 @@ fn get_stored_value() -> Result<()> {
 
     kv_store.get("key1".to_owned())?;
     kv_store.get("key2".to_owned())?;
-
     // Open from disk again and check persistent data.
     drop(kv_store);
     let mut kv_store =HashKvStore::open(temp_dir.path())?;

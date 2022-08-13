@@ -11,7 +11,11 @@ pub enum KvsError {
 
     /// Serialization or deserialization error
     #[fail(display = "{}", _0)]
-    Serde(#[cause] serde_json::Error),
+    SerdeJson(#[cause] serde_json::Error),
+    #[fail(display = "{}", _0)]
+    SerdeMPEncode(#[cause] rmp_serde::encode::Error),
+    #[fail(display = "{}", _0)]
+    SerdeMPDecode(#[cause] rmp_serde::decode::Error),
     /// Remove no-existent key error
     #[fail(display = "Key not found")]
     KeyNotFound,
@@ -51,7 +55,19 @@ impl From<io::Error> for KvsError {
 
 impl From<serde_json::Error> for KvsError {
     fn from(err: serde_json::Error) -> Self {
-        KvsError::Serde(err)
+        KvsError::SerdeJson(err)
+    }
+}
+
+impl From<rmp_serde::encode::Error> for KvsError {
+    fn from(err: rmp_serde::encode::Error) -> Self {
+        KvsError::SerdeMPEncode(err)
+    }
+}
+
+impl From<rmp_serde::decode::Error> for KvsError {
+    fn from(err: rmp_serde::decode::Error) -> Self {
+        KvsError::SerdeMPDecode(err)
     }
 }
 
