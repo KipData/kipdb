@@ -1,4 +1,4 @@
-use std::{io::{Write, self}, path::{PathBuf, Path}, collections::HashMap, fs::{File, self, OpenOptions}, ffi::OsStr};
+use std::{io::Write, path::{PathBuf, Path}, collections::HashMap, fs::{File, self, OpenOptions}, ffi::OsStr};
 
 use crate::{error::{KvsError}};
 use crate::cmd::Command;
@@ -31,14 +31,14 @@ impl KvCore {
         for cmd_pos in &mut self.index.values_mut() {
             let pos = cmd_pos.pos;
             let cmd_len = cmd_pos.len as usize;
-            let last_pos = pos + cmd_len;
-
             let reader = self.readers.get_mut(&cmd_pos.gen)
                 .expect(format!("Can't find reader: {}", &cmd_pos.gen).as_str());
-            let mut cmd_reader = reader.read_zone(pos, last_pos)?;
-            let len = io::copy(&mut cmd_reader, &mut compaction_writer)? as usize;
-            *cmd_pos = CommandPos {gen: compaction_gen, pos: new_pos, len: len as u64 };
-            new_pos += len;
+
+            let cmd_package = CommandPackage::form_pos(reader, pos, pos + cmd_len)?;
+            CommandPackage::write(&mut compaction_writer, &cmd_package.cmd)?;
+
+            *cmd_pos = CommandPos {gen: compaction_gen, pos: new_pos, len: cmd_len as u64 };
+            new_pos += cmd_len;
         }
         // 将所有写入刷入压缩文件中
         compaction_writer.flush()?;
@@ -129,10 +129,9 @@ impl KVStore for HashKvStore {
         // 获取写入器当前地址
         let pos = self.writer.pos;
 
-        let package = CommandPackage::new(cmd, pos as usize);
-        package.write(&mut self.writer)?;
+        CommandPackage::write(&mut self.writer, &cmd)?;
         // 当模式匹配cmd为正确时
-        if let Command::Set { key, .. } = package.cmd {
+        if let Command::Set { key, .. } = cmd {
             // 封装为CommandPos
             let cmd_pos = CommandPos {gen: core.current_gen, pos: pos as usize, len: self.writer.pos - pos };
             // 将封装ComandPos存入索引Map中
@@ -181,10 +180,9 @@ impl KVStore for HashKvStore {
         if core.index.contains_key(&key) {
             // 对这个key做命令封装
             let cmd = Command::remove(key);
-            let package = CommandPackage::new(cmd, writer.pos as usize);
-            package.write(writer)?;
+            CommandPackage::write(writer, &cmd)?;
             // 若cmd模式匹配成功则删除该数据
-            if let Command::Remove { key } = package.cmd {
+            if let Command::Remove { key } = cmd {
                 core.index.remove(&key).expect("key not found");
             }
             Ok(())
@@ -217,20 +215,16 @@ impl Drop for HashKvStore {
 
 /// 通过目录地址加载数据
 fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<String, CommandPos>) -> Result<u64> {
-    // 将读入器的地址初始化为0
-    reader.pos = 0;
     // 流式读取将数据序列化为Command
     let vec_package = CommandPackage::form_read_to_vec(reader)?;
     // 初始化空间占用为0
     let mut uncompacted = 0;
-    let mut pos = 0;
     // 迭代数据
     for package in vec_package {
-        let new_pos = package.pos;
         match package.cmd {
             Command::Set { key, .. } => {
                 //数据插入索引之中，成功则对空间占用值进行累加
-                if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos, len: (new_pos - pos) as u64 }) {
+                if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos: package.pos, len: package.len as u64 }) {
                     uncompacted += old_cmd.len;
                 }
             }
@@ -238,13 +232,10 @@ fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<String, CommandPo
                 //索引删除该数据之中，成功则对空间占用值进行累加
                 if let Some(old_cmd) = index.remove(&key) {
                     uncompacted += old_cmd.len;
-                }
-                uncompacted += (new_pos - pos) as u64;
+                };
             }
             _ => {}
         }
-        // 写入地址等于new_pos
-        pos = new_pos;
     }
     Ok(uncompacted)
 }

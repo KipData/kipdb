@@ -2,7 +2,7 @@ use std::{io::{Write, self}, path::PathBuf, fs::File};
 use std::io::Read;
 use serde::{Deserialize, Serialize};
 use memmap2::{Mmap, MmapMut};
-use tracing::info;
+use serde_json::Deserializer;
 
 use crate::cmd::Command;
 
@@ -97,32 +97,41 @@ impl Write for MmapWriter {
 #[derive(Debug, Serialize, Deserialize)]
 struct CommandPackage {
     cmd: Command,
-    pos: usize
+    pos: usize,
+    len: usize
 }
 
 impl CommandPackage {
-    pub fn new(cmd: Command, pos: usize) -> Self {
-        CommandPackage{ cmd, pos }
+    pub fn new(cmd: Command, pos: usize, len: usize) -> Self {
+        CommandPackage{ cmd, pos, len }
     }
 
-    pub fn write<W>(&self, wr: &mut W) -> Result<()> where W: Write + ?Sized, {
-        serde_json::to_writer(wr, self)?;
+    pub fn write<W>(wr: &mut W, cmd: &Command) -> Result<()> where W: Write + ?Sized, {
+        serde_json::to_writer(wr, cmd)?;
         Ok(())
     }
 
     pub fn form_pos(reader : &MmapReader, start: usize, end: usize) -> Result<CommandPackage> {
-        let cmd_p_u8 = reader.read_zone(start, end)?;
-        Ok(serde_json::from_slice(cmd_p_u8)?)
+        let cmd_u8 = reader.read_zone(start, end)?;
+        let cmd: Command = serde_json::from_slice(cmd_u8)?;
+        Ok(CommandPackage::new(cmd, start, end - start))
     }
 
     pub fn form_read_to_vec(reader : &mut MmapReader) -> Result<Vec<CommandPackage>>{
+        // 将读入器的地址初始化为0
+        reader.pos = 0;
         let mut vec = Vec::new();
-        for package in serde_json::from_reader::<&mut MmapReader, CommandPackage>(reader) {
-            info!("{:?}", package);
-            vec.push(package)
+        let mut stream = Deserializer::from_reader(reader).into_iter::<Command>();
+        let mut pos = 0;
+        while let Some(cmd) = stream.next() {
+            let len = stream.byte_offset() - pos;
+            if let Ok(cmd) = cmd {
+                vec.push(CommandPackage::new(cmd, pos, len));
+            } else {
+                break;
+            }
+            pos += len;
         }
         Ok(vec)
     }
-
-    // pub fn from_read()
 }
