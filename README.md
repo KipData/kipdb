@@ -1,25 +1,53 @@
-# KVS
+# KipDB
 
 #### 介绍
-{**以下是 Gitee 平台说明，您可以替换此简介**
-Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN）。专为开发者提供稳定、高效、安全的云端软件开发协作平台
-无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
+网络异步交互、零拷贝的轻量级KV数据库
 
-#### 软件架构
-软件架构说明
+基于PingCAP课程talent-plan
+课程地址:https://github.com/pingcap/talent-plan/tree/master/courses/rust
 
-
-#### 安装教程
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
+#### 架构
+```
+|- src
+    |- bench 性能基准测试
+        |- core_bench.rs 内核性能基准测试
+    |- bin 二进制
+        |- cli.rs 客户端
+        |- server.rs 服务端
+    |- cmd 指令
+        |- mod.rs 指令定义
+    |- core 内核
+        |- hash_kv.rs 基于Hash的KVStore
+        |- mod.rs KVStore Trait与读写操作封装
+    |- net 网络
+        |- client.rs 网络客户端
+        |- codec.rs 数据帧编码器
+        |- connection.rs 网络连接
+        |- mod.rs 指令网络定义
+        |- server.rs 网络监听服务端
+    |- config.rs 预留的配置文件
+    |- error.rs 错误定义
+    |- lib.rs 模块管理
+```
 
 #### 使用说明
+- **拉取代码编译**
+  1. 克隆该仓库
+    - https://github.com/KKould/KipDB.git
+  2. 运行编译指令(需要安装rust环境)
+    - cargo build --release
+  3. 进入target/release目录下获取执行文件
+    - server.exe 和 cli.exe (window平台为例)
+- **执行操作**
+  - 运行server服务端
+    - ./server 默认端口为6333
+    - ./server -help 可以查看指令详情
+  - 使用cli客户端进行指令操作
+    - ./cli set key1 value1 (示例)
+- **操作示例**：
+  - ![](./img/test1.png)
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+
 
 #### 参与贡献
 
@@ -29,11 +57,10 @@ Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN�
 4.  新建 Pull Request
 
 
-#### 特技
+#### Bench测试
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+- **执行性能基准测试**
+  - cargo bench
+- **性能评测**
+  - ### [Criterion性能图表](./static/index-8.15.html)
+  - ![](./static/img/bench1.jpg)

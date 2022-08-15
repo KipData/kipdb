@@ -15,7 +15,7 @@ path = "src/bin/server.rs"
 
 [[bench]]
 name = "server_bench"
-path = "src/bences/server_bench.rs"
+path = "src/bench/core_bench.rs"
 harness = false
 
 [profile.release]
