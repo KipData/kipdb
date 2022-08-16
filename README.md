@@ -30,22 +30,22 @@
     |- lib.rs 模块管理
 ```
 
-#### 使用说明
-- **拉取代码编译**
-  1. 克隆该仓库
-    - https://github.com/KKould/KipDB.git
-  2. 运行编译指令(需要安装rust环境)
-    - cargo build --release
-  3. 进入target/release目录下获取执行文件
-    - server.exe 和 cli.exe (window平台为例)
-- **执行操作**
+### 使用说明
+#### 拉取代码编译
+1. 克隆该仓库
+  - https://github.com/KKould/KipDB.git
+2. 运行编译指令(需要安装rust环境)
+  - cargo build --release
+3. 进入target/release目录下获取执行文件
+  - server.exe 和 cli.exe (window平台为例)
+#### 执行操作
   - 运行server服务端
     - ./server 默认端口为6333
     - ./server -help 可以查看指令详情
   - 使用cli客户端进行指令操作
     - ./cli set key1 value1 (示例)
-- **操作示例**：
-  - ![](./img/test1.png)
+#### 操作示例
+  - ![](./static/img/test1.png)
 
 
 
@@ -62,5 +62,6 @@
 - **执行性能基准测试**
   - cargo bench
 - **性能评测**
-  - ### [Criterion性能图表](./static/index-8.15.html)
-  - ![](./static/img/bench1.jpg)
+  - ##### Criterion性能图表
+    - ![](./static/img/bench_set1.png)
+  - ![](./static/img/bench1.png)

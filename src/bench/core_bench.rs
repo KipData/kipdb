@@ -1,9 +1,12 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use tempfile::TempDir;
 use kip_db::core::{KVStore, hash_kv::HashKvStore};
 
+/// 基于Hash持久化内核的bench测试
 fn kv_benchmark(c: &mut Criterion) {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-    let mut store = HashKvStore::open("./tmp").unwrap();
+    let mut store = HashKvStore::open(temp_dir.path()).unwrap();
     store.set("key1".to_string(), "value1".to_string()).unwrap();
 
     c.bench_function("get exist", |b|

@@ -38,7 +38,8 @@ impl KvCore {
             CommandPackage::write(&mut compaction_writer, &cmd_package.cmd)?;
 
             *cmd_pos = CommandPos {gen: compaction_gen, pos: new_pos, len: cmd_len as u64 };
-            new_pos += cmd_len;
+            // 对占位符跳过
+            new_pos += cmd_len + 1;
         }
         // 将所有写入刷入压缩文件中
         compaction_writer.flush()?;
