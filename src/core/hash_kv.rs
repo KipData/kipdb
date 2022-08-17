@@ -1,4 +1,5 @@
 use std::{io::Write, path::{PathBuf, Path}, collections::HashMap, fs::{File, self, OpenOptions}, ffi::OsStr};
+use std::cmp::Ordering;
 use itertools::Itertools;
 
 use crate::{error::{KvsError}};
@@ -31,7 +32,13 @@ impl KvCore {
         // 以pos为最新数据的指标
         let mut vec_cmd_pos = self.index.values_mut()
             .map(|item| item)
-            .sorted_unstable_by(|a, b| a.pos.cmp(&b.pos))
+            .sorted_unstable_by(|a, b| {
+                match a.gen.cmp(&b.gen) {
+                    Ordering::Less => Ordering::Less,
+                    Ordering::Equal => a.pos.cmp(&b.pos),
+                    Ordering::Greater => Ordering::Greater,
+                }
+            })
             .collect::<Vec<&mut CommandPos>>();
 
         // 获取最后一位数据进行可容载数据的范围
