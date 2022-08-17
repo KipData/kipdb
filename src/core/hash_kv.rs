@@ -1,4 +1,5 @@
 use std::{io::Write, path::{PathBuf, Path}, collections::HashMap, fs::{File, self, OpenOptions}, ffi::OsStr};
+use itertools::Itertools;
 
 use crate::{error::{KvsError}};
 use crate::cmd::Command;
@@ -26,38 +27,65 @@ impl KvCore {
         // 新的写入位置为原位置的向上两位
         self.current_gen = compaction_gen + 1;
 
-        // 初始化新的写入地址
-        let mut new_pos = 0 as usize;
-        for cmd_pos in &mut self.index.values_mut() {
-            let pos = cmd_pos.pos;
-            let cmd_len = cmd_pos.len as usize;
-            let reader = self.readers.get_mut(&cmd_pos.gen)
-                .expect(format!("Can't find reader: {}", &cmd_pos.gen).as_str());
+        // 压缩时对values进行顺序排序
+        // 以pos为最新数据的指标
+        let mut vec_cmd_pos = self.index.values_mut()
+            .map(|item| item)
+            .sorted_unstable_by(|a, b| a.pos.cmp(&b.pos))
+            .collect::<Vec<&mut CommandPos>>();
 
-            let cmd_package = CommandPackage::form_pos(reader, pos, pos + cmd_len)?;
-            CommandPackage::write(&mut compaction_writer, &cmd_package.cmd)?;
+        // 获取最后一位数据进行可容载数据的范围
+        if let Some(last_cmd_pos) = vec_cmd_pos.last() {
+            let skip_index = match Self::get_max_new_pos(&vec_cmd_pos, last_cmd_pos.pos + last_cmd_pos.len as usize) {
+                Some(index) => { index }
+                None => { 0 }
+            };
 
-            *cmd_pos = CommandPos {gen: compaction_gen, pos: new_pos, len: cmd_len as u64 };
-            // 对占位符跳过
-            new_pos += cmd_len + 1;
+            // 对skip_index进行旧数据跳过处理
+            // 抛弃超过文件大小且数据写入时间最久的数据
+            for (i, cmd_pos) in vec_cmd_pos.iter_mut().enumerate() {
+                if i >= skip_index {
+                    let pos = compaction_writer.pos as usize;
+                    let len = cmd_pos.len as usize;
+
+                    let reader = self.readers.get_mut(&cmd_pos.gen)
+                        .expect(format!("Can't find reader: {}", &cmd_pos.gen).as_str());
+
+                    let cmd_package = CommandPackage::form_pos(reader, cmd_pos.pos, cmd_pos.pos + len)?;
+                    CommandPackage::write(&mut compaction_writer, &cmd_package.cmd)?;
+
+                    **cmd_pos = CommandPos { gen: compaction_gen, pos, len: cmd_package.len as u64 };
+                }
+            }
+
+            // 将所有写入刷入压缩文件中
+            compaction_writer.flush()?;
+            // 遍历过滤出小于压缩文件序号的文件号名收集为过期Vec
+            let stale_gens: Vec<_> = self.readers.keys()
+                .filter(|&&gen| gen < compaction_gen)
+                .cloned().collect();
+
+            // 遍历过期Vec对数据进行旧文件删除
+            for stale_gen in stale_gens {
+                self.readers.remove(&stale_gen);
+                fs::remove_file(log_path(&self.path, stale_gen))?;
+            }
+            // 将压缩阈值调整为为压缩后大小
+            self.un_compacted += compaction_writer.pos;
         }
-        // 将所有写入刷入压缩文件中
-        compaction_writer.flush()?;
-
-        // 遍历过滤出小于压缩文件序号的文件号名收集为过期Vec
-        let stale_gens: Vec<_> = self.readers.keys()
-            .filter(|&&gen| gen < compaction_gen)
-            .cloned().collect();
-
-        // 遍历过期Vec对数据进行旧文件删除
-        for stale_gen in stale_gens {
-            self.readers.remove(&stale_gen);
-            fs::remove_file(log_path(&self.path, stale_gen))?;
-        }
-        // 将压缩阈值调整为为压缩后大小
-        self.un_compacted = new_pos as u64;
 
         Ok(())
+    }
+
+    /// 获取可承载范围内最新的数据的起始索引
+    /// 要求vec_cmd_pos是有序的
+    fn get_max_new_pos(vec_cmd_pos: &Vec<&mut CommandPos>, last_pos: usize) -> Option<usize> {
+        for (i, item) in vec_cmd_pos.iter().enumerate() {
+            if last_pos - item.pos < COMPACTION_THRESHOLD as usize {
+                return Some(i);
+            }
+        }
+        None
     }
 
     // 新建日志文件方法参数封装
