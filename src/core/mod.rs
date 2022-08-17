@@ -1,5 +1,9 @@
-use std::{io::{Write, self}, path::PathBuf, fs::File};
+use std::{io::{Write, self}, path::PathBuf, fs::File, fs};
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs::OpenOptions;
 use std::io::Read;
+use std::path::Path;
 use memmap2::{Mmap, MmapMut};
 
 use crate::cmd::Command;
@@ -12,10 +16,12 @@ pub type Result<T> = std::result::Result<T, KvsError>;
 
 const DELIMITER_BYTE: &u8 = &b'\0';
 
+const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 6;
+
 /// KV持久化内核 操作定义
 pub trait KVStore {
-    /// 通过路径打开文件
-    fn open(path: impl Into<PathBuf>) -> Result<Self> where Self:Sized ;
+    /// 通过数据目录路径开启数据库
+    fn open(path: impl Into<PathBuf>) -> Result<Self> where Self:Sized;
 
     /// 强制将数据刷入硬盘
     fn flush(&mut self) -> Result<()>;
@@ -186,4 +192,79 @@ impl CommandPackage {
             Ok(Vec::new())
         }
     }
+}
+
+/// 通过目录地址加载数据并返回数据总大小
+fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<String, CommandPos>) -> Result<u64> {
+    // 流式读取将数据序列化为Command
+    let vec_package = CommandPackage::form_read_to_vec(reader)?;
+    // 初始化空间占用为0
+    let mut uncompacted = 0;
+    // 迭代数据
+    for package in vec_package {
+        match package.cmd {
+            Command::Set { key, .. } => {
+                //数据插入索引之中，成功则对空间占用值进行累加
+                if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos: package.pos, len: package.len as u64 }) {
+                    uncompacted += old_cmd.len + 1;
+                }
+            }
+            Command::Remove { key } => {
+                //索引删除该数据之中，成功则对空间占用值进行累加
+                if let Some(old_cmd) = index.remove(&key) {
+                    uncompacted += old_cmd.len + 1;
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok(uncompacted)
+}
+
+/// 现有日志文件序号排序
+fn sorted_gen_list(path: &Path) -> Result<Vec<u64>> {
+    // 读取文件夹路径
+    // 获取该文件夹内各个文件的地址
+    // 判断是否为文件并判断拓展名是否为log
+    //  对文件名进行字符串转换
+    //  去除.log后缀
+    //  将文件名转换为u64
+    // 对数组进行拷贝并收集
+    let mut gen_list: Vec<u64> = fs::read_dir(path)?
+        .flat_map(|res| -> Result<_> { Ok(res?.path()) })
+        .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
+        .flat_map(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .map(|s| s.trim_end_matches(".log"))
+                .map(str::parse::<u64>)
+        })
+        .flatten().collect();
+    // 对序号进行排序
+    gen_list.sort_unstable();
+    // 返回排序好的Vec
+    Ok(gen_list)
+}
+
+/// 对文件夹路径填充日志文件名
+fn log_path(dir: &Path, gen: u64) -> PathBuf {
+    dir.join(format!("{}.log", gen))
+}
+
+/// 新建日志文件
+/// 传入文件夹路径、日志名序号、读取器Map
+/// 返回对应的写入器
+fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, MmapReader>) -> Result<MmapWriter> {
+    // 得到对应日志的路径
+    let path = log_path(path, gen);
+    // 通过路径构造写入器
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(&path)?;
+    file.set_len(DEFAULT_COMPACTION_THRESHOLD).unwrap();
+
+    readers.insert(gen, MmapReader::new(&file)?);
+    Ok(MmapWriter::new(&file)?)
 }
