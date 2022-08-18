@@ -25,9 +25,8 @@ impl KvCore {
         self.current_gen = compaction_gen + 1;
 
         // 压缩时对values进行顺序排序
-        // 以pos为最新数据的指标
+        // 以gen,pos为最新数据的指标
         let mut vec_cmd_pos = self.index.values_mut()
-            .map(|item| item)
             .sorted_unstable_by(|a, b| {
                 match a.gen.cmp(&b.gen) {
                     Ordering::Less => Ordering::Less,
@@ -35,16 +34,12 @@ impl KvCore {
                     Ordering::Greater => Ordering::Greater,
                 }
             })
-            .collect::<Vec<&mut CommandPos>>();
+            .collect_vec();
 
         // 获取最后一位数据进行可容载数据的范围
         if let Some(last_cmd_pos) = vec_cmd_pos.last() {
-            let skip_index = match Self::get_max_new_pos(
-                &vec_cmd_pos, last_cmd_pos.pos + last_cmd_pos.len as usize, self.compaction_threshold) {
-
-                Some(index) => { index }
-                None => { 0 }
-            };
+            let last_pos = last_cmd_pos.pos + last_cmd_pos.len as usize;
+            let skip_index = Self::get_max_new_pos(&vec_cmd_pos, last_pos, self.compaction_threshold);
 
             // 对skip_index进行旧数据跳过处理
             // 抛弃超过文件大小且数据写入时间最久的数据
@@ -84,13 +79,13 @@ impl KvCore {
 
     /// 获取可承载范围内最新的数据的起始索引
     /// 要求vec_cmd_pos是有序的
-    fn get_max_new_pos(vec_cmd_pos: &Vec<&mut CommandPos>, last_pos: usize, compaction_threshold: u64) -> Option<usize> {
+    fn get_max_new_pos(vec_cmd_pos: &Vec<&mut CommandPos>, last_pos: usize, compaction_threshold: u64) -> usize {
         for (i, item) in vec_cmd_pos.iter().enumerate() {
             if last_pos - item.pos < compaction_threshold as usize {
-                return Some(i);
+                return i;
             }
         }
-        None
+        return 0;
     }
 
     // 新建日志文件方法参数封装
@@ -176,7 +171,7 @@ impl KVStore for HashKvStore {
         if let Command::Set { key, .. } = cmd {
             // 封装为CommandPos
             let cmd_pos = CommandPos {gen: core.current_gen, pos: pos as usize, len: self.writer.pos - pos };
-            // 将封装ComandPos存入索引Map中
+            // 将封装CommandPos存入索引Map中
             if let Some(old_cmd) = core.index.insert(key, cmd_pos) {
                 // 将阈值提升至该命令的大小
                 core.un_compacted += old_cmd.len;
