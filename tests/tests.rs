@@ -1,19 +1,20 @@
-use assert_cmd::prelude::*;
-use predicates::ord::eq;
-use predicates::str::{contains, is_empty, PredicateStrExt};
-use std::path::PathBuf;
-use std::process::Command;
 use tempfile::TempDir;
 use walkdir::WalkDir;
-use kip_db::core::hash_kv::HashKvStore;
+use kip_db::core::hash_kv::HashStore;
 use kip_db::core::KVStore;
 use kip_db::core::Result;
+use kip_db::core::sled_kv::SledStore;
 
 #[test]
 fn get_stored_value() -> Result<()> {
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    get_stored_value_with_kv_store::<HashStore>()?;
+    get_stored_value_with_kv_store::<SledStore>()?;
+    Ok(())
+}
 
+fn get_stored_value_with_kv_store<T: KVStore>() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let mut kv_store = T::open(temp_dir.path())?;
     kv_store.set("key1".to_owned(), "value1".to_owned())?;
     kv_store.set("key2".to_owned(), "value2".to_owned())?;
 
@@ -21,7 +22,7 @@ fn get_stored_value() -> Result<()> {
     kv_store.get("key2".to_owned())?;
     // Open from disk again and check persistent data.
     drop(kv_store);
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let kv_store = T::open(temp_dir.path())?;
     assert_eq!(kv_store.get("key1".to_owned())?, Some("value1".to_owned()));
     assert_eq!(kv_store.get("key2".to_owned())?, Some("value2".to_owned()));
 
@@ -31,8 +32,15 @@ fn get_stored_value() -> Result<()> {
 // Should overwrite existent value.
 #[test]
 fn overwrite_value() -> Result<()> {
+    overwrite_value_with_kv_store::<HashStore>()?;
+    overwrite_value_with_kv_store::<SledStore>()?;
+
+    Ok(())
+}
+
+fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let mut kv_store = T::open(temp_dir.path())?;
 
     kv_store.set("key1".to_owned(), "value1".to_owned())?;
     assert_eq!(kv_store.get("key1".to_owned())?, Some("value1".to_owned()));
@@ -41,7 +49,7 @@ fn overwrite_value() -> Result<()> {
 
     // Open from disk again and check persistent data.
     drop(kv_store);
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let mut kv_store = T::open(temp_dir.path())?;
     assert_eq!(kv_store.get("key1".to_owned())?, Some("value2".to_owned()));
     kv_store.set("key1".to_owned(), "value3".to_owned())?;
     assert_eq!(kv_store.get("key1".to_owned())?, Some("value3".to_owned()));
@@ -52,15 +60,22 @@ fn overwrite_value() -> Result<()> {
 // Should get `None` when getting a non-existent key.
 #[test]
 fn get_non_existent_value() -> Result<()> {
+    get_non_existent_value_with_kv_store::<HashStore>()?;
+    get_non_existent_value_with_kv_store::<SledStore>()?;
+
+    Ok(())
+}
+
+fn get_non_existent_value_with_kv_store<T: KVStore>() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let mut kv_store = T::open(temp_dir.path())?;
 
     kv_store.set("key1".to_owned(), "value1".to_owned())?;
     assert_eq!(kv_store.get("key2".to_owned())?, None);
 
     // Open from disk again and check persistent data.
     drop(kv_store);
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let kv_store = T::open(temp_dir.path())?;
     assert_eq!(kv_store.get("key2".to_owned())?, None);
 
     Ok(())
@@ -68,16 +83,29 @@ fn get_non_existent_value() -> Result<()> {
 
 #[test]
 fn remove_non_existent_key() -> Result<()> {
+    remove_non_existent_key_with_kv_store::<HashStore>()?;
+    remove_non_existent_key_with_kv_store::<SledStore>()?;
+
+    Ok(())
+}
+fn remove_non_existent_key_with_kv_store<T: KVStore>() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let mut kv_store = T::open(temp_dir.path())?;
     assert!(kv_store.remove("key1".to_owned()).is_err());
     Ok(())
 }
 
 #[test]
 fn remove_key() -> Result<()> {
+    remove_key_with_kv_store::<HashStore>()?;
+    remove_key_with_kv_store::<SledStore>()?;
+
+    Ok(())
+}
+
+fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let mut kv_store = T::open(temp_dir.path())?;
     kv_store.set("key1".to_owned(), "value1".to_owned())?;
     assert!(kv_store.remove("key1".to_owned()).is_ok());
     assert_eq!(kv_store.get("key1".to_owned())?, None);
@@ -88,8 +116,15 @@ fn remove_key() -> Result<()> {
 // Test data correctness after compaction.
 #[test]
 fn compaction() -> Result<()> {
+    compaction_with_kv_store::<HashStore>()?;
+    compaction_with_kv_store::<SledStore>()?;
+
+    Ok(())
+}
+
+fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let mut kv_store =HashKvStore::open(temp_dir.path())?;
+    let mut kv_store = T::open(temp_dir.path())?;
     let dir_size = || {
         let entries = WalkDir::new(temp_dir.path()).into_iter();
         let len: walkdir::Result<u64> = entries
@@ -118,7 +153,7 @@ fn compaction() -> Result<()> {
 
         drop(kv_store);
         // reopen and check content.
-        let mut kv_store =HashKvStore::open(temp_dir.path())?;
+        let kv_store = T::open(temp_dir.path())?;
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
             assert_eq!(kv_store.get(key)?, Some(format!("{}", iter)));
@@ -128,175 +163,3 @@ fn compaction() -> Result<()> {
 
     panic!("No compaction detected");
 }
-
-
-// // `kvs` with no args should exit with a non-zero code.
-// #[test]
-// fn cli_no_args() {
-//     Command::cargo_bin("kvs").unwrap().assert().failure();
-// }
-
-// // `kvs -V` should print the version
-// #[test]
-// fn cli_version() {
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["-V"])
-//         .assert()
-//         .stdout(contains(env!("CARGO_PKG_VERSION")));
-// }
-
-// // `kvs get <KEY>` should print "Key not found" for a non-existent key and exit with zero.
-// #[test]
-// fn cli_get_non_existent_key() {
-//     let temp_dir = TempDir::new().unwrap();
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["get", "key1"])
-//         .current_dir(&temp_dir)
-//         .assert()
-//         .success()
-//         .stdout(eq("Key not found").trim());
-// }
-
-// // `kvs rm <KEY>` should print "Key not found" for an empty database and exit with non-zero code.
-// #[test]
-// fn cli_rm_non_existent_key() {
-//     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["rm", "key1"])
-//         .current_dir(&temp_dir)
-//         .assert()
-//         .failure()
-//         .stdout(eq("Key not found").trim());
-// }
-
-// // `kvs set <KEY> <VALUE>` should print nothing and exit with zero.
-// #[test]
-// fn cli_set() {
-//     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["set", "key1", "value1"])
-//         .current_dir(&temp_dir)
-//         .assert()
-//         .success()
-//         .stdout(is_empty());
-// }
-
-// #[test]
-// fn cli_get_stored() -> Result<()> {
-//     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-//     let mut store = KvStore::open(temp_dir.path())?;
-//     store.set("key1".to_owned(), "value1".to_owned())?;
-//     store.set("key2".to_owned(), "value2".to_owned())?;
-//     drop(store);
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["get", "key1"])
-//         .current_dir(&temp_dir)
-//         .assert()
-//         .success()
-//         .stdout(eq("value1").trim());
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["get", "key2"])
-//         .current_dir(&temp_dir)
-//         .assert()
-//         .success()
-//         .stdout(eq("value2").trim());
-
-//     Ok(())
-// }
-
-// // `kvs rm <KEY>` should print nothing and exit with zero.
-// #[test]
-// fn cli_rm_stored() -> Result<()> {
-//     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-//     let mut store = KvStore::open(temp_dir.path())?;
-//     store.set("key1".to_owned(), "value1".to_owned())?;
-//     drop(store);
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["rm", "key1"])
-//         .current_dir(&temp_dir)
-//         .assert()
-//         .success()
-//         .stdout(is_empty());
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["get", "key1"])
-//         .current_dir(&temp_dir)
-//         .assert()
-//         .success()
-//         .stdout(eq("Key not found").trim());
-
-//     Ok(())
-// }
-
-// #[test]
-// fn cli_invalid_get() {
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["get"])
-//         .assert()
-//         .failure();
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["get", "extra", "field"])
-//         .assert()
-//         .failure();
-// }
-
-// #[test]
-// fn cli_invalid_set() {
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["set"])
-//         .assert()
-//         .failure();
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["set", "missing_field"])
-//         .assert()
-//         .failure();
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["set", "extra", "extra", "field"])
-//         .assert()
-//         .failure();
-// }
-
-// #[test]
-// fn cli_invalid_rm() {
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["rm"])
-//         .assert()
-//         .failure();
-
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["rm", "extra", "field"])
-//         .assert()
-//         .failure();
-// }
-
-// #[test]
-// fn cli_invalid_subcommand() {
-//     Command::cargo_bin("kvs")
-//         .unwrap()
-//         .args(&["unknown", "subcommand"])
-//         .assert()
-//         .failure();
-// }

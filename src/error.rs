@@ -20,6 +20,8 @@ pub enum KvsError {
     /// Remove no-existent key error
     #[fail(display = "Key not found")]
     KeyNotFound,
+    #[fail(display = "{}", _0)]
+    Sled(#[cause] sled::Error),
 
     /// Unexpected command type error.
     /// It indicated a corrupted log or a program bug.
@@ -81,5 +83,11 @@ impl From<rmp_serde::decode::Error> for KvsError {
 impl From<Box<bincode::ErrorKind>> for ConnectionError {
     fn from(err: Box<bincode::ErrorKind>) -> Self {
         ConnectionError::Serde(err)
+    }
+}
+
+impl From<sled::Error> for KvsError {
+    fn from(err: sled::Error) -> Self {
+        KvsError::Sled(err)
     }
 }

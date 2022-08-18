@@ -12,6 +12,8 @@ use crate::KvsError;
 
 pub mod hash_kv;
 
+pub mod sled_kv;
+
 pub type Result<T> = std::result::Result<T, KvsError>;
 
 const DELIMITER_BYTE: &u8 = &b'\0';
@@ -20,6 +22,9 @@ const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 6;
 
 /// KV持久化内核 操作定义
 pub trait KVStore {
+    /// 获取内核名
+    fn name() -> &'static str where Self: Sized;
+
     /// 通过数据目录路径开启数据库
     fn open(path: impl Into<PathBuf>) -> Result<Self> where Self:Sized;
 

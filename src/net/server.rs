@@ -5,7 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio::time;
 use tracing::{debug, error, info};
-use crate::core::hash_kv::HashKvStore;
+use crate::core::hash_kv::HashStore;
 use crate::core::KVStore;
 use crate::error::ConnectionError;
 use crate::net::connection::Connection;
@@ -37,7 +37,7 @@ struct Handler {
 }
 
 pub async fn run(listener: TcpListener, shutdown: impl Future) {
-    let store = HashKvStore::open("./data").unwrap();
+    let store = HashStore::open("./data").unwrap();
     let (notify_shutdown_sender, _) = broadcast::channel(1);
     let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 

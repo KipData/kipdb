@@ -6,6 +6,10 @@
 基于PingCAP课程talent-plan
 课程地址:https://github.com/pingcap/talent-plan/tree/master/courses/rust
 
+##### 内置多种持久化内核
+- HashStore: 基于哈希
+- SledStore: 基于Sled数据库
+
 #### 架构
 ```
 |- src
@@ -65,3 +69,6 @@
   - ##### Criterion性能图表
     - ![](./static/img/bench_set1.png)
     - ![](./static/img/bench1.png)
+
+
+#### 交流QQ群: 535877318

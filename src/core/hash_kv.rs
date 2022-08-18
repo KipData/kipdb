@@ -95,12 +95,12 @@ impl KvCore {
 }
 
 /// The `HashKvStore` stores string key/value pairs.
-pub struct HashKvStore {
+pub struct HashStore {
     kv_core: KvCore,
     writer: MmapWriter
 }
 
-impl HashKvStore {
+impl HashStore {
     /// 通过目录路径启动数据库并指定压缩阈值
     fn open_with_compaction_threshold(path: impl Into<PathBuf>, compaction_threshold: u64) -> Result<Self> where Self: Sized {
         // 获取地址
@@ -140,17 +140,21 @@ impl HashKvStore {
         };
         kv_core.compact(current_gen)?;
 
-        Ok(HashKvStore{
+        Ok(HashStore {
             kv_core,
             writer: new_writer
         })
     }
 }
 
-impl KVStore for HashKvStore {
+impl KVStore for HashStore {
+    fn name() -> &'static str where Self: Sized {
+        "HashStore made in Kould"
+    }
+
     // 通过文件夹路径开启一个HashKvStore
-    fn open(path: impl Into<PathBuf>) -> Result<HashKvStore> where Self: Sized {
-        HashKvStore::open_with_compaction_threshold(path, DEFAULT_COMPACTION_THRESHOLD)
+    fn open(path: impl Into<PathBuf>) -> Result<HashStore> where Self: Sized {
+        HashStore::open_with_compaction_threshold(path, DEFAULT_COMPACTION_THRESHOLD)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -233,7 +237,7 @@ impl KVStore for HashKvStore {
     }
 }
 
-impl HashKvStore {
+impl HashStore {
     pub fn compact(&mut self) -> Result<()> {
         // 预压缩的数据位置为原文件位置的向上一位
         let core = & mut self.kv_core;
@@ -244,7 +248,7 @@ impl HashKvStore {
     }
 }
 
-impl Drop for HashKvStore {
+impl Drop for HashStore {
     fn drop(&mut self) {
         self.shut_down().unwrap();
     }
