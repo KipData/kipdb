@@ -25,21 +25,21 @@ impl KVStore for SledStore {
         Ok(())
     }
 
-    fn set(&mut self, key: String, value: String) -> crate::core::Result<()> {
-        self.data_base.insert(key.as_str(), rmp_serde::encode::to_vec(&value)?)?;
+    fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> crate::core::Result<()> {
+        self.data_base.insert(key, value)?;
         Ok(())
     }
 
-    fn get(&self, key: String) -> crate::core::Result<Option<String>> {
+    fn get(&self, key: &Vec<u8>) -> crate::core::Result<Option<Vec<u8>>> {
         match self.data_base.get(key)? {
             None => { Ok(None) }
-            Some(vec) => {
-                Ok(Some(rmp_serde::decode::from_slice::<String>(&*vec)?))
+            Some(i_vec) => {
+                Ok(Some(i_vec.to_vec()))
             }
         }
     }
 
-    fn remove(&mut self, key: String) -> crate::core::Result<()> {
+    fn remove(&mut self, key: &Vec<u8>) -> crate::core::Result<()> {
         match self.data_base.remove(key) {
             Ok(Some(_)) => { Ok(()) }
             Ok(None) => { Err(KvsError::KeyNotFound) }

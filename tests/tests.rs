@@ -13,18 +13,23 @@ fn get_stored_value() -> Result<()> {
 }
 
 fn get_stored_value_with_kv_store<T: KVStore>() -> Result<()> {
+    let key1: Vec<u8> = encode_key("key1")?;
+    let key2: Vec<u8> = encode_key("key2")?;
+    let value1: Vec<u8> = encode_key("value1")?;
+    let value2: Vec<u8> = encode_key("value2")?;
+
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut kv_store = T::open(temp_dir.path())?;
-    kv_store.set("key1".to_owned(), "value1".to_owned())?;
-    kv_store.set("key2".to_owned(), "value2".to_owned())?;
+    kv_store.set(&key1, value1.clone())?;
+    kv_store.set(&key2, value2.clone())?;
 
-    kv_store.get("key1".to_owned())?;
-    kv_store.get("key2".to_owned())?;
+    kv_store.get(&key1)?;
+    kv_store.get(&key2)?;
     // Open from disk again and check persistent data.
     drop(kv_store);
     let kv_store = T::open(temp_dir.path())?;
-    assert_eq!(kv_store.get("key1".to_owned())?, Some("value1".to_owned()));
-    assert_eq!(kv_store.get("key2".to_owned())?, Some("value2".to_owned()));
+    assert_eq!(kv_store.get(&key1)?, Some(value1));
+    assert_eq!(kv_store.get(&key2)?, Some(value2));
 
     Ok(())
 }
@@ -39,20 +44,25 @@ fn overwrite_value() -> Result<()> {
 }
 
 fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
+    let key1: Vec<u8> = encode_key("key1")?;
+    let value1: Vec<u8> = encode_key("value1")?;
+    let value2: Vec<u8> = encode_key("value2")?;
+    let value3: Vec<u8> = encode_key("value3")?;
+
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut kv_store = T::open(temp_dir.path())?;
 
-    kv_store.set("key1".to_owned(), "value1".to_owned())?;
-    assert_eq!(kv_store.get("key1".to_owned())?, Some("value1".to_owned()));
-    kv_store.set("key1".to_owned(), "value2".to_owned())?;
-    assert_eq!(kv_store.get("key1".to_owned())?, Some("value2".to_owned()));
+    kv_store.set(&key1, value1.clone())?;
+    assert_eq!(kv_store.get(&key1)?, Some(value1.clone()));
+    kv_store.set(&key1, value2.clone())?;
+    assert_eq!(kv_store.get(&key1)?, Some(value2.clone()));
 
     // Open from disk again and check persistent data.
     drop(kv_store);
     let mut kv_store = T::open(temp_dir.path())?;
-    assert_eq!(kv_store.get("key1".to_owned())?, Some("value2".to_owned()));
-    kv_store.set("key1".to_owned(), "value3".to_owned())?;
-    assert_eq!(kv_store.get("key1".to_owned())?, Some("value3".to_owned()));
+    assert_eq!(kv_store.get(&key1)?, Some(value2.clone()));
+    kv_store.set(&key1, value3.clone())?;
+    assert_eq!(kv_store.get(&key1)?, Some(value3.clone()));
 
     Ok(())
 }
@@ -67,16 +77,20 @@ fn get_non_existent_value() -> Result<()> {
 }
 
 fn get_non_existent_value_with_kv_store<T: KVStore>() -> Result<()> {
+    let key1: Vec<u8> = encode_key("key1")?;
+    let key2: Vec<u8> = encode_key("key2")?;
+    let value1: Vec<u8> = encode_key("value1")?;
+
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut kv_store = T::open(temp_dir.path())?;
 
-    kv_store.set("key1".to_owned(), "value1".to_owned())?;
-    assert_eq!(kv_store.get("key2".to_owned())?, None);
+    kv_store.set(&key1, value1)?;
+    assert_eq!(kv_store.get(&key2)?, None);
 
     // Open from disk again and check persistent data.
     drop(kv_store);
     let kv_store = T::open(temp_dir.path())?;
-    assert_eq!(kv_store.get("key2".to_owned())?, None);
+    assert_eq!(kv_store.get(&key2)?, None);
 
     Ok(())
 }
@@ -89,9 +103,11 @@ fn remove_non_existent_key() -> Result<()> {
     Ok(())
 }
 fn remove_non_existent_key_with_kv_store<T: KVStore>() -> Result<()> {
+    let key1: Vec<u8> = encode_key("key1")?;
+
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut kv_store = T::open(temp_dir.path())?;
-    assert!(kv_store.remove("key1".to_owned()).is_err());
+    assert!(kv_store.remove(&key1).is_err());
     Ok(())
 }
 
@@ -104,11 +120,14 @@ fn remove_key() -> Result<()> {
 }
 
 fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
+    let key1: Vec<u8> = encode_key("key1")?;
+    let value1: Vec<u8> = encode_key("value1")?;
+
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut kv_store = T::open(temp_dir.path())?;
-    kv_store.set("key1".to_owned(), "value1".to_owned())?;
-    assert!(kv_store.remove("key1".to_owned()).is_ok());
-    assert_eq!(kv_store.get("key1".to_owned())?, None);
+    kv_store.set(&key1, value1)?;
+    assert!(kv_store.remove(&key1).is_ok());
+    assert_eq!(kv_store.get(&key1)?, None);
     Ok(())
 }
 
@@ -141,7 +160,8 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
             let value = format!("{}", iter);
-            kv_store.set(key, value)?
+            kv_store.set(&encode_key(key.as_str())?,
+                         encode_key(value.as_str())?)?
         }
 
         let new_size = dir_size();
@@ -156,10 +176,15 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
         let kv_store = T::open(temp_dir.path())?;
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
-            assert_eq!(kv_store.get(key)?, Some(format!("{}", iter)));
+            assert_eq!(kv_store.get(&encode_key(key.as_str())?)?,
+                       Some(encode_key(format!("{}", iter).as_str())?));
         }
         return Ok(());
     }
 
     panic!("No compaction detected");
+}
+
+fn encode_key(key: &str) -> Result<Vec<u8>>{
+    Ok(rmp_serde::encode::to_vec(key)?)
 }

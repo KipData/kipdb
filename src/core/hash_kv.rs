@@ -3,13 +3,12 @@ use std::cmp::Ordering;
 use itertools::Itertools;
 
 use crate::{error::{KvsError}};
-use crate::cmd::Command;
-use crate::core::{CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, KVStore, load, log_path, MmapReader, MmapWriter, new_log_file, Result, sorted_gen_list};
+use crate::core::{CommandData, CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, KVStore, log_path, MmapReader, MmapWriter, new_log_file, Result, sorted_gen_list};
 
 pub struct KvCore {
     path: PathBuf,
     readers: HashMap<u64, MmapReader>,
-    index: HashMap<String, CommandPos>,
+    index: HashMap<Vec<u8>, CommandPos>,
     current_gen: u64,
     un_compacted: u64,
     compaction_threshold: u64,
@@ -110,7 +109,7 @@ impl HashStore {
         // 创建读入器Map
         let mut readers = HashMap::<u64, MmapReader>::new();
         // 创建索引
-        let mut index = HashMap::<String, CommandPos>::new();
+        let mut index = HashMap::<Vec<u8>, CommandPos>::new();
 
         // 通过path获取有序的log序名Vec
         let gen_list = sorted_gen_list(&path)?;
@@ -163,16 +162,16 @@ impl KVStore for HashStore {
     }
 
     /// 存入数据
-    fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
         let core = &mut self.kv_core;
         //将数据包装为命令
-        let cmd = Command::set(key, value);
+        let cmd = CommandData::Set { key: key.clone(), value };
         // 获取写入器当前地址
         let pos = self.writer.pos;
 
         CommandPackage::write(&mut self.writer, &cmd)?;
         // 当模式匹配cmd为正确时
-        if let Command::Set { key, .. } = cmd {
+        if let CommandData::Set { key, .. } = cmd {
             // 封装为CommandPos
             let cmd_pos = CommandPos {gen: core.current_gen, pos: pos as usize, len: self.writer.pos - pos };
             // 将封装CommandPos存入索引Map中
@@ -190,10 +189,10 @@ impl KVStore for HashStore {
     }
 
     /// 获取数据
-    fn get(&self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
         let core = &self.kv_core;
         // 若index中获取到了该数据命令
-        if let Some(cmd_pos) = core.index.get(&key) {
+        if let Some(cmd_pos) = core.index.get(key) {
             // 从读取器Map中通过该命令的序号获取对应的日志读取器
             let reader = core.readers.get(&cmd_pos.gen)
                 .expect(format!("Can't find reader: {}", &cmd_pos.gen).as_str());
@@ -201,7 +200,7 @@ impl KVStore for HashStore {
             // 获取这段内容
             let package = CommandPackage::form_pos(reader, cmd_pos.pos, last_pos)?;
             // 将命令进行转换
-            if let Command::Set { value, .. } = package.cmd {
+            if let CommandData::Set { value, .. } = package.cmd {
                 //返回匹配成功的数据
                 Ok(Some(value))
             } else {
@@ -214,18 +213,15 @@ impl KVStore for HashStore {
     }
 
     /// 删除数据
-    fn remove(&mut self, key: String) -> Result<()> {
+    fn remove(&mut self, key: &Vec<u8>) -> Result<()> {
         let core = &mut self.kv_core;
         let writer = &mut self.writer;
         // 若index中存在这个key
-        if core.index.contains_key(&key) {
+        if core.index.contains_key(key) {
             // 对这个key做命令封装
-            let cmd = Command::remove(key);
+            let cmd = CommandData::Remove { key: key.to_vec() };
             CommandPackage::write(writer, &cmd)?;
-            // 若cmd模式匹配成功则删除该数据
-            if let Command::Remove { key } = cmd {
-                core.index.remove(&key).expect("key not found");
-            }
+            core.index.remove(key).expect("key not found");
             Ok(())
         } else {
             Err(KvsError::KeyNotFound)
@@ -252,4 +248,31 @@ impl Drop for HashStore {
     fn drop(&mut self) {
         self.shut_down().unwrap();
     }
+}
+
+/// 通过目录地址加载数据并返回数据总大小
+fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<Vec<u8>, CommandPos>) -> Result<u64> {
+    // 流式读取将数据序列化为Command
+    let vec_package = CommandPackage::form_read_to_vec(reader)?;
+    // 初始化空间占用为0
+    let mut uncompacted = 0;
+    // 迭代数据
+    for package in vec_package {
+        match package.cmd {
+            CommandData::Set { key, .. } => {
+                //数据插入索引之中，成功则对空间占用值进行累加
+                if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos: package.pos, len: package.len as u64 }) {
+                    uncompacted += old_cmd.len + 1;
+                }
+            }
+            CommandData::Remove { key } => {
+                //索引删除该数据之中，成功则对空间占用值进行累加
+                if let Some(old_cmd) = index.remove(&key) {
+                    uncompacted += old_cmd.len + 1;
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok(uncompacted)
 }

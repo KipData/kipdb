@@ -41,7 +41,11 @@ pub enum ConnectionError {
     #[fail(display = "write failed")]
     WriteFailed,
     #[fail(display = "wrong instruction")]
-    WrongInstruction
+    WrongInstruction,
+    #[fail(display = "{}", _0)]
+    SerdeMPEncode(#[cause] rmp_serde::encode::Error),
+    #[fail(display = "{}", _0)]
+    SerdeMPDecode(#[cause] rmp_serde::decode::Error),
 }
 
 impl From<io::Error> for ConnectionError {
@@ -77,6 +81,18 @@ impl From<rmp_serde::encode::Error> for KvsError {
 impl From<rmp_serde::decode::Error> for KvsError {
     fn from(err: rmp_serde::decode::Error) -> Self {
         KvsError::SerdeMPDecode(err)
+    }
+}
+
+impl From<rmp_serde::encode::Error> for ConnectionError {
+    fn from(err: rmp_serde::encode::Error) -> Self {
+        ConnectionError::SerdeMPEncode(err)
+    }
+}
+
+impl From<rmp_serde::decode::Error> for ConnectionError {
+    fn from(err: rmp_serde::decode::Error) -> Self {
+        ConnectionError::SerdeMPDecode(err)
     }
 }
 

@@ -1,5 +1,5 @@
 use tokio::net::{TcpStream, ToSocketAddrs};
-use crate::cmd::Command;
+use crate::core::CommandData;
 use crate::net::connection::Connection;
 use crate::net::{Result, CommandOption};
 
@@ -20,26 +20,26 @@ impl Client {
     }
 
     /// 存入数据
-    pub async fn set(&mut self, key: String, value: String) -> Result<()>{
-        self.send_cmd(Command::set(key, value)).await?;
+    pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()>{
+        self.send_cmd(CommandData::set(key, value)).await?;
         Ok(())
     }
 
     /// 删除数据
-    pub async fn remove(&mut self, key: String) -> Result<()>{
-        self.send_cmd(Command::remove(key)).await?;
+    pub async fn remove(&mut self, key: Vec<u8>) -> Result<()>{
+        self.send_cmd(CommandData::remove(key)).await?;
         Ok(())
     }
 
     /// 获取数据
-    pub async fn get(&mut self, key: String) -> Result<core::option::Option<String>>{
-        match self.send_cmd(Command::get(key)).await? {
-            CommandOption::Value(str) => Ok(Some(str)),
+    pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>>{
+        match self.send_cmd(CommandData::get(key)).await? {
+            CommandOption::Value(vec) => Ok(Some(vec)),
             _ => Ok(None)
         }
     }
 
-    async fn send_cmd(&mut self, cmd: Command) -> Result<CommandOption>{
+    async fn send_cmd(&mut self, cmd: CommandData) -> Result<CommandOption>{
         self.connection.write(CommandOption::Cmd(cmd)).await?;
         Ok(self.connection.read().await?)
     }

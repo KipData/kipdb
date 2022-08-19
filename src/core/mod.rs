@@ -4,11 +4,13 @@ use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use memmap2::{Mmap, MmapMut};
-
-use crate::cmd::Command;
+use tokio::sync::RwLock;
 
 use crate::KvsError;
+use crate::net::CommandOption;
 
 pub mod hash_kv;
 
@@ -32,28 +34,16 @@ pub trait KVStore {
     fn flush(&mut self) -> Result<()>;
 
     /// 设置键值对
-    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> Result<()>;
 
     /// 通过键获取对应的值
-    fn get(&self, key: String) -> Result<Option<String>>;
+    fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>>;
 
     /// 通过键删除键值对
-    fn remove(&mut self, key: String) -> Result<()>;
+    fn remove(&mut self, key: &Vec<u8>) -> Result<()>;
 
     /// 持久化内核关闭处理
     fn shut_down(&mut self) ->Result<()>;
-}
-
-/// CommandPos Command磁盘指针
-/// 用于标记对应Command的位置
-/// gen 文件序号
-/// pos 开头指针
-/// len 命令长度
-#[derive(Debug)]
-struct CommandPos {
-    gen: u64,
-    pos: usize,
-    len: u64,
 }
 
 /// 基于mmap的读取器
@@ -86,8 +76,12 @@ impl MmapReader {
         let last = self.end_index();
 
         if last > 1 {
-            let vec_cmd_u8: Vec<&[u8]> = self.mmap[..last].split(|byte| byte.eq(DELIMITER_BYTE)).collect();
-            let vec_cmd_len: Vec<usize> = vec_cmd_u8.iter().map(|item| item.len()).collect();
+            let vec_cmd_u8: Vec<&[u8]> = self.mmap[..last]
+                .split(|byte| byte.eq(DELIMITER_BYTE))
+                .collect();
+            let vec_cmd_len: Vec<usize> = vec_cmd_u8.iter()
+                .map(|item| item.len())
+                .collect();
 
             Some((vec_cmd_u8, vec_cmd_len))
         } else {
@@ -151,19 +145,38 @@ impl Write for MmapWriter {
 /// 用于包装Command交予持久化核心实现使用的操作类
 #[derive(Debug)]
 struct CommandPackage {
-    cmd: Command,
+    cmd: CommandData,
     pos: usize,
     len: usize
 }
 
+/// CommandPos Command磁盘指针
+/// 用于标记对应Command的位置
+/// gen 文件序号
+/// pos 开头指针
+/// len 命令长度
+#[derive(Debug)]
+struct CommandPos {
+    gen: u64,
+    pos: usize,
+    len: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum CommandData {
+    Set { key: Vec<u8>, value: Vec<u8> },
+    Remove { key: Vec<u8> },
+    Get { key: Vec<u8> }
+}
+
 impl CommandPackage {
     /// 实例化一个Command
-    pub fn new(cmd: Command, pos: usize, len: usize) -> Self {
+    pub fn new(cmd: CommandData, pos: usize, len: usize) -> Self {
         CommandPackage{ cmd, pos, len }
     }
 
     /// 写入一个Command
-    pub fn write<W>(wr: &mut W, cmd: &Command) -> Result<()> where W: Write + ?Sized, {
+    pub fn write<W>(wr: &mut W, cmd: &CommandData) -> Result<()> where W: Write + ?Sized, {
         let mut vec = rmp_serde::encode::to_vec(cmd)?;
         vec.push(b'\0');
         wr.write(&*vec)?;
@@ -173,7 +186,7 @@ impl CommandPackage {
     /// 以reader使用两个pos读取范围之中的单个Command
     pub fn form_pos(reader : &MmapReader, start: usize, end: usize) -> Result<CommandPackage> {
         let cmd_u8 = reader.read_zone(start, end)?;
-        let cmd: Command = rmp_serde::decode::from_slice(cmd_u8)?;
+        let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
         Ok(CommandPackage::new(cmd, start, end - start))
     }
 
@@ -186,7 +199,7 @@ impl CommandPackage {
             let mut pos = 0;
             for (i, &cmd_u8) in vec_u8.iter().enumerate() {
                 let len = vec_len.get(i).unwrap();
-                let cmd: Command = rmp_serde::decode::from_slice(cmd_u8)?;
+                let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
                 vec.push(CommandPackage::new(cmd, pos, *len));
                 // 对pos进行长度自增并对占位符进行跳过
                 pos += len + 1;
@@ -199,31 +212,63 @@ impl CommandPackage {
     }
 }
 
-/// 通过目录地址加载数据并返回数据总大小
-fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<String, CommandPos>) -> Result<u64> {
-    // 流式读取将数据序列化为Command
-    let vec_package = CommandPackage::form_read_to_vec(reader)?;
-    // 初始化空间占用为0
-    let mut uncompacted = 0;
-    // 迭代数据
-    for package in vec_package {
-        match package.cmd {
-            Command::Set { key, .. } => {
-                //数据插入索引之中，成功则对空间占用值进行累加
-                if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos: package.pos, len: package.len as u64 }) {
-                    uncompacted += old_cmd.len + 1;
+impl CommandData {
+
+    /// 命令消费
+    ///
+    /// Command对象通过调用这个方法调用持久化内核进行命令交互
+    /// 参数Arc<RwLock<KvStore>>为持久化内核
+    /// 内部对该类型进行模式匹配而进行不同命令的相应操作
+    pub async fn apply(self, kv_store: &mut Arc<RwLock<dyn KVStore + Send + Sync>>) -> Result<CommandOption>{
+        match self {
+            CommandData::Set { key, value } => {
+                let mut write_guard = kv_store.write().await;
+                match write_guard.set(&key, value) {
+                    Ok(_) => Ok(CommandOption::None),
+                    Err(e) => Err(e)
                 }
             }
-            Command::Remove { key } => {
-                //索引删除该数据之中，成功则对空间占用值进行累加
-                if let Some(old_cmd) = index.remove(&key) {
-                    uncompacted += old_cmd.len + 1;
-                };
+            CommandData::Remove { key } => {
+                let mut write_guard = kv_store.write().await;
+                match write_guard.remove(&key) {
+                    Ok(_) => Ok(CommandOption::None),
+                    Err(e) => Err(e)
+                }
             }
-            _ => {}
+            CommandData::Get { key } => {
+                let read_guard = kv_store.read().await;
+                match read_guard.get(&key) {
+                    Ok(option) => {
+                        Ok(CommandOption::from(option))
+                    }
+                    Err(e) => Err(e)
+                }
+            }
         }
     }
-    Ok(uncompacted)
+
+    pub fn set(key: Vec<u8>, value: Vec<u8>) -> Self {
+        Self::Set { key, value }
+    }
+
+    pub fn remove(key: Vec<u8>) -> Self {
+        Self::Remove { key }
+    }
+
+    pub fn get(key: Vec<u8>) -> Self {
+        Self::Get { key }
+    }
+}
+
+/// Option<String>与CommandOption的转换方法
+/// 能够与CommandOption::None或CommandOption::Value进行转换
+impl From<Option<Vec<u8>>> for CommandOption {
+    fn from(item: Option<Vec<u8>>) -> Self {
+        match item {
+            None => CommandOption::None,
+            Some(vec) => CommandOption::Value(vec)
+        }
+    }
 }
 
 /// 现有日志文件序号排序

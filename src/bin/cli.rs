@@ -44,16 +44,16 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Set { key, value } => {
-            client.set(key, value).await?;
+            client.set(encode_key(key)?, encode_value_one(value)?).await?;
             print!("Done!");
         }
         Command::Remove { key } => {
-            client.remove(key).await?;
+            client.remove(encode_key(key)?).await?;
             print!("Done!");
         }
         Command::Get { key } => {
-            if let Some(value) = client.get(key).await? {
-                print!("\"{}\"", value);
+            if let Some(value) = client.get(encode_key(key)?).await? {
+                print!("\"{}\"", decode_value_one(value)?);
             } else {
                 print!("(Nil)");
             }
@@ -61,4 +61,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn encode_key(key: String) -> Result<Vec<u8>>{
+    Ok(rmp_serde::encode::to_vec(&key)?)
+}
+
+fn encode_value_one(value: String) -> Result<Vec<u8>>{
+    Ok(rmp_serde::encode::to_vec(&value)?)
+}
+
+fn decode_value_one(value: Vec<u8>) -> Result<String> {
+    Ok(rmp_serde::decode::from_slice(&*value)?)
 }
