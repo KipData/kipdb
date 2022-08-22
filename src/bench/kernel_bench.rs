@@ -57,7 +57,8 @@ fn store_name_with_test<T: KVStore>(test_name :& str) -> String {
 criterion_group!(benches, kv_benchmark);
 criterion_main!(benches);
 
+// 测试用序列化方法
 fn encode_key(key: &str) -> Result<Vec<u8>>{
-    Ok(rmp_serde::encode::to_vec(key)?)
+    Ok(bincode::serialize(key)?)
 }
 

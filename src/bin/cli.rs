@@ -64,13 +64,13 @@ async fn main() -> Result<()> {
 }
 
 fn encode_key(key: String) -> Result<Vec<u8>>{
-    Ok(rmp_serde::encode::to_vec(&key)?)
+    Ok(bincode::serialize(&key)?)
 }
 
 fn encode_value_one(value: String) -> Result<Vec<u8>>{
-    Ok(rmp_serde::encode::to_vec(&value)?)
+    Ok(bincode::serialize(&value)?)
 }
 
 fn decode_value_one(value: Vec<u8>) -> Result<String> {
-    Ok(rmp_serde::decode::from_slice(&*value)?)
+    Ok(bincode::deserialize(&*value)?)
 }
