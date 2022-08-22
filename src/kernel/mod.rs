@@ -18,8 +18,6 @@ pub mod sled_kv;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 
-const DELIMITER_BYTE: &u8 = &b'\0';
-
 const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 6;
 
 /// KV持久化内核 操作定义
@@ -68,35 +66,26 @@ impl MmapReader {
 
     /// 获取此reader的所有命令对应的字节数组段落
     /// 返回字节数组Vec与对应的字节数组长度Vec
-    pub fn get_vec_bytes(&self) -> Option<(Vec<&[u8]>,Vec<usize>)> {
-        if self.mmap[..].len() < 1 {
-            return None;
-        }
+    pub fn get_vec_bytes(&self) -> Vec<&[u8]> {
 
-        let last = self.end_index();
-
-        if last > 1 {
-            let vec_cmd_u8: Vec<&[u8]> = self.mmap[..last]
-                .split(|byte| byte.eq(DELIMITER_BYTE))
-                .collect();
-            let vec_cmd_len: Vec<usize> = vec_cmd_u8.iter()
-                .map(|item| item.len())
-                .collect();
-
-            Some((vec_cmd_u8, vec_cmd_len))
-        } else {
-            None
-        }
-    }
-
-    /// 获取有效数据的末尾位置
-    pub fn end_index(&self) -> usize {
-        for (i, &byte) in self.mmap[..].iter().enumerate() {
-            if byte.eq(DELIMITER_BYTE) && i > 0  && self.mmap[i - 1].eq(&byte) {
-                return i - 1;
+        let mut vec_cmd_u8 = Vec::new();
+        let mut last_pos = 0;
+        loop {
+            let pos = last_pos + 4;
+            let len_u8 = &self.mmap[last_pos..pos];
+            let len = usize::from(len_u8[3])
+                | usize::from(len_u8[2]) << 8
+                | usize::from(len_u8[1]) << 16
+                | usize::from(len_u8[0]) << 24;
+            if len < 1 {
+                break
             }
+
+            last_pos += len + 4;
+            vec_cmd_u8.push(&self.mmap[pos..last_pos]);
         }
-        self.mmap.len() - 1
+
+        vec_cmd_u8
     }
 }
 
@@ -125,6 +114,13 @@ impl MmapWriter {
             pos: 0,
             mmap_mut
         })
+    }
+
+    /// 获取真实数据起始位置
+    ///
+    /// 当试图以写入器的pos为数据起时基准时通过该方法跳过前4位数据长度值
+    fn get_data_pos_usize(&self) -> usize {
+        (self.pos + 4) as usize
     }
 }
 
@@ -176,11 +172,18 @@ impl CommandPackage {
     }
 
     /// 写入一个Command
-    pub fn write<W>(wr: &mut W, cmd: &CommandData) -> Result<()> where W: Write + ?Sized, {
-        let mut vec = rmp_serde::encode::to_vec(cmd)?;
-        vec.push(b'\0');
-        wr.write(&*vec)?;
-        Ok(())
+    ///
+    /// 写入完成后返回新的数据起始位置
+    pub fn write(wr: &mut MmapWriter, cmd: &CommandData) -> Result<usize> {
+        let vec = rmp_serde::encode::to_vec(cmd)?;
+        let i = vec.len();
+        let mut vec_head = vec![(i >> 24) as u8,
+                                (i >> 16) as u8,
+                                (i >> 8) as u8,
+                                i as u8 ];
+        vec_head.extend(vec);
+        wr.write(&*vec_head)?;
+        Ok(wr.get_data_pos_usize())
     }
 
     /// 以reader使用两个pos读取范围之中的单个Command
@@ -195,20 +198,16 @@ impl CommandPackage {
         // 将读入器的地址初始化为0
         reader.pos = 0;
         let mut vec: Vec<CommandPackage> = Vec::new();
-        if let Some((vec_u8, vec_len)) = reader.get_vec_bytes() {
-            let mut pos = 0;
-            for (i, &cmd_u8) in vec_u8.iter().enumerate() {
-                let len = vec_len.get(i).unwrap();
-                let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
-                vec.push(CommandPackage::new(cmd, pos, *len));
-                // 对pos进行长度自增并对占位符进行跳过
-                pos += len + 1;
-                // 对占位符进行跳过
-            }
-            Ok(vec)
-        } else {
-            Ok(Vec::new())
+        let vec_u8 = reader.get_vec_bytes();
+        let mut pos = 4;
+        for &cmd_u8 in vec_u8.iter() {
+            let len = cmd_u8.len();
+            let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
+            vec.push(CommandPackage::new(cmd, pos as usize, len));
+            // 对pos进行长度自增并对占位符进行跳过
+            pos += len + 4;
         }
+        Ok(vec)
     }
 }
 
