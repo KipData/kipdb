@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use itertools::Itertools;
 
 use crate::{error::{KvsError}};
-use crate::core::{CommandData, CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, KVStore, log_path, MmapReader, MmapWriter, new_log_file, Result, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, KVStore, log_path, MmapReader, MmapWriter, new_log_file, Result, sorted_gen_list};
 
 pub struct KvCore {
     path: PathBuf,

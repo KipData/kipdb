@@ -1,8 +1,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
-use kip_db::core::{KVStore, hash_kv::HashStore};
-use kip_db::core::sled_kv::SledStore;
-use kip_db::core::Result;
+use kip_db::kernel::{KVStore, hash_kv::HashStore};
+use kip_db::kernel::sled_kv::SledStore;
+use kip_db::kernel::Result;
 
 /// 基于Hash持久化内核的bench测试
 fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use sled::Db;
-use crate::core::KVStore;
+use crate::kernel::KVStore;
 use crate::KvsError;
 
 pub struct SledStore {
@@ -12,7 +12,7 @@ impl KVStore for SledStore {
         "Sled made in spacejam"
     }
 
-    fn open(path: impl Into<PathBuf>) -> crate::core::Result<Self> where Self: Sized {
+    fn open(path: impl Into<PathBuf>) -> crate::kernel::Result<Self> where Self: Sized {
         let db = sled::open(&path.into())?;
 
         Ok(SledStore {
@@ -20,17 +20,17 @@ impl KVStore for SledStore {
         })
     }
 
-    fn flush(&mut self) -> crate::core::Result<()> {
+    fn flush(&mut self) -> crate::kernel::Result<()> {
         self.data_base.flush()?;
         Ok(())
     }
 
-    fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> crate::core::Result<()> {
+    fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> crate::kernel::Result<()> {
         self.data_base.insert(key, value)?;
         Ok(())
     }
 
-    fn get(&self, key: &Vec<u8>) -> crate::core::Result<Option<Vec<u8>>> {
+    fn get(&self, key: &Vec<u8>) -> crate::kernel::Result<Option<Vec<u8>>> {
         match self.data_base.get(key)? {
             None => { Ok(None) }
             Some(i_vec) => {
@@ -39,7 +39,7 @@ impl KVStore for SledStore {
         }
     }
 
-    fn remove(&mut self, key: &Vec<u8>) -> crate::core::Result<()> {
+    fn remove(&mut self, key: &Vec<u8>) -> crate::kernel::Result<()> {
         match self.data_base.remove(key) {
             Ok(Some(_)) => { Ok(()) }
             Ok(None) => { Err(KvsError::KeyNotFound) }
@@ -47,7 +47,7 @@ impl KVStore for SledStore {
         }
     }
 
-    fn shut_down(&mut self) -> crate::core::Result<()> {
+    fn shut_down(&mut self) -> crate::kernel::Result<()> {
         self.data_base.flush()?;
         Ok(())
     }

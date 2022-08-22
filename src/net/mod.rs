@@ -1,7 +1,7 @@
 use crate::error::ConnectionError;
 
 use serde::{Deserialize, Serialize};
-use crate::core::CommandData;
+use crate::kernel::CommandData;
 
 mod connection;
 mod codec;

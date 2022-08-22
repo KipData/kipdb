@@ -1,5 +1,5 @@
 use tokio::net::{TcpStream, ToSocketAddrs};
-use crate::core::CommandData;
+use crate::kernel::CommandData;
 use crate::net::connection::Connection;
 use crate::net::{Result, CommandOption};
 

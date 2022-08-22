@@ -1,9 +1,9 @@
 use tempfile::TempDir;
 use walkdir::WalkDir;
-use kip_db::core::hash_kv::HashStore;
-use kip_db::core::KVStore;
-use kip_db::core::Result;
-use kip_db::core::sled_kv::SledStore;
+use kip_db::kernel::hash_kv::HashStore;
+use kip_db::kernel::KVStore;
+use kip_db::kernel::Result;
+use kip_db::kernel::sled_kv::SledStore;
 
 #[test]
 fn get_stored_value() -> Result<()> {
