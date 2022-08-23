@@ -164,13 +164,18 @@ impl KVStore for HashStore {
     /// 存入数据
     fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
         let core = &mut self.kv_core;
+        // 重复数据不写入
+        if core.index.contains_key(key) {
+            Ok(())
+        }
+
         //将数据包装为命令
         let cmd = CommandData::Set { key: key.clone(), value };
         // 获取写入器当前地址
         let pos = self.writer.get_data_pos_usize();
         let new_pos = CommandPackage::write(&mut self.writer, &cmd)?;
 
-        // 当模式匹配cmd为正确时
+        // 模式匹配获取key值
         if let CommandData::Set { key, .. } = cmd {
             // 封装为CommandPos
             let cmd_pos = CommandPos {gen: core.current_gen, pos, len: (new_pos - pos) as u64 };
