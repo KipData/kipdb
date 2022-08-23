@@ -4,7 +4,7 @@ use kip_db::kernel::{KVStore, hash_kv::HashStore};
 use kip_db::kernel::sled_kv::SledStore;
 use kip_db::kernel::Result;
 
-/// 基于Hash持久化内核的bench测试
+/// 持久化内核的bench测试
 fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
@@ -13,9 +13,11 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
     let key1: Vec<u8> = encode_key("key1").unwrap();
     let key2: Vec<u8> = encode_key("key2").unwrap();
     let key3: Vec<u8> = encode_key("key3").unwrap();
-    let key4: Vec<u8> = encode_key("key4").unwrap();
     let value1: Vec<u8> = encode_key("value1").unwrap();
 
+    let mut count = 0;
+
+    /// 用于get exist测试获取数据
     store.set(&key1, value1.clone()).unwrap();
 
     c.bench_function(&store_name_with_test::<T>("get exist"), |b|
@@ -30,15 +32,17 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
                 .unwrap()
         }));
 
+    /// 使用count进行动态的数据名变更防止数据重复而导致不写入
     c.bench_function(&store_name_with_test::<T>("set value"), |b|
         b.iter(|| {
-            store.set(&key3, value1.clone())
+            count += 1;
+            store.set(&bincode::serialize(&count).unwrap(), value1.clone())
                 .unwrap();
         }));
 
     c.bench_function(&store_name_with_test::<T>("remove not exist value"), |b|
         b.iter(|| {
-            match store.remove(&key4) {
+            match store.remove(&key3) {
                 Ok(_) => {}
                 Err(_) => {}
             };
