@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use itertools::Itertools;
 
 use crate::{error::{KvsError}};
-use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, KVStore, log_path, MmapReader, MmapWriter, new_log_file, Result, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, DEFAULT_REDUNDANCY_SIZE, KVStore, log_path, MmapReader, MmapWriter, new_log_file, Result, sorted_gen_list};
 
 pub struct KvCore {
     path: PathBuf,
@@ -12,6 +12,7 @@ pub struct KvCore {
     current_gen: u64,
     un_compacted: u64,
     compaction_threshold: u64,
+    file_size: u64
 }
 
 impl KvCore {
@@ -89,7 +90,7 @@ impl KvCore {
 
     // 新建日志文件方法参数封装
     fn new_log_file(&mut self, gen: u64) -> Result<MmapWriter> {
-        new_log_file(&self.path, gen, &mut self.readers)
+        new_log_file(&self.path, gen, &mut self.readers, self.file_size)
     }
 }
 
@@ -101,7 +102,7 @@ pub struct HashStore {
 
 impl HashStore {
     /// 通过目录路径启动数据库并指定压缩阈值
-    fn open_with_compaction_threshold(path: impl Into<PathBuf>, compaction_threshold: u64) -> Result<Self> where Self: Sized {
+    fn open_with_compaction_threshold(path: impl Into<PathBuf>, compaction_threshold: u64, redundancy_size: u64) -> Result<Self> where Self: Sized {
         // 获取地址
         let path = path.into();
         // 创建文件夹（如果他们缺失）
@@ -114,28 +115,31 @@ impl HashStore {
         // 通过path获取有序的log序名Vec
         let gen_list = sorted_gen_list(&path)?;
         // 初始化压缩阈值
-        let mut uncompacted = 0;
+        let mut un_compacted = 0;
 
         // 对读入其Map进行初始化并计算对应的压缩阈值
         for &gen in &gen_list {
             let log_file = File::open(log_path(&path, gen))?;
 
             let mut mmap_kv = MmapReader::new(&log_file)?;
-            uncompacted += load(gen, &mut mmap_kv, &mut index)? as u64;
+            un_compacted += load(gen, &mut mmap_kv, &mut index)? as u64;
             readers.insert(gen, mmap_kv);
         }
         // 获取当前最新的写入序名（之前的+1）
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
 
+        let file_size = compaction_threshold + redundancy_size;
+
         // 以最新的写入序名创建新的日志文件
-        let new_writer = new_log_file(&path, current_gen + 1, &mut readers)?;
+        let new_writer = new_log_file(&path, current_gen + 1, &mut readers, file_size)?;
         let mut kv_core = KvCore {
             path,
             readers,
             index,
             current_gen,
-            un_compacted: uncompacted,
-            compaction_threshold
+            un_compacted,
+            compaction_threshold,
+            file_size
         };
         kv_core.compact(current_gen)?;
 
@@ -153,7 +157,7 @@ impl KVStore for HashStore {
 
     // 通过文件夹路径开启一个HashKvStore
     fn open(path: impl Into<PathBuf>) -> Result<HashStore> where Self: Sized {
-        HashStore::open_with_compaction_threshold(path, DEFAULT_COMPACTION_THRESHOLD)
+        HashStore::open_with_compaction_threshold(path, DEFAULT_COMPACTION_THRESHOLD, DEFAULT_REDUNDANCY_SIZE)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -164,10 +168,6 @@ impl KVStore for HashStore {
     /// 存入数据
     fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
         let core = &mut self.kv_core;
-        // 重复数据不写入
-        if core.index.contains_key(key) {
-            Ok(())
-        }
 
         //将数据包装为命令
         let cmd = CommandData::Set { key: key.clone(), value };

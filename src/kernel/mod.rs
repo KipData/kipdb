@@ -20,6 +20,8 @@ pub type Result<T> = std::result::Result<T, KvsError>;
 
 const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 6;
 
+const DEFAULT_REDUNDANCY_SIZE: u64 = 1024 * 1024 * 1;
+
 /// KV持久化内核 操作定义
 pub trait KVStore {
     /// 获取内核名
@@ -303,7 +305,7 @@ fn log_path(dir: &Path, gen: u64) -> PathBuf {
 /// 新建日志文件
 /// 传入文件夹路径、日志名序号、读取器Map
 /// 返回对应的写入器
-fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, MmapReader>) -> Result<MmapWriter> {
+fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, MmapReader>, file_size: u64) -> Result<MmapWriter> {
     // 得到对应日志的路径
     let path = log_path(path, gen);
     // 通过路径构造写入器
@@ -312,7 +314,7 @@ fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, MmapReader>) -
         .write(true)
         .read(true)
         .open(&path)?;
-    file.set_len(DEFAULT_COMPACTION_THRESHOLD).unwrap();
+    file.set_len(file_size).unwrap();
 
     readers.insert(gen, MmapReader::new(&file)?);
     Ok(MmapWriter::new(&file)?)
