@@ -15,6 +15,7 @@ use crate::net::CommandOption;
 pub mod hash_kv;
 
 pub mod sled_kv;
+pub mod lsm;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 
@@ -65,30 +66,6 @@ impl MmapReader {
             pos: 0
         })
     }
-
-    /// 获取此reader的所有命令对应的字节数组段落
-    /// 返回字节数组Vec与对应的字节数组长度Vec
-    pub fn get_vec_bytes(&self) -> Vec<&[u8]> {
-
-        let mut vec_cmd_u8 = Vec::new();
-        let mut last_pos = 0;
-        loop {
-            let pos = last_pos + 4;
-            let len_u8 = &self.mmap[last_pos..pos];
-            let len = usize::from(len_u8[3])
-                | usize::from(len_u8[2]) << 8
-                | usize::from(len_u8[1]) << 16
-                | usize::from(len_u8[0]) << 24;
-            if len < 1 {
-                break
-            }
-
-            last_pos += len + 4;
-            vec_cmd_u8.push(&self.mmap[pos..last_pos]);
-        }
-
-        vec_cmd_u8
-    }
 }
 
 impl Read for MmapReader {
@@ -118,15 +95,17 @@ impl MmapWriter {
         })
     }
 
-    /// 获取真实数据起始位置
+    /// 获取预写入数据起始位置
     ///
     /// 当试图以写入器的pos为数据起时基准时通过该方法跳过前4位数据长度值
-    fn get_data_pos_usize(&self) -> usize {
+    fn get_data_pos(&self) -> usize {
         (self.pos + 4) as usize
     }
+
 }
 
 impl Write for MmapWriter {
+
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let last_pos = self.pos as usize;
         let len = (&mut self.mmap_mut[last_pos..]).write(buf)?;
@@ -185,7 +164,7 @@ impl CommandPackage {
                                 i as u8 ];
         vec_head.extend(vec);
         wr.write(&*vec_head)?;
-        Ok(wr.get_data_pos_usize())
+        Ok(wr.get_data_pos())
     }
 
     /// 以reader使用两个pos读取范围之中的单个Command
@@ -200,7 +179,7 @@ impl CommandPackage {
         // 将读入器的地址初始化为0
         reader.pos = 0;
         let mut vec: Vec<CommandPackage> = Vec::new();
-        let vec_u8 = reader.get_vec_bytes();
+        let vec_u8 = Self::get_vec_bytes(reader);
         let mut pos = 4;
         for &cmd_u8 in vec_u8.iter() {
             let len = cmd_u8.len();
@@ -210,6 +189,30 @@ impl CommandPackage {
             pos += len + 4;
         }
         Ok(vec)
+    }
+
+    /// 获取此reader的所有命令对应的字节数组段落
+    /// 返回字节数组Vec与对应的字节数组长度Vec
+    pub fn get_vec_bytes(reader: &MmapReader) -> Vec<&[u8]> {
+
+        let mut vec_cmd_u8 = Vec::new();
+        let mut last_pos = 0;
+        loop {
+            let pos = last_pos + 4;
+            let len_u8 = &reader.mmap[last_pos..pos];
+            let len = usize::from(len_u8[3])
+                | usize::from(len_u8[2]) << 8
+                | usize::from(len_u8[1]) << 16
+                | usize::from(len_u8[0]) << 24;
+            if len < 1 {
+                break
+            }
+
+            last_pos += len + 4;
+            vec_cmd_u8.push(&reader.mmap[pos..last_pos]);
+        }
+
+        vec_cmd_u8
     }
 }
 

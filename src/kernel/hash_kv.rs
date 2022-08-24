@@ -45,7 +45,7 @@ impl KvCore {
             // 抛弃超过文件大小且数据写入时间最久的数据
             for (i, cmd_pos) in vec_cmd_pos.iter_mut().enumerate() {
                 if i >= skip_index {
-                    let pos = compaction_writer.get_data_pos_usize();
+                    let pos = compaction_writer.get_data_pos();
                     let len = cmd_pos.len as usize;
 
                     let reader = self.readers.get_mut(&cmd_pos.gen)
@@ -172,7 +172,7 @@ impl KVStore for HashStore {
         //将数据包装为命令
         let cmd = CommandData::Set { key: key.clone(), value };
         // 获取写入器当前地址
-        let pos = self.writer.get_data_pos_usize();
+        let pos = self.writer.get_data_pos();
         let new_pos = CommandPackage::write(&mut self.writer, &cmd)?;
 
         // 模式匹配获取key值
