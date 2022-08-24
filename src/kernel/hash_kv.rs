@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use itertools::Itertools;
 
 use crate::{error::{KvsError}};
-use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, DEFAULT_REDUNDANCY_SIZE, KVStore, log_path, MmapReader, MmapWriter, new_log_file, Result, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_COMPACTION_THRESHOLD, DEFAULT_REDUNDANCY_SIZE, KVStore, log_path, MmapReader, MmapWriter, new_log_file_with_gen, Result, sorted_gen_list};
 
 pub struct KvCore {
     path: PathBuf,
@@ -45,7 +45,7 @@ impl KvCore {
             // 抛弃超过文件大小且数据写入时间最久的数据
             for (i, cmd_pos) in vec_cmd_pos.iter_mut().enumerate() {
                 if i >= skip_index {
-                    let pos = compaction_writer.get_data_pos();
+                    let pos = compaction_writer.get_cmd_data_pos();
                     let len = cmd_pos.len as usize;
 
                     let reader = self.readers.get_mut(&cmd_pos.gen)
@@ -90,7 +90,9 @@ impl KvCore {
 
     // 新建日志文件方法参数封装
     fn new_log_file(&mut self, gen: u64) -> Result<MmapWriter> {
-        new_log_file(&self.path, gen, &mut self.readers, self.file_size)
+        let (gen, writer, reader) = new_log_file_with_gen(&self.path, gen, self.file_size)?;
+        self.readers.insert(gen, reader);
+        Ok(writer)
     }
 }
 
@@ -127,11 +129,12 @@ impl HashStore {
         }
         // 获取当前最新的写入序名（之前的+1）
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
-
         let file_size = compaction_threshold + redundancy_size;
 
         // 以最新的写入序名创建新的日志文件
-        let new_writer = new_log_file(&path, current_gen + 1, &mut readers, file_size)?;
+        let (gen, writer, reader) = new_log_file_with_gen(&path, current_gen + 1, file_size)?;
+        readers.insert(gen, reader);
+
         let mut kv_core = KvCore {
             path,
             readers,
@@ -145,7 +148,7 @@ impl HashStore {
 
         Ok(HashStore {
             kv_core,
-            writer: new_writer
+            writer
         })
     }
 }
@@ -172,7 +175,7 @@ impl KVStore for HashStore {
         //将数据包装为命令
         let cmd = CommandData::Set { key: key.clone(), value };
         // 获取写入器当前地址
-        let pos = self.writer.get_data_pos();
+        let pos = self.writer.get_cmd_data_pos();
         let new_pos = CommandPackage::write(&mut self.writer, &cmd)?;
 
         // 模式匹配获取key值
@@ -260,24 +263,24 @@ fn load(gen: u64, reader: &mut MmapReader, index: &mut HashMap<Vec<u8>, CommandP
     // 流式读取将数据序列化为Command
     let vec_package = CommandPackage::form_read_to_vec(reader)?;
     // 初始化空间占用为0
-    let mut uncompacted = 0;
+    let mut un_compacted = 0;
     // 迭代数据
     for package in vec_package {
         match package.cmd {
             CommandData::Set { key, .. } => {
                 //数据插入索引之中，成功则对空间占用值进行累加
                 if let Some(old_cmd) = index.insert(key, CommandPos {gen, pos: package.pos, len: package.len as u64 }) {
-                    uncompacted += old_cmd.len + 1;
+                    un_compacted += old_cmd.len + 1;
                 }
             }
             CommandData::Remove { key } => {
                 //索引删除该数据之中，成功则对空间占用值进行累加
                 if let Some(old_cmd) = index.remove(&key) {
-                    uncompacted += old_cmd.len + 1;
+                    un_compacted += old_cmd.len + 1;
                 };
             }
             _ => {}
         }
     }
-    Ok(uncompacted)
+    Ok(un_compacted)
 }

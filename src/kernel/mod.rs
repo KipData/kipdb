@@ -1,5 +1,4 @@
 use std::{io::{Write, self}, path::PathBuf, fs::File, fs};
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -98,10 +97,14 @@ impl MmapWriter {
     /// 获取预写入数据起始位置
     ///
     /// 当试图以写入器的pos为数据起时基准时通过该方法跳过前4位数据长度值
-    fn get_data_pos(&self) -> usize {
+    fn get_cmd_data_pos(&self) -> usize {
         (self.pos + 4) as usize
     }
 
+    /// 获取真实写入位置
+    fn last_pos(&self) -> usize {
+        self.pos as usize
+    }
 }
 
 impl Write for MmapWriter {
@@ -147,6 +150,14 @@ pub enum CommandData {
 }
 
 impl CommandPackage {
+
+    /// 快进四位
+    ///
+    /// 用于写入除CommandData时，分隔数据使前端CommandData能够被连续识别
+    fn end_tag(writer: &mut MmapWriter) {
+        writer.pos += 4;
+    }
+
     /// 实例化一个Command
     pub fn new(cmd: CommandData, pos: usize, len: usize) -> Self {
         CommandPackage{ cmd, pos, len }
@@ -164,7 +175,7 @@ impl CommandPackage {
                                 i as u8 ];
         vec_head.extend(vec);
         wr.write(&*vec_head)?;
-        Ok(wr.get_data_pos())
+        Ok(wr.get_cmd_data_pos())
     }
 
     /// 以reader使用两个pos读取范围之中的单个Command
@@ -175,7 +186,7 @@ impl CommandPackage {
     }
 
     /// 获取reader之中所有的Command
-    pub fn form_read_to_vec(reader : &mut MmapReader) -> Result<Vec<CommandPackage>>{
+    pub fn form_read_to_vec(reader : &mut MmapReader) -> Result<Vec<CommandPackage>> {
         // 将读入器的地址初始化为0
         reader.pos = 0;
         let mut vec: Vec<CommandPackage> = Vec::new();
@@ -190,6 +201,10 @@ impl CommandPackage {
         }
         Ok(vec)
     }
+
+    // pub fn find_cmd_with_bytes(bytes: &[u8]) -> Result<Option<CommandData>> {
+    //
+    // }
 
     /// 获取此reader的所有命令对应的字节数组段落
     /// 返回字节数组Vec与对应的字节数组长度Vec
@@ -214,9 +229,34 @@ impl CommandPackage {
 
         vec_cmd_u8
     }
+
+    /// 获取此reader的所有命令对应的字节数组段落的最末尾位置
+    pub fn bytes_last_pos(reader: &MmapReader) -> usize {
+        let mut last_pos = 0;
+        loop {
+            let pos = last_pos + 4;
+            let len_u8 = &reader.mmap[last_pos..pos];
+            let len = usize::from(len_u8[3])
+                | usize::from(len_u8[2]) << 8
+                | usize::from(len_u8[1]) << 16
+                | usize::from(len_u8[0]) << 24;
+            if len < 1 {
+                return last_pos;
+            }
+            last_pos += len + 4;
+        }
+    }
 }
 
 impl CommandData {
+
+    pub fn get_key(&self) -> Vec<u8> {
+        match self {
+            CommandData::Set { key, .. } => { key }
+            CommandData::Remove { key } => { key }
+            CommandData::Get { key } => { key }
+        }.clone()
+    }
 
     /// 命令消费
     ///
@@ -305,12 +345,21 @@ fn log_path(dir: &Path, gen: u64) -> PathBuf {
     dir.join(format!("{}.log", gen))
 }
 
-/// 新建日志文件
-/// 传入文件夹路径、日志名序号、读取器Map
-/// 返回对应的写入器
-fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, MmapReader>, file_size: u64) -> Result<MmapWriter> {
+/// 以序号新建日志文件
+/// 传入文件夹路径、日志名序号与文件指定大小
+/// 返回对应的日志名序号、写入器、读取器
+fn new_log_file_with_gen(path: &Path, gen: u64, file_size: u64) -> Result<(u64, MmapWriter, MmapReader)> {
     // 得到对应日志的路径
     let path = log_path(path, gen);
+    let (writer, reader) = new_log_file(&path, file_size)?;
+
+    Ok((gen, writer, reader))
+}
+
+/// 直接使用路径进行日志新建
+/// 传入文件路径与文件指定大小
+/// 返回对应的写入器和读取器
+fn new_log_file(path: &Path, file_size: u64) -> Result<(MmapWriter, MmapReader)> {
     // 通过路径构造写入器
     let file = OpenOptions::new()
         .create(true)
@@ -319,6 +368,5 @@ fn new_log_file(path: &Path, gen: u64, readers: &mut HashMap<u64, MmapReader>, f
         .open(&path)?;
     file.set_len(file_size).unwrap();
 
-    readers.insert(gen, MmapReader::new(&file)?);
-    Ok(MmapWriter::new(&file)?)
+    Ok((MmapWriter::new(&file)?, MmapReader::new(&file)?))
 }

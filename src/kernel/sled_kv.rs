@@ -52,3 +52,9 @@ impl KVStore for SledStore {
         Ok(())
     }
 }
+
+impl Drop for SledStore {
+    fn drop(&mut self) {
+        self.shut_down().unwrap();
+    }
+}
