@@ -1,5 +1,6 @@
 use std::{io::Write, path::PathBuf, collections::HashMap, fs::{File, self}};
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use itertools::Itertools;
 
 use crate::{error::{KvsError}};
@@ -278,14 +279,18 @@ impl KvCore {
             // 将所有写入刷入压缩文件中
             compaction_writer.flush()?;
             // 遍历过滤出小于压缩文件序号的文件号名收集为过期Vec
-            let stale_gens: Vec<_> = self.readers.keys()
+            let stale_gens: HashSet<u64> = self.readers.keys()
                 .filter(|&&gen| gen < compaction_gen)
-                .cloned().collect();
+                .cloned()
+                .collect();
+
+            // 清除索引中过期Key
+            self.index.retain(|k, v| !stale_gens.contains(&v.gen));
 
             // 遍历过期Vec对数据进行旧文件删除
-            for stale_gen in stale_gens {
+            for stale_gen in stale_gens.iter() {
                 self.readers.remove(&stale_gen);
-                fs::remove_file(log_path(&self.path, stale_gen))?;
+                fs::remove_file(log_path(&self.path, *stale_gen))?;
             }
             // 将压缩阈值调整为为压缩后大小
             self.un_compacted += compaction_writer.pos;
