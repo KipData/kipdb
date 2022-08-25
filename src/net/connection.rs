@@ -4,12 +4,12 @@ use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 use crate::error::ConnectionError;
-use crate::net::codec::CommandCodec;
+use crate::net::codec::NetCommandCodec;
 use crate::net::Result;
 use crate::net::CommandOption;
 
-type CommandFramedStream = SplitStream<Framed<TcpStream, CommandCodec>>;
-type CommandFramedSink = SplitSink<Framed<TcpStream, CommandCodec>, CommandOption>;
+type CommandFramedStream = SplitStream<Framed<TcpStream, NetCommandCodec>>;
+type CommandFramedSink = SplitSink<Framed<TcpStream, NetCommandCodec>, CommandOption>;
 
 pub struct Connection {
     writer: CommandFramedSink,
@@ -19,7 +19,7 @@ pub struct Connection {
 impl Connection {
     /// 新建连接
     pub fn new(stream: TcpStream) -> Connection {
-        let framed = Framed::new(stream, CommandCodec::new());
+        let framed = Framed::new(stream, NetCommandCodec::new());
         let (writer, reader) = framed.split::<CommandOption>();
         Connection{
             writer,

@@ -18,10 +18,6 @@ pub mod lsm;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 
-const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 6;
-
-const DEFAULT_REDUNDANCY_SIZE: u64 = 1024 * 1024 * 1;
-
 /// KV持久化内核 操作定义
 pub trait KVStore {
     /// 获取内核名
@@ -185,12 +181,10 @@ impl CommandPackage {
         Ok(CommandPackage::new(cmd, start, end - start))
     }
 
-    /// 获取reader之中所有的Command
-    pub fn form_read_to_vec(reader : &mut MmapReader) -> Result<Vec<CommandPackage>> {
-        // 将读入器的地址初始化为0
-        reader.pos = 0;
+    /// 获取zone之中所有的Command
+    pub fn form_zone_to_vec(zone: &[u8]) -> Result<Vec<CommandPackage>> {
         let mut vec: Vec<CommandPackage> = Vec::new();
-        let vec_u8 = Self::get_vec_bytes(reader);
+        let vec_u8 = Self::get_vec_bytes(zone);
         let mut pos = 4;
         for &cmd_u8 in vec_u8.iter() {
             let len = cmd_u8.len();
@@ -202,19 +196,40 @@ impl CommandPackage {
         Ok(vec)
     }
 
-    // pub fn find_cmd_with_bytes(bytes: &[u8]) -> Result<Option<CommandData>> {
-    //
-    // }
+    /// 从该数据区间中找到对应Key的CommandData
+    pub fn find_key_with_zone(zone: &[u8], key: &Vec<u8>) -> Result<Option<CommandPackage>> {
+        let vec_u8 = Self::get_vec_bytes(zone);
+        let mut pos = 4;
+        for &cmd_u8 in vec_u8.iter() {
+            let len = cmd_u8.len();
+            let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
+            if cmd.get_key().eq(key) {
+                return Ok(Some(CommandPackage::new(cmd, pos as usize, len)));
+            }
+            // 对pos进行长度自增并对占位符进行跳过
+            pos += len + 4;
+        }
+        Ok(None)
+    }
+
+    /// 获取reader之中所有的Command
+    pub fn form_read_to_vec(reader: &MmapReader) -> Result<Vec<CommandPackage>> {
+        Self::form_zone_to_vec(&reader.mmap[..])
+    }
 
     /// 获取此reader的所有命令对应的字节数组段落
     /// 返回字节数组Vec与对应的字节数组长度Vec
-    pub fn get_vec_bytes(reader: &MmapReader) -> Vec<&[u8]> {
+    pub fn get_vec_bytes(zone: &[u8]) -> Vec<&[u8]> {
 
         let mut vec_cmd_u8 = Vec::new();
         let mut last_pos = 0;
+        if zone.len() < 4 {
+            return vec_cmd_u8;
+        }
+
         loop {
             let pos = last_pos + 4;
-            let len_u8 = &reader.mmap[last_pos..pos];
+            let len_u8 = &zone[last_pos..pos];
             let len = usize::from(len_u8[3])
                 | usize::from(len_u8[2]) << 8
                 | usize::from(len_u8[1]) << 16
@@ -224,7 +239,7 @@ impl CommandPackage {
             }
 
             last_pos += len + 4;
-            vec_cmd_u8.push(&reader.mmap[pos..last_pos]);
+            vec_cmd_u8.push(&zone[pos..last_pos]);
         }
 
         vec_cmd_u8

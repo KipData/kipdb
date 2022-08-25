@@ -2,7 +2,8 @@ use std::io::Write;
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandPackage, MmapReader, MmapWriter, Result};
 
-pub mod ss_table;
+pub(crate) mod ss_table;
+pub mod lsm_kv;
 
 const TABLE_META_INFO_SIZE: usize = 42;
 
@@ -34,7 +35,7 @@ impl MetaInfo {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Position {
     start: usize,
     len: usize

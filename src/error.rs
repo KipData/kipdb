@@ -23,6 +23,11 @@ pub enum KvsError {
     #[fail(display = "{}", _0)]
     Sled(#[cause] sled::Error),
 
+    /// 正常情况wal在内存中存在索引则表示硬盘中存在有对应的数据
+    /// 而错误则是内存存在索引却在硬盘中不存在这个数据
+    #[fail(display = "WAL log load error")]
+    WalLoadError,
+
     /// Unexpected command type error.
     /// It indicated a corrupted log or a program bug.
     #[fail(display = "Unexpected command type")]
