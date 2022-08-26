@@ -26,7 +26,6 @@ impl SsTable {
     /// 直接构建SSTable
     ///
     /// 使用路径与分区大小创建一个空SSTable
-    #[warn(dead_code)]
     pub(crate) fn new(path: impl Into<PathBuf>, gen: u64, part_size: u64, file_size: u64) -> Result<Self> {
         // 获取地址
         let path = path.into();
@@ -54,7 +53,7 @@ impl SsTable {
         let path = path.into();
         let (gen, writer, reader) = new_log_file_with_gen(&path, gen, file_size)?;
         let info = MetaInfo::read_to_file(&reader)?;
-        info!("[SsTable][restore_from_file][TableMetaInfo]: {:?}", info);
+        info!("[SsTable: {}][restore_from_file][TableMetaInfo]: {:?}", gen, info);
 
         let index_pos = info.data_len as usize;
         let index_last_pos = info.index_len as usize + index_pos;
@@ -113,6 +112,7 @@ impl SsTable {
         };
         info.write_to_file(&mut writer)?;
 
+        info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, info);
         Ok(SsTable {
             _meta_info: info,
             sparse_index,
@@ -149,6 +149,7 @@ impl SsTable {
         } else {
             return Ok(None);
         }
+        info!("[SsTable: {}][query][data_zone]: {} to {}", self._gen, start_pos, _end_pos);
         // 获取该区间段的数据
         let zone = self.reader.read_zone(start_pos, _end_pos)?;
 
@@ -169,8 +170,10 @@ impl SsTable {
         // 获取数据段的长度
         let part_len = writer.last_pos() - start_pos;
 
+        info!("[write_data_part][data_zone]: {} to {}", start_pos, part_len);
         // 获取该段首位数据
         if let Some(cmd) = vec_cmd_data.first() {
+            info!("[write_data_part][sparse_index]: index of the part: {:?}", cmd.get_key());
             sparse_index.insert(cmd.get_key_clone(), Position { start: start_pos, len: part_len });
         }
 
