@@ -174,9 +174,6 @@ impl KVStore for HashStore {
         }
     }
 
-    fn shut_down(&mut self) -> Result<()> {
-        Ok(self.writer.flush()?)
-    }
 }
 
 impl HashStore {
@@ -192,7 +189,7 @@ impl HashStore {
 
 impl Drop for HashStore {
     fn drop(&mut self) {
-        self.shut_down().unwrap();
+        self.writer.flush().unwrap();
     }
 }
 

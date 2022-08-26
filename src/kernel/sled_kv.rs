@@ -46,15 +46,10 @@ impl KVStore for SledStore {
             Err(e) => { Err(KvsError::Sled(e)) }
         }
     }
-
-    fn shut_down(&mut self) -> crate::kernel::Result<()> {
-        self.data_base.flush()?;
-        Ok(())
-    }
 }
 
 impl Drop for SledStore {
     fn drop(&mut self) {
-        self.shut_down().unwrap();
+        self.data_base.flush().unwrap();
     }
 }

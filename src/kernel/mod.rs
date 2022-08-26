@@ -37,9 +37,6 @@ pub trait KVStore {
 
     /// 通过键删除键值对
     fn remove(&mut self, key: &Vec<u8>) -> Result<()>;
-
-    /// 持久化内核关闭处理
-    fn shut_down(&mut self) ->Result<()>;
 }
 
 /// 基于mmap的读取器

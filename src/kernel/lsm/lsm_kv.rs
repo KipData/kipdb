@@ -94,11 +94,6 @@ impl KVStore for LsmStore {
             Some(_) => { self.change_with_cmd(CommandData::Remove { key: key.clone() }) }
         }
     }
-
-    fn shut_down(&mut self) -> Result<()> {
-        self.store_to_ss_table()?;
-        Ok(self.wal.flush()?)
-    }
 }
 
 impl LsmStore {
@@ -233,7 +228,8 @@ impl LsmStore {
 
 impl Drop for LsmStore {
     fn drop(&mut self) {
-        self.shut_down().unwrap()
+        self.wal.flush().unwrap();
+        self.store_to_ss_table().unwrap();
     }
 }
 

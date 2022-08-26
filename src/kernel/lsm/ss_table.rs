@@ -26,6 +26,7 @@ impl SsTable {
     /// 直接构建SSTable
     ///
     /// 使用路径与分区大小创建一个空SSTable
+    #[warn(dead_code)]
     pub(crate) fn new(path: impl Into<PathBuf>, gen: u64, part_size: u64, file_size: u64) -> Result<Self> {
         // 获取地址
         let path = path.into();

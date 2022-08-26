@@ -60,10 +60,6 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) {
             }
         }
         _ = shutdown => {
-            sync_store.write()
-            .await
-            .shut_down()
-            .expect("persistence exception");
             info!("shutting down");
         }
     }
