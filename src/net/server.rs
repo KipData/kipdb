@@ -56,18 +56,18 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) {
     tokio::select! {
         res = server.run() => {
             if let Err(err) = res {
-                error!(cause = %err, "failed to accept");
+                error!(cause = %err, "[Listener][Failed To Accept]");
             }
         }
         _ = shutdown => {
-            info!("shutting down");
+            info!("[Listener][Shutting Down]");
         }
     }
 }
 
 impl Listener {
     async fn run(&mut self) -> Result<()> {
-        info!("accepting inbound connections");
+        info!("[Listener][Inbound Connections]");
         loop {
             let permit = self
                 .limit_connections
@@ -88,18 +88,14 @@ impl Listener {
             };
 
             tokio::spawn(async move {
-                info!("#### new connection! ####");
                 let id = snowflake::ProcessUniqueId::new();
-                info!("id: {}", &id);
-                info!("ip addr: {}", &addr);
+                info!("[Listener][New Connection][ID: {}][Ip Addr]: {}", &id, &addr);
                 let start = Instant::now();
                 if let Err(err) = handler.run().await {
-                    error!(cause = ?err,"connection error");
+                    error!(cause = ?err,"[Listener][Handler Running Error]");
                 }
-                let duration = start.elapsed();
                 drop(permit);
-                info!("time: {:?}", duration);
-                info!("#### connection drop! ####")
+                info!("[Listener][Connection Drop][Time: {:?}]", start.elapsed());
             });
 
         }
