@@ -5,9 +5,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio::time;
 use tracing::{debug, error, info};
-use crate::kernel::hash_kv::HashStore;
 use crate::kernel::KVStore;
 use crate::error::ConnectionError;
+use crate::kernel::lsm::lsm_kv::LsmStore;
+use crate::KvsError;
 use crate::net::connection::Connection;
 use crate::net::Result;
 use crate::net::CommandOption;
@@ -37,7 +38,7 @@ struct Handler {
 }
 
 pub async fn run(listener: TcpListener, shutdown: impl Future) {
-    let store = HashStore::open("./data").unwrap();
+    let store = LsmStore::open("./data").unwrap();
     let (notify_shutdown_sender, _) = broadcast::channel(1);
     let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
@@ -148,7 +149,15 @@ impl Handler {
                 CommandOption::Cmd(cmd) => {
                     debug!(?cmd);
 
-                    let option = cmd.apply(&mut self.kv_store).await.unwrap();
+                    let option = match cmd.apply(&mut self.kv_store).await {
+                        Ok(option) => option,
+                        Err(err) => {
+                            match err {
+                                KvsError::KeyNotFound => { Ok(CommandOption::None) },
+                                _ => Err(err)
+                            }.unwrap()
+                        }
+                    };
 
                     self.connection.write(option).await?;
 
