@@ -147,10 +147,18 @@ pub enum CommandData {
 
 impl CommandPackage {
 
+    pub fn encode(cmd: &CommandData) -> Result<Vec<u8>> {
+        Ok(rmp_serde::to_vec(cmd)?)
+    }
+
+    pub fn decode(vec: &Vec<u8>) -> Result<CommandData> {
+        Ok(rmp_serde::from_slice(vec)?)
+    }
+
     /// 快进四位
     ///
     /// 用于写入除CommandData时，分隔数据使前端CommandData能够被连续识别
-    fn end_tag(writer: &mut MmapWriter) {
+    pub fn end_tag(writer: &mut MmapWriter) {
         writer.pos += 4;
     }
 
@@ -229,6 +237,9 @@ impl CommandPackage {
 
         loop {
             let pos = last_pos + 4;
+            if pos >= zone.len() {
+                break
+            }
             let len_u8 = &zone[last_pos..pos];
             let len = usize::from(len_u8[3])
                 | usize::from(len_u8[2]) << 8
@@ -256,7 +267,7 @@ impl CommandPackage {
                 | usize::from(len_u8[1]) << 16
                 | usize::from(len_u8[0]) << 24;
             if len < 1 {
-                return last_pos;
+                return last_pos + 4;
             }
             last_pos += len + 4;
         }
@@ -265,12 +276,42 @@ impl CommandPackage {
 
 impl CommandData {
 
-    pub fn get_key(&self) -> Vec<u8> {
+    pub fn get_key(&self) -> &Vec<u8> {
+        match self {
+            CommandData::Set { key, .. } => { key }
+            CommandData::Remove { key } => { key }
+            CommandData::Get { key } => { key }
+        }
+    }
+
+    pub fn get_key_clone(&self) -> Vec<u8> {
         match self {
             CommandData::Set { key, .. } => { key }
             CommandData::Remove { key } => { key }
             CommandData::Get { key } => { key }
         }.clone()
+    }
+
+    pub fn get_key_owner(self) -> Vec<u8> {
+        match self {
+            CommandData::Set { key, .. } => { key }
+            CommandData::Remove { key } => { key }
+            CommandData::Get { key } => { key }
+        }
+    }
+
+    pub fn get_value(&self) -> Option<&Vec<u8>> {
+        match self {
+            CommandData::Set { value, .. } => { Some(value) }
+            _ => { None }
+        }
+    }
+
+    pub fn get_value_owner(self) -> Option<Vec<u8>> {
+        match self {
+            CommandData::Set { value, .. } => { Some(value) }
+            _ => { None }
+        }
     }
 
     /// 命令消费

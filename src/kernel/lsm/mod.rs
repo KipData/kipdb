@@ -5,7 +5,8 @@ use crate::kernel::{CommandPackage, MmapReader, MmapWriter, Result};
 pub(crate) mod ss_table;
 pub mod lsm_kv;
 
-const TABLE_META_INFO_SIZE: usize = 42;
+// META_INFO序列化长度定长
+const TABLE_META_INFO_SIZE: usize = 32;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MetaInfo {
@@ -28,10 +29,6 @@ impl MetaInfo {
         let table_meta_info = reader.read_zone(start_pos, last_pos)?;
 
         Ok(bincode::deserialize(table_meta_info)?)
-    }
-
-    fn new(version: u64, data_len: u64, index_len: u64, part_size: u64) -> Self {
-        Self { version, data_len, index_len, part_size }
     }
 }
 

@@ -10,7 +10,7 @@ use crate::kernel::Result;
 /// SSTable
 pub(crate) struct SsTable {
     // 表索引信息
-    meta_info: MetaInfo,
+    _meta_info: MetaInfo,
     // 字段稀疏索引
     sparse_index: BTreeMap<Vec<u8>, Position>,
     // 读取器
@@ -18,7 +18,7 @@ pub(crate) struct SsTable {
     // 写入器
     writer: MmapWriter,
     // 文件路径
-    gen: u64
+    _gen: u64
 }
 
 impl SsTable {
@@ -32,7 +32,7 @@ impl SsTable {
         let (gen, writer, reader) = new_log_file_with_gen(&path, gen, file_size)?;
 
         Ok(SsTable {
-            meta_info: MetaInfo{
+            _meta_info: MetaInfo{
                 version: 0,
                 data_len: 0,
                 index_len: 0,
@@ -41,7 +41,7 @@ impl SsTable {
             sparse_index: BTreeMap::new(),
             reader,
             writer,
-            gen
+            _gen: gen
         })
     }
 
@@ -58,27 +58,30 @@ impl SsTable {
         let index_pos = info.data_len as usize;
         let index_last_pos = info.index_len as usize + index_pos;
 
-        let arr_u8 = reader.read_zone(index_pos, index_last_pos)?;
-
+        let package = CommandPackage::form_pos(&reader, index_pos, index_last_pos)?;
+        let sparse_index = rmp_serde::from_slice(&package.cmd.get_key())?;
         Ok(SsTable {
-            meta_info: info,
-            sparse_index: rmp_serde::from_slice(arr_u8)?,
+            _meta_info: info,
+            sparse_index,
             reader,
             writer,
-            gen
+            _gen: gen
         })
+
+
     }
 
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) fn create_form_index(path: impl Into<PathBuf>, gen: u64, file_size: u64, part_size: u64, mem_table: BTreeMap<Vec<u8>, CommandData>) -> Result<Self> {
+    pub(crate) fn create_form_index(path: impl Into<PathBuf>, gen: u64, file_size: u64, part_size: u64, mem_table: &BTreeMap<Vec<u8>, CommandData>) -> Result<Self> {
         // 获取地址
         let path = path.into();
         let (gen, mut writer, reader) = new_log_file_with_gen(&path, gen, file_size)?;
         let mut vec_cmd = Vec::new();
         let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
 
+        // 将数据按part_size一组分段存入
         for cmd_data in mem_table.values() {
             vec_cmd.push(cmd_data);
             if vec_cmd.len() >= part_size as usize {
@@ -89,12 +92,17 @@ impl SsTable {
         if !vec_cmd.is_empty() {
             Self::write_data_part(&mut vec_cmd, &mut writer, &mut sparse_index)?;
         }
+
+        // 开始对稀疏索引进行伪装并断点处理
+        // 获取指令数据段的数据长度
+        // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
+        let data_part_len = writer.get_cmd_data_pos();
+        // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
+        CommandPackage::write(&mut writer, &CommandData::Get { key: rmp_serde::to_vec(&sparse_index)? })?;
+        let sparse_index_len = writer.get_cmd_data_pos() - data_part_len;
         // 进行连续数据的断点处理，让后面写入的数据不影响前段数据的读取
         CommandPackage::end_tag(&mut writer);
-        // 获取指令数据段的数据长度
-        let data_part_len = writer.last_pos();
-        writer.write(&*rmp_serde::to_vec(&sparse_index)?)?;
-        let sparse_index_len = writer.last_pos() - data_part_len;
+
         // 将以上持久化信息封装为MetaInfo
         let info = MetaInfo{
             version: 0,
@@ -105,16 +113,16 @@ impl SsTable {
         info.write_to_file(&mut writer)?;
 
         Ok(SsTable {
-            meta_info: info,
+            _meta_info: info,
             sparse_index,
             reader,
             writer,
-            gen
+            _gen: gen
         })
     }
 
     /// 从该sstable中获取指定key对应的CommandData
-    pub(crate) fn query(&self, key: Vec<u8>) -> Result<Option<CommandData>> {
+    pub(crate) fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
         let empty_position = &Position::new(0, 0);
         // 第一位是第一个大于的，第二位是最后一个小于的
         let mut position_arr = (empty_position, empty_position);
@@ -127,21 +135,21 @@ impl SsTable {
             }
         }
 
-        let mut len = 0;
+        let mut _end_pos = 0;
         let first_big = position_arr.0;
         let last_small = position_arr.1;
 
         // 找出数据可能存在的区间
         let start_pos = first_big.start;
-        if first_big == last_small && first_big != empty_position {
-            len = first_big.len;
+        if first_big != empty_position {
+            _end_pos = first_big.len + start_pos;
         } else if last_small != empty_position {
-            len = last_small.start + last_small.len - start_pos;
+            _end_pos = last_small.start + last_small.len;
         } else {
-            return Ok(None)
+            return Ok(None);
         }
         // 获取该区间段的数据
-        let zone = self.reader.read_zone(start_pos, start_pos + len)?;
+        let zone = self.reader.read_zone(start_pos, _end_pos)?;
 
         // 返回该区间段对应的数据结果
         Ok(if let Some(cmd_p) = CommandPackage::find_key_with_zone(zone, &key)? {
@@ -162,7 +170,7 @@ impl SsTable {
 
         // 获取该段首位数据
         if let Some(cmd) = vec_cmd_data.first() {
-            sparse_index.insert(cmd.get_key(), Position { start: start_pos, len: part_len });
+            sparse_index.insert(cmd.get_key_clone(), Position { start: start_pos, len: part_len });
         }
 
         vec_cmd_data.clear();

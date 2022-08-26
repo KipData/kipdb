@@ -285,7 +285,7 @@ impl KvCore {
                 .collect();
 
             // 清除索引中过期Key
-            self.index.retain(|k, v| !stale_gens.contains(&v.gen));
+            self.index.retain(|_, v| !stale_gens.contains(&v.gen));
 
             // 遍历过期Vec对数据进行旧文件删除
             for stale_gen in stale_gens.iter() {
