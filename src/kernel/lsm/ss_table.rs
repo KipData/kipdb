@@ -1,11 +1,16 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
+use chrono::Local;
+use itertools::Itertools;
 use tracing::info;
 use crate::kernel::{CommandData, CommandPackage, MmapReader, MmapWriter, new_log_file_with_gen};
 use crate::kernel::lsm::{Position, MetaInfo};
+use crate::kernel::lsm::lsm_kv::{Config, leve_vec_insert, LevelVec, SsTableMap};
 use crate::kernel::Result;
+
+pub(crate) const LEVEL_0: usize = 0;
 
 /// SSTable
 pub(crate) struct SsTable {
@@ -33,6 +38,7 @@ impl SsTable {
 
         Ok(SsTable {
             _meta_info: MetaInfo{
+                level: 0,
                 version: 0,
                 data_len: 0,
                 index_len: 0,
@@ -74,9 +80,11 @@ impl SsTable {
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) fn create_form_index(path: impl Into<PathBuf>, gen: u64, file_size: u64, part_size: u64, mem_table: &BTreeMap<Vec<u8>, CommandData>) -> Result<Self> {
+    pub(crate) fn create_form_immutable_table(config: Config, gen: u64, mem_table: &BTreeMap<Vec<u8>, CommandData>) -> Result<Self> {
         // 获取地址
-        let path = path.into();
+        let path = config.dir_path;
+        let file_size = config.file_size;
+        let part_size = config.part_size;
         let (gen, mut writer, reader) = new_log_file_with_gen(&path, gen, file_size)?;
         let mut vec_cmd = Vec::new();
         let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
@@ -105,6 +113,7 @@ impl SsTable {
 
         // 将以上持久化信息封装为MetaInfo
         let info = MetaInfo{
+            level: 0,
             version: 0,
             data_len: data_part_len as u64,
             index_len: sparse_index_len as u64,
@@ -120,6 +129,19 @@ impl SsTable {
             writer,
             _gen: gen
         })
+    }
+
+    /// 获取SsTable内所有的正常数据
+    pub(crate) fn get_all_data(&self) -> Result<Vec<CommandData>> {
+        let info = &self._meta_info;
+        let data_len = info.data_len;
+
+        let all_data_u8 = self.reader.read_zone(0, data_len as usize)?;
+        let vec_cmd_data = CommandPackage::form_zone_to_vec(all_data_u8)?
+            .into_iter()
+            .map(|cmd_package| cmd_package.cmd)
+            .collect_vec();
+        Ok(vec_cmd_data)
     }
 
     /// 从该sstable中获取指定key对应的CommandData
@@ -179,6 +201,48 @@ impl SsTable {
         }
 
         vec_cmd_data.clear();
+        Ok(())
+    }
+
+    pub(crate) fn get_level(&self) -> u64 {
+        self._meta_info.level
+    }
+
+    pub(crate) fn get_version(&self) -> u64 {
+        self._meta_info.version
+    }
+
+    pub(crate) fn get_gen(&self) -> u64 {
+        self._gen
+    }
+
+    /// Level0的压缩处理
+    pub(crate) fn minor_compaction(config: Config, level_vec: &mut LevelVec, ss_table_map: &mut SsTableMap) -> Result<()> {
+        let option: Option<&Vec<u64>> = level_vec.get(LEVEL_0);
+        match option {
+            // 注意! vec_ss_table_gen是由旧到新的
+            // 这样归并出来的数据才能保证数据是有效的
+            Some(vec_ss_table_gen) => {
+                let mut merge_map = BTreeMap::new();
+                // 将所有Level0的SSTable读取各自所有的key做归并
+                for gen in vec_ss_table_gen {
+                    let ss_table = ss_table_map.get(gen).unwrap();
+                    for cmd_data in ss_table.get_all_data()? {
+                        merge_map.insert(cmd_data.get_key_clone(), cmd_data);
+                    }
+                }
+
+                // 获取当前时间戳当Gen
+                let gen = Local::now().timestamp_millis() as u64;
+                // 构建Level1的SSTable
+                let level_1_ss_table = Self::create_form_immutable_table(config, gen, &merge_map)?;
+
+                // 对SSTableMap与LevelVec进行双写
+                ss_table_map.insert(gen, level_1_ss_table);
+                leve_vec_insert(level_vec, 1, gen);
+            }
+            None => {}
+        };
         Ok(())
     }
 }

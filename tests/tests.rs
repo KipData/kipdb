@@ -141,8 +141,8 @@ fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
 // Test data correctness after compaction.
 #[test]
 fn compaction() -> Result<()> {
-    // compaction_with_kv_store::<HashStore>()?;
-    // compaction_with_kv_store::<SledStore>()?;
+    compaction_with_kv_store::<HashStore>()?;
+    compaction_with_kv_store::<SledStore>()?;
     compaction_with_kv_store::<LsmStore>()?;
 
     Ok(())

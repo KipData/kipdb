@@ -6,10 +6,11 @@ pub(crate) mod ss_table;
 pub mod lsm_kv;
 
 // META_INFO序列化长度定长
-const TABLE_META_INFO_SIZE: usize = 32;
+const TABLE_META_INFO_SIZE: usize = 40;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MetaInfo {
+    level: u64,
     version: u64,
     data_len: u64,
     index_len: u64,

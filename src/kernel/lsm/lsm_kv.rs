@@ -8,6 +8,12 @@ use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::lsm::ss_table::SsTable;
 use crate::kernel::Result;
 
+pub(crate) type LevelVec = Vec<Vec<u64>>;
+
+pub(crate) type SsTableMap = BTreeMap<u64, SsTable>;
+
+pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
+
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
 pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024 * 1024 * 10;
@@ -22,11 +28,14 @@ pub(crate) const DEFAULT_WAL_REDUNDANCY_SIZE: u64 = crate::kernel::hash_kv::DEFA
 
 pub struct LsmStore {
     // 内存表
-    mem_table: Arc<RwLock<BTreeMap<Vec<u8>, CommandData>>>,
+    mem_table: Arc<RwLock<MemTable>>,
     // 不可变内存表 持久化内存表时数据暂存用
-    immutable_table_options: Option<Arc<RwLock<BTreeMap<Vec<u8>, CommandData>>>>,
+    immutable_table_options: Option<Arc<RwLock<MemTable>>>,
     // SSTable存储集合
-    ss_tables: BTreeMap<u64, SsTable>,
+    ss_tables_map: SsTableMap,
+    // Level层级Vec
+    // 以索引0为level-0这样的递推，存储文件的gen值
+    level_vec: LevelVec,
     // 数据目录
     data_dir: PathBuf,
     // 持久化阈值数量
@@ -62,7 +71,7 @@ impl KVStore for LsmStore {
     }
 
     fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.change_with_cmd(CommandData::Set { key: key.clone(), value })
+        self.append_cmd_data(CommandData::Set { key: key.clone(), value })
     }
 
     fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
@@ -79,7 +88,7 @@ impl KVStore for LsmStore {
                 return LsmStore::cmd_unpack(cmd_data);
             }
         }
-        for (_, ss_table) in &self.ss_tables {
+        for (_, ss_table) in &self.ss_tables_map {
             if let Some(cmd_data) = ss_table.query(key)? {
                 return LsmStore::cmd_unpack_with_owner(cmd_data);
             }
@@ -90,19 +99,21 @@ impl KVStore for LsmStore {
 
     fn remove(&mut self, key: &Vec<u8>) -> Result<()> {
         match self.get(key)? {
+            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.clone() }) }
             None => { Err(KvsError::KeyNotFound) }
-            Some(_) => { self.change_with_cmd(CommandData::Remove { key: key.clone() }) }
         }
     }
 }
 
 impl LsmStore {
 
-    fn change_with_cmd(&mut self, cmd: CommandData) -> Result<()> {
+    /// 追加数据
+    fn append_cmd_data(&mut self, cmd: CommandData) -> Result<()> {
         let mut mem_table = self.mem_table
             .write()
             .unwrap();
 
+        // Wal与MemTable双写
         let key = cmd.get_key();
         self.wal.set(key, CommandPackage::encode(&cmd)?)?;
         mem_table.insert(key.clone(), cmd);
@@ -115,6 +126,7 @@ impl LsmStore {
         Ok(())
     }
 
+    /// 使用Config进行LsmStore初始化
     pub fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
         let path = config.dir_path;
         let file_size = config.file_size;
@@ -137,44 +149,61 @@ impl LsmStore {
                 // 初始化成功时直接传入SSTable的索引中
                 ss_tables.insert(*gen, ss_table);
             } else {
-                // 从Wal恢复SSTable数据
-                // 初始化失败时遍历wal的key并检测key是否为gen
-                for key_u8 in wal.keys_from_index()? {
-                    let key_str = CommandCodec::decode_str_key(key_u8)?;
-                    // 当key的文件名与gen相同时将数据填入mem_table中
-                    if key_str.eq(&gen.to_string()) {
-                        // 将SSTable持久化失败前预存入的指令键集合从wal中获取
-                        // 随后将每一条指令键对应的指令恢复到mem_table中
-                        if let Some(key_cmd_u8) = wal.get(key_u8)? {
-                            for key in CommandCodec::decode_keys(&key_cmd_u8)? {
-                                if let Some(cmd_data_u8) = wal.get(&key)? {
-                                    let cmd_data = CommandPackage::decode(&cmd_data_u8)?;
-
-                                    mem_table.write()
-                                        .unwrap()
-                                        .insert(cmd_data.get_key_clone(), cmd_data);
-                                } else {
-                                    return Err(KvsError::WalLoadError);
-                                }
-                            };
-                        } else {
-                            return Err(KvsError::WalLoadError);
-                        }
-                    }
-                }
+                // 从wal将有问题的ss_table恢复到mem_table中
+                Self::reload_for_wal(&mem_table, &wal, &gen)?;
             }
         }
+
+        // 获取ss_table分级Vec
+        let level_vec = Self::level_layered(&mut ss_tables);
 
         Ok(LsmStore {
             mem_table,
             immutable_table_options: None,
-            ss_tables,
+            ss_tables_map: ss_tables,
+            level_vec,
             data_dir: path,
             threshold_size: config.threshold_size,
             part_size: config.part_size,
             file_size,
             wal,
         })
+    }
+
+    /// 从Wal恢复SSTable数据
+    /// 初始化失败时遍历wal的key并检测key是否为gen
+    fn reload_for_wal(mem_table: &Arc<RwLock<BTreeMap<Vec<u8>, CommandData>>>, wal: &HashStore, gen: &&u64) -> Result<()>{
+        // 将SSTable持久化失败前预存入的指令键集合从wal中获取
+        // 随后将每一条指令键对应的指令恢复到mem_table中
+        let key_gen = CommandCodec::encode_str_key(gen.to_string())?;
+        if let Some(key_cmd_u8) = wal.get(&key_gen)? {
+            for key in CommandCodec::decode_keys(&key_cmd_u8)? {
+                if let Some(cmd_data_u8) = wal.get(&key)? {
+                    let cmd_data = CommandPackage::decode(&cmd_data_u8)?;
+
+                    mem_table.write()
+                        .unwrap()
+                        .insert(cmd_data.get_key_clone(), cmd_data);
+                } else {
+                    return Err(KvsError::WalLoadError);
+                }
+            };
+        } else {
+            return Err(KvsError::WalLoadError);
+        }
+        Ok(())
+    }
+
+    /// 使用ss_tables返回LevelVec
+    /// 由于ss_tables是有序的，level_vec的内容应当是从L0->LN，旧->新
+    fn level_layered(ss_tables: &mut BTreeMap<u64, SsTable>) -> LevelVec {
+        let mut level_vec = Vec::new();
+        for ss_table in ss_tables.values() {
+            let level = ss_table.get_level();
+
+            leve_vec_insert(&mut level_vec, level, ss_table.get_gen())
+        }
+        level_vec
     }
 
     /// 持久化immutable_table为SSTable
@@ -197,12 +226,17 @@ impl LsmStore {
                 .collect_vec();
             self.wal.set(&vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?)?;
 
-            let ss_table = SsTable::create_form_index(&self.data_dir
-                                                      , time_stamp
-                                                      , self.file_size
-                                                      , self.part_size
-                                                      , &immutable_table)?;
-            self.ss_tables.insert(time_stamp, ss_table);
+
+            let config = Config::new()
+                .dir_path(self.data_dir.clone())
+                .file_size(self.file_size)
+                .part_size(self.part_size);
+
+            // 从内存表中将数据持久化为ss_table
+            let ss_table = SsTable::create_form_immutable_table(config
+                                                                , time_stamp
+                                                                , &immutable_table)?;
+            self.ss_tables_map.insert(time_stamp, ss_table);
             self.immutable_table_options = None;
             self.wal.remove(&vec_ts_u8)?;
         }
@@ -255,17 +289,17 @@ impl CommandCodec {
 
 pub struct Config {
     // 数据目录地址
-    dir_path: PathBuf,
+    pub(crate) dir_path: PathBuf,
     // 持久化阈值
-    threshold_size: u64,
+    pub(crate) threshold_size: u64,
     // WAL持久化阈值
-    wal_compaction_threshold: u64,
+    pub(crate) wal_compaction_threshold: u64,
     // WAL冗余值
-    wal_redundancy_size: u64,
+    pub(crate) wal_redundancy_size: u64,
     // 数据分块大小
-    part_size: u64,
+    pub(crate) part_size: u64,
     // 文件大小
-    file_size: u64
+    pub(crate) file_size: u64
 }
 
 impl Config {
@@ -308,6 +342,19 @@ impl Config {
             wal_redundancy_size: DEFAULT_WAL_REDUNDANCY_SIZE,
             part_size: DEFAULT_PART_SIZE,
             file_size: DEFAULT_FILE_SIZE
+        }
+    }
+}
+
+// 对LevelVec插入的封装方法
+pub(crate) fn leve_vec_insert(level_vec: &mut LevelVec, level: u64, gen: u64) {
+    let option: Option<&mut Vec<u64>> = level_vec.get_mut(level as usize);
+    match option {
+        Some(vec) => {
+            vec.push(gen)
+        }
+        None => {
+            level_vec.push(vec![gen])
         }
     }
 }
