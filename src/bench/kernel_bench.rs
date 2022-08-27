@@ -1,6 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
 use kip_db::kernel::{KVStore, hash_kv::HashStore};
+use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::sled_kv::SledStore;
 use kip_db::kernel::Result;
 
@@ -17,7 +18,7 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
 
     let mut count = 0;
 
-    /// 用于get exist测试获取数据
+    // 用于get exist测试获取数据
     store.set(&key1, value1.clone()).unwrap();
 
     c.bench_function(&store_name_with_test::<T>("get exist"), |b|
@@ -32,7 +33,7 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
                 .unwrap()
         }));
 
-    /// 使用count进行动态的数据名变更防止数据重复而导致不写入
+    // 使用count进行动态的数据名变更防止数据重复而导致不写入
     c.bench_function(&store_name_with_test::<T>("set value"), |b|
         b.iter(|| {
             count += 1;
@@ -52,6 +53,7 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
 fn kv_benchmark(c: &mut Criterion) {
     kv_benchmark_with_store::<HashStore>(c);
     kv_benchmark_with_store::<SledStore>(c);
+    kv_benchmark_with_store::<LsmStore>(c);
 }
 
 fn store_name_with_test<T: KVStore>(test_name :& str) -> String {

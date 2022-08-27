@@ -1,13 +1,14 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use chrono::Local;
 use itertools::Itertools;
 use tracing::info;
-use crate::kernel::{CommandData, CommandPackage, MmapReader, MmapWriter, new_log_file_with_gen};
+use crate::kernel::{CommandData, CommandPackage, log_path, MmapReader, MmapWriter, new_log_file_with_gen};
 use crate::kernel::lsm::{Position, MetaInfo};
-use crate::kernel::lsm::lsm_kv::{Config, leve_vec_insert, LevelVec, SsTableMap};
+use crate::kernel::lsm::lsm_kv::{Config, leve_vec_insert, level_vec_retain, LevelVec, SsTableMap};
 use crate::kernel::Result;
 
 pub(crate) const LEVEL_0: usize = 0;
@@ -15,7 +16,7 @@ pub(crate) const LEVEL_0: usize = 0;
 /// SSTable
 pub(crate) struct SsTable {
     // 表索引信息
-    _meta_info: MetaInfo,
+    meta_info: MetaInfo,
     // 字段稀疏索引
     sparse_index: BTreeMap<Vec<u8>, Position>,
     // 读取器
@@ -23,7 +24,7 @@ pub(crate) struct SsTable {
     // 写入器
     writer: MmapWriter,
     // 文件路径
-    _gen: u64
+    gen: u64
 }
 
 impl SsTable {
@@ -37,7 +38,7 @@ impl SsTable {
         let (gen, writer, reader) = new_log_file_with_gen(&path, gen, file_size)?;
 
         Ok(SsTable {
-            _meta_info: MetaInfo{
+            meta_info: MetaInfo{
                 level: 0,
                 version: 0,
                 data_len: 0,
@@ -47,7 +48,7 @@ impl SsTable {
             sparse_index: BTreeMap::new(),
             reader,
             writer,
-            _gen: gen
+            gen
         })
     }
 
@@ -67,11 +68,11 @@ impl SsTable {
         let package = CommandPackage::form_pos(&reader, index_pos, index_last_pos)?;
         let sparse_index = rmp_serde::from_slice(&package.cmd.get_key())?;
         Ok(SsTable {
-            _meta_info: info,
+            meta_info: info,
             sparse_index,
             reader,
             writer,
-            _gen: gen
+            gen
         })
 
 
@@ -123,17 +124,17 @@ impl SsTable {
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, info);
         Ok(SsTable {
-            _meta_info: info,
+            meta_info: info,
             sparse_index,
             reader,
             writer,
-            _gen: gen
+            gen
         })
     }
 
     /// 获取SsTable内所有的正常数据
     pub(crate) fn get_all_data(&self) -> Result<Vec<CommandData>> {
-        let info = &self._meta_info;
+        let info = &self.meta_info;
         let data_len = info.data_len;
 
         let all_data_u8 = self.reader.read_zone(0, data_len as usize)?;
@@ -172,7 +173,7 @@ impl SsTable {
         } else {
             return Ok(None);
         }
-        info!("[SsTable: {}][query][data_zone]: {} to {}", self._gen, start_pos, _end_pos);
+        info!("[SsTable: {}][query][data_zone]: {} to {}", self.gen, start_pos, _end_pos);
         // 获取该区间段的数据
         let zone = self.reader.read_zone(start_pos, _end_pos)?;
 
@@ -205,33 +206,39 @@ impl SsTable {
     }
 
     pub(crate) fn get_level(&self) -> u64 {
-        self._meta_info.level
+        self.meta_info.level
     }
 
     pub(crate) fn get_version(&self) -> u64 {
-        self._meta_info.version
+        self.meta_info.version
     }
 
     pub(crate) fn get_gen(&self) -> u64 {
-        self._gen
+        self.gen
     }
 
     /// Level0的压缩处理
     pub(crate) fn minor_compaction(config: Config, level_vec: &mut LevelVec, ss_table_map: &mut SsTableMap) -> Result<()> {
-        let option: Option<&Vec<u64>> = level_vec.get(LEVEL_0);
+        let option: Option<&mut Vec<u64>> = level_vec.get_mut(LEVEL_0);
         match option {
             // 注意! vec_ss_table_gen是由旧到新的
             // 这样归并出来的数据才能保证数据是有效的
             Some(vec_ss_table_gen) => {
+
+                // 获取当前level_0所属vec_gen的快照
+                let vec_shot_snap_gen = vec_ss_table_gen.clone();
+
                 let mut merge_map = BTreeMap::new();
                 // 将所有Level0的SSTable读取各自所有的key做归并
-                for gen in vec_ss_table_gen {
+                for gen in vec_shot_snap_gen.iter() {
                     let ss_table = ss_table_map.get(gen).unwrap();
                     for cmd_data in ss_table.get_all_data()? {
                         merge_map.insert(cmd_data.get_key_clone(), cmd_data);
                     }
                 }
 
+                // 复制出path用于文件删除
+                let path = config.dir_path.clone();
                 // 获取当前时间戳当Gen
                 let gen = Local::now().timestamp_millis() as u64;
                 // 构建Level1的SSTable
@@ -240,6 +247,15 @@ impl SsTable {
                 // 对SSTableMap与LevelVec进行双写
                 ss_table_map.insert(gen, level_1_ss_table);
                 leve_vec_insert(level_vec, 1, gen);
+
+                // 遍历过期Vec对数据进行旧文件删除
+                for stale_gen in vec_shot_snap_gen.iter() {
+                    ss_table_map.remove(stale_gen);
+                    fs::remove_file(log_path(&path, *stale_gen))?;
+                }
+
+                level_vec_retain(level_vec, &vec_shot_snap_gen, LEVEL_0);
+
             }
             None => {}
         };

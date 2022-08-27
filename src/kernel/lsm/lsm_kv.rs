@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use chrono::Local;
@@ -16,7 +16,7 @@ pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024 * 1024 * 10;
+pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 128;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 1024 * 2;
 
@@ -356,5 +356,18 @@ pub(crate) fn leve_vec_insert(level_vec: &mut LevelVec, level: u64, gen: u64) {
         None => {
             level_vec.push(vec![gen])
         }
+    }
+}
+
+// 对LevelVec插入的封装方法
+pub(crate) fn level_vec_retain(level_vec: &mut LevelVec, vec_expired_gen: &Vec<u64>, level: usize) {
+    let set_expired_gen: HashSet<&u64> = vec_expired_gen.iter().collect();
+
+    let option: Option<&mut Vec<u64>> = level_vec.get_mut(level);
+    match option {
+        Some(vec) => {
+            vec.retain(|gen| set_expired_gen.contains(gen));
+        }
+        None => {}
     }
 }
