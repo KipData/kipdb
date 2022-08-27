@@ -15,6 +15,7 @@ pub mod hash_kv;
 
 pub mod sled_kv;
 pub mod lsm;
+pub mod thread_pool;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 

@@ -26,7 +26,7 @@ pub struct LsmStore {
     // 不可变内存表 持久化内存表时数据暂存用
     immutable_table_options: Option<Arc<RwLock<BTreeMap<Vec<u8>, CommandData>>>>,
     // SSTable存储集合
-    ss_tables: Vec<SsTable>,
+    ss_tables: BTreeMap<u64, SsTable>,
     // 数据目录
     data_dir: PathBuf,
     // 持久化阈值数量
@@ -79,7 +79,7 @@ impl KVStore for LsmStore {
                 return LsmStore::cmd_unpack(cmd_data);
             }
         }
-        for ss_table in &self.ss_tables {
+        for (_, ss_table) in &self.ss_tables {
             if let Some(cmd_data) = ss_table.query(key)? {
                 return LsmStore::cmd_unpack_with_owner(cmd_data);
             }
@@ -120,7 +120,7 @@ impl LsmStore {
         let file_size = config.file_size;
 
         let mem_table = Arc::new(RwLock::new(BTreeMap::new()));
-        let mut ss_tables = Vec::new();
+        let mut ss_tables = BTreeMap::new();
 
         let mut wal_path = path.clone();
         wal_path.push(DEFAULT_WAL_PATH);
@@ -135,7 +135,7 @@ impl LsmStore {
             // 尝试初始化Table
             if let Ok(ss_table) = SsTable::restore_from_file(&*path, *gen, file_size) {
                 // 初始化成功时直接传入SSTable的索引中
-                ss_tables.push(ss_table);
+                ss_tables.insert(*gen, ss_table);
             } else {
                 // 从Wal恢复SSTable数据
                 // 初始化失败时遍历wal的key并检测key是否为gen
@@ -202,7 +202,7 @@ impl LsmStore {
                                                       , self.file_size
                                                       , self.part_size
                                                       , &immutable_table)?;
-            self.ss_tables.insert(0, ss_table);
+            self.ss_tables.insert(time_stamp, ss_table);
             self.immutable_table_options = None;
             self.wal.remove(&vec_ts_u8)?;
         }

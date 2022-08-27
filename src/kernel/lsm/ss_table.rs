@@ -129,6 +129,7 @@ impl SsTable {
         let mut position_arr = (empty_position, empty_position);
         for (key_item, value_item) in self.sparse_index.iter() {
             if let Ordering::Greater = key.cmp(key_item) {
+                // 找到确定位置后可以提前推出，减少数据读取占用的IO
                 position_arr.0 = value_item;
                 break;
             } else {
