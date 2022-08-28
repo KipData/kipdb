@@ -1,10 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use chrono::Local;
 use itertools::Itertools;
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
+use crate::kernel::lsm::Manifest;
 use crate::kernel::lsm::ss_table::SsTable;
 use crate::kernel::Result;
 
@@ -16,7 +17,7 @@ pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 128;
+pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024 * 3;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 1024 * 2;
 
@@ -31,11 +32,8 @@ pub struct LsmStore {
     mem_table: Arc<RwLock<MemTable>>,
     // 不可变内存表 持久化内存表时数据暂存用
     immutable_table_options: Option<Arc<RwLock<MemTable>>>,
-    // SSTable存储集合
-    ss_tables_map: SsTableMap,
-    // Level层级Vec
-    // 以索引0为level-0这样的递推，存储文件的gen值
-    level_vec: LevelVec,
+    // SSTable详情集
+    manifest: Manifest,
     // 数据目录
     data_dir: PathBuf,
     // 持久化阈值数量
@@ -88,7 +86,7 @@ impl KVStore for LsmStore {
                 return LsmStore::cmd_unpack(cmd_data);
             }
         }
-        for (_, ss_table) in &self.ss_tables_map {
+        for (_, ss_table) in self.manifest.get_ss_table_map() {
             if let Some(cmd_data) = ss_table.query(key)? {
                 return LsmStore::cmd_unpack_with_owner(cmd_data);
             }
@@ -154,14 +152,12 @@ impl LsmStore {
             }
         }
 
-        // 获取ss_table分级Vec
-        let level_vec = Self::level_layered(&mut ss_tables);
+        let manifest = Manifest::new(ss_tables);
 
         Ok(LsmStore {
             mem_table,
             immutable_table_options: None,
-            ss_tables_map: ss_tables,
-            level_vec,
+            manifest,
             data_dir: path,
             threshold_size: config.threshold_size,
             part_size: config.part_size,
@@ -194,18 +190,6 @@ impl LsmStore {
         Ok(())
     }
 
-    /// 使用ss_tables返回LevelVec
-    /// 由于ss_tables是有序的，level_vec的内容应当是从L0->LN，旧->新
-    fn level_layered(ss_tables: &mut BTreeMap<u64, SsTable>) -> LevelVec {
-        let mut level_vec = Vec::new();
-        for ss_table in ss_tables.values() {
-            let level = ss_table.get_level();
-
-            leve_vec_insert(&mut level_vec, level, ss_table.get_gen())
-        }
-        level_vec
-    }
-
     /// 持久化immutable_table为SSTable
     pub(crate) fn store_to_ss_table(&mut self) -> Result<()> {
         // 切换mem_table并准备持久化
@@ -236,7 +220,7 @@ impl LsmStore {
             let ss_table = SsTable::create_form_immutable_table(config
                                                                 , time_stamp
                                                                 , &immutable_table)?;
-            self.ss_tables_map.insert(time_stamp, ss_table);
+            self.manifest.insert(time_stamp, ss_table)?;
             self.immutable_table_options = None;
             self.wal.remove(&vec_ts_u8)?;
         }
@@ -356,18 +340,5 @@ pub(crate) fn leve_vec_insert(level_vec: &mut LevelVec, level: u64, gen: u64) {
         None => {
             level_vec.push(vec![gen])
         }
-    }
-}
-
-// 对LevelVec插入的封装方法
-pub(crate) fn level_vec_retain(level_vec: &mut LevelVec, vec_expired_gen: &Vec<u64>, level: usize) {
-    let set_expired_gen: HashSet<&u64> = vec_expired_gen.iter().collect();
-
-    let option: Option<&mut Vec<u64>> = level_vec.get_mut(level);
-    match option {
-        Some(vec) => {
-            vec.retain(|gen| set_expired_gen.contains(gen));
-        }
-        None => {}
     }
 }

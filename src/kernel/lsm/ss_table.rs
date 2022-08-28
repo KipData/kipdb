@@ -1,14 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use chrono::Local;
 use itertools::Itertools;
 use tracing::info;
-use crate::kernel::{CommandData, CommandPackage, log_path, MmapReader, MmapWriter, new_log_file_with_gen};
-use crate::kernel::lsm::{Position, MetaInfo};
-use crate::kernel::lsm::lsm_kv::{Config, leve_vec_insert, level_vec_retain, LevelVec, SsTableMap};
+use crate::kernel::{CommandData, CommandPackage, MmapReader, MmapWriter, new_log_file_with_gen};
+use crate::kernel::lsm::{Position, MetaInfo, Manifest};
+use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 
 pub(crate) const LEVEL_0: usize = 0;
@@ -217,10 +216,13 @@ impl SsTable {
         self.gen
     }
 
+    pub(crate) fn level(&mut self, level: u64) {
+        self.meta_info.level = level;
+    }
+
     /// Level0的压缩处理
-    pub(crate) fn minor_compaction(config: Config, level_vec: &mut LevelVec, ss_table_map: &mut SsTableMap) -> Result<()> {
-        let option: Option<&mut Vec<u64>> = level_vec.get_mut(LEVEL_0);
-        match option {
+    pub(crate) fn minor_compaction(config: Config, manifest: &mut Manifest) -> Result<()> {
+        match manifest.get_mut_level_vec(LEVEL_0) {
             // 注意! vec_ss_table_gen是由旧到新的
             // 这样归并出来的数据才能保证数据是有效的
             Some(vec_ss_table_gen) => {
@@ -231,7 +233,7 @@ impl SsTable {
                 let mut merge_map = BTreeMap::new();
                 // 将所有Level0的SSTable读取各自所有的key做归并
                 for gen in vec_shot_snap_gen.iter() {
-                    let ss_table = ss_table_map.get(gen).unwrap();
+                    let ss_table = manifest.get_ss_table(gen).unwrap();
                     for cmd_data in ss_table.get_all_data()? {
                         merge_map.insert(cmd_data.get_key_clone(), cmd_data);
                     }
@@ -242,19 +244,12 @@ impl SsTable {
                 // 获取当前时间戳当Gen
                 let gen = Local::now().timestamp_millis() as u64;
                 // 构建Level1的SSTable
-                let level_1_ss_table = Self::create_form_immutable_table(config, gen, &merge_map)?;
+                let mut level_1_ss_table = Self::create_form_immutable_table(config, gen, &merge_map)?;
 
-                // 对SSTableMap与LevelVec进行双写
-                ss_table_map.insert(gen, level_1_ss_table);
-                leve_vec_insert(level_vec, 1, gen);
+                level_1_ss_table.level(1);
+                manifest.insert(gen, level_1_ss_table)?;
 
-                // 遍历过期Vec对数据进行旧文件删除
-                for stale_gen in vec_shot_snap_gen.iter() {
-                    ss_table_map.remove(stale_gen);
-                    fs::remove_file(log_path(&path, *stale_gen))?;
-                }
-
-                level_vec_retain(level_vec, &vec_shot_snap_gen, LEVEL_0);
+                manifest.retain_with_vec_gen_and_level(&vec_shot_snap_gen, LEVEL_0, &path)?;
 
             }
             None => {}
