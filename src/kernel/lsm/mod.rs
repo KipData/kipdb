@@ -2,10 +2,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandPackage, log_path, MmapReader, MmapWriter, Result};
-use crate::kernel::lsm::lsm_kv::{leve_vec_insert, LevelVec, SsTableMap};
+use crate::kernel::lsm::lsm_kv::{LevelVec, SsTableMap};
 use crate::kernel::lsm::ss_table::SsTable;
 
 pub(crate) mod ss_table;
@@ -24,7 +23,7 @@ struct MetaInfo {
 }
 
 pub(crate) struct Manifest {
-    rwlock: RwLock<String>,
+    _path: PathBuf,
     // SSTable有序存储集合
     ss_tables_map: SsTableMap,
     // Level层级Vec
@@ -55,11 +54,10 @@ impl MetaInfo {
 }
 
 impl Manifest {
-    pub(crate) fn new(mut ss_tables_map: SsTableMap) -> Self {
+    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: PathBuf) -> Self {
         // 获取ss_table分级Vec
         let level_vec = Self::level_layered(&mut ss_tables_map);
-        let rwlock = RwLock::new("".to_string());
-        Self { rwlock, ss_tables_map, level_vec }
+        Self { _path: path, ss_tables_map, level_vec }
     }
 
     /// 使用ss_tables返回LevelVec
@@ -74,59 +72,60 @@ impl Manifest {
         level_vec
     }
 
-    pub(crate) fn get_ss_table_map(&self) -> &SsTableMap {
-        let _ = self.rwlock.read().unwrap();
-        &self.ss_tables_map
-    }
-
     pub(crate) fn insert(&mut self, gen: u64, ss_table: SsTable) -> Result<()> {
-        let _ = self.rwlock.write().unwrap();
         let level = ss_table.get_level();
         self.ss_tables_map.insert(gen, ss_table);
         leve_vec_insert(&mut self.level_vec, level, gen);
         Ok(())
     }
 
-    pub(crate) fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &Vec<u64>, level: usize, path: &PathBuf) -> Result<()> {
-        let _ = self.rwlock.write().unwrap();
+    // 删除指定的过期gen
+    pub(crate) fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &Vec<u64>) -> Result<()> {
         // 遍历过期Vec对数据进行旧文件删除
         for expired_gen in vec_expired_gen.iter() {
             self.ss_tables_map.remove(expired_gen);
-            fs::remove_file(log_path(path, *expired_gen))?;
+            fs::remove_file(log_path(&self._path, *expired_gen))?;
         }
 
+        // 将需要删除的Vec转换为HashSet方便使用retain方法
         let set_expired_gen: HashSet<&u64> = vec_expired_gen.iter().collect();
 
-        let option: Option<&mut Vec<u64>> = self.level_vec.get_mut(level);
-        match option {
-            Some(vec) => {
-                vec.retain(|gen| set_expired_gen.contains(gen));
-            }
-            None => {}
+        // 将存储的Level表中含有该gen的SSTable一并删除
+        for vec_level in &mut self.level_vec {
+            vec_level.retain(|gen| set_expired_gen.contains(gen));
         }
-
 
         Ok(())
     }
 
     pub(crate) fn get_level_vec(&self, level: usize) -> Option<&Vec<u64>> {
-        let _ = self.rwlock.read().unwrap();
         self.level_vec.get(level)
     }
 
-    pub(crate) fn get_mut_level_vec(&mut self, level: usize) -> Option<&mut Vec<u64>> {
-        let _ = self.rwlock.read().unwrap();
-        self.level_vec.get_mut(level)
+    pub(crate) fn get_ss_table(&self, gen: &u64) -> Option<&SsTable> {
+        self.ss_tables_map.get(&gen)
     }
 
-    pub(crate) fn get_ss_table(&self, gen: &u64) -> Option<&SsTable> {
-        let _ = self.rwlock.read().unwrap();
-        self.ss_tables_map.get(&gen)
+    pub(crate) fn get_ss_table_map(&self) -> &SsTableMap {
+        &self.ss_tables_map
     }
 }
 
 impl Position {
     pub fn new(start: usize, len: usize) -> Self {
         Self { start, len }
+    }
+}
+
+// 对LevelVec插入的封装方法
+fn leve_vec_insert(level_vec: &mut LevelVec, level: u64, gen: u64) {
+    let option: Option<&mut Vec<u64>> = level_vec.get_mut(level as usize);
+    match option {
+        Some(vec) => {
+            vec.push(gen)
+        }
+        None => {
+            level_vec.push(vec![gen])
+        }
     }
 }

@@ -10,6 +10,8 @@ use crate::kernel::lsm::{Position, MetaInfo, Manifest};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 
+type ExpiredGenVec = Vec<u64>;
+
 pub(crate) const LEVEL_0: usize = 0;
 
 /// SSTable
@@ -77,12 +79,138 @@ impl SsTable {
 
     }
 
+    /// 写入CommandData数据段
+    fn write_data_part(vec_cmd_data: &mut Vec<&CommandData>, writer: &mut MmapWriter, sparse_index: &mut BTreeMap<Vec<u8>, Position>) -> Result<()> {
+        let start_pos = writer.last_pos();
+        for cmd_data in vec_cmd_data.iter() {
+           CommandPackage::write(writer, &cmd_data)?;
+        }
+        // 获取数据段的长度
+        let part_len = writer.last_pos() - start_pos;
+
+        info!("[write_data_part][data_zone]: {} to {}", start_pos, part_len);
+        // 获取该段首位数据
+        if let Some(cmd) = vec_cmd_data.first() {
+            info!("[write_data_part][sparse_index]: index of the part: {:?}", cmd.get_key());
+            sparse_index.insert(cmd.get_key_clone(), Position { start: start_pos, len: part_len });
+        }
+
+        vec_cmd_data.clear();
+        Ok(())
+    }
+
+    /// 仅为Level 0 SSTable
+    /// 将升级SSTable为1且清除原有Level0的Table
+    pub(crate) fn level_up_for_level_0(level_1_ss_table: SsTable, manifest: &mut Manifest, vec_level_0_gen: &ExpiredGenVec) -> Result<()> {
+        manifest.insert(level_1_ss_table.gen, level_1_ss_table)?;
+        manifest.retain_with_vec_gen_and_level(vec_level_0_gen)?;
+
+        Ok(())
+    }
+
+    pub(crate) fn level(&mut self, level: u64) {
+        self.meta_info.level = level;
+    }
+
+    pub(crate) fn get_level(&self) -> u64 {
+        self.meta_info.level
+    }
+
+    pub(crate) fn get_version(&self) -> u64 {
+        self.meta_info.version
+    }
+
+    pub(crate) fn get_gen(&self) -> u64 {
+        self.gen
+    }
+
+    /// Level0的SSTable归并读取生成新的Level1SSTable
+    pub(crate) fn level_0_up_ss_table(config: &Config, manifest: &Manifest) -> Result<Option<(SsTable, ExpiredGenVec)>> {
+        match manifest.get_level_vec(LEVEL_0).cloned() {
+            // 注意! vec_ss_table_gen是由旧到新的
+            // 这样归并出来的数据才能保证数据是有效的
+            Some(vec_shot_snap_gen) => {
+
+                let mut merge_map = BTreeMap::new();
+                // 将所有Level0的SSTable读取各自所有的key做归并
+                for gen in vec_shot_snap_gen.iter() {
+                    let ss_table = manifest.get_ss_table(gen).unwrap();
+                    for cmd_data in ss_table.get_all_data()? {
+                        merge_map.insert(cmd_data.get_key_clone(), cmd_data);
+                    }
+                }
+
+                // 获取当前时间戳当Gen
+                let gen = Local::now().timestamp_millis() as u64;
+                // 构建Level1的SSTable
+                let mut level_1_ss_table = Self::create_form_immutable_table(&config, gen, &merge_map)?;
+                level_1_ss_table.level(1);
+
+                Ok(Some((level_1_ss_table, vec_shot_snap_gen)))
+            }
+            None => Ok(None)
+        }
+    }
+
+    /// 从该sstable中获取指定key对应的CommandData
+    pub(crate) fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
+        let empty_position = &Position::new(0, 0);
+        // 第一位是第一个大于的，第二位是最后一个小于的
+        let mut position_arr = (empty_position, empty_position);
+        for (key_item, value_item) in self.sparse_index.iter() {
+            if let Ordering::Greater = key.cmp(key_item) {
+                // 找到确定位置后可以提前推出，减少数据读取占用的IO
+                position_arr.0 = value_item;
+                break;
+            } else {
+                position_arr.1 = value_item;
+            }
+        }
+
+        let mut _end_pos = 0;
+        let first_big = position_arr.0;
+        let last_small = position_arr.1;
+
+        // 找出数据可能存在的区间
+        let start_pos = first_big.start;
+        if first_big != empty_position {
+            _end_pos = first_big.len + start_pos;
+        } else if last_small != empty_position {
+            _end_pos = last_small.start + last_small.len;
+        } else {
+            return Ok(None);
+        }
+        info!("[SsTable: {}][query][data_zone]: {} to {}", self.gen, start_pos, _end_pos);
+        // 获取该区间段的数据
+        let zone = self.reader.read_zone(start_pos, _end_pos)?;
+
+        // 返回该区间段对应的数据结果
+        Ok(if let Some(cmd_p) = CommandPackage::find_key_with_zone(zone, &key)? {
+            Some(cmd_p.cmd)
+        } else {
+            None
+        })
+    }
+
+    /// 获取SsTable内所有的正常数据
+    pub(crate) fn get_all_data(&self) -> Result<Vec<CommandData>> {
+        let info = &self.meta_info;
+        let data_len = info.data_len;
+
+        let all_data_u8 = self.reader.read_zone(0, data_len as usize)?;
+        let vec_cmd_data = CommandPackage::form_zone_to_vec(all_data_u8)?
+            .into_iter()
+            .map(|cmd_package| cmd_package.cmd)
+            .collect_vec();
+        Ok(vec_cmd_data)
+    }
+
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) fn create_form_immutable_table(config: Config, gen: u64, mem_table: &BTreeMap<Vec<u8>, CommandData>) -> Result<Self> {
+    pub(crate) fn create_form_immutable_table(config: &Config, gen: u64, mem_table: &BTreeMap<Vec<u8>, CommandData>) -> Result<Self> {
         // 获取地址
-        let path = config.dir_path;
+        let path = config.dir_path.clone();
         let file_size = config.file_size;
         let part_size = config.part_size;
         let (gen, mut writer, reader) = new_log_file_with_gen(&path, gen, file_size)?;
@@ -129,132 +257,6 @@ impl SsTable {
             writer,
             gen
         })
-    }
-
-    /// 获取SsTable内所有的正常数据
-    pub(crate) fn get_all_data(&self) -> Result<Vec<CommandData>> {
-        let info = &self.meta_info;
-        let data_len = info.data_len;
-
-        let all_data_u8 = self.reader.read_zone(0, data_len as usize)?;
-        let vec_cmd_data = CommandPackage::form_zone_to_vec(all_data_u8)?
-            .into_iter()
-            .map(|cmd_package| cmd_package.cmd)
-            .collect_vec();
-        Ok(vec_cmd_data)
-    }
-
-    /// 从该sstable中获取指定key对应的CommandData
-    pub(crate) fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
-        let empty_position = &Position::new(0, 0);
-        // 第一位是第一个大于的，第二位是最后一个小于的
-        let mut position_arr = (empty_position, empty_position);
-        for (key_item, value_item) in self.sparse_index.iter() {
-            if let Ordering::Greater = key.cmp(key_item) {
-                // 找到确定位置后可以提前推出，减少数据读取占用的IO
-                position_arr.0 = value_item;
-                break;
-            } else {
-                position_arr.1 = value_item;
-            }
-        }
-
-        let mut _end_pos = 0;
-        let first_big = position_arr.0;
-        let last_small = position_arr.1;
-
-        // 找出数据可能存在的区间
-        let start_pos = first_big.start;
-        if first_big != empty_position {
-            _end_pos = first_big.len + start_pos;
-        } else if last_small != empty_position {
-            _end_pos = last_small.start + last_small.len;
-        } else {
-            return Ok(None);
-        }
-        info!("[SsTable: {}][query][data_zone]: {} to {}", self.gen, start_pos, _end_pos);
-        // 获取该区间段的数据
-        let zone = self.reader.read_zone(start_pos, _end_pos)?;
-
-        // 返回该区间段对应的数据结果
-        Ok(if let Some(cmd_p) = CommandPackage::find_key_with_zone(zone, &key)? {
-            Some(cmd_p.cmd)
-        } else {
-            None
-        })
-    }
-
-    /// 写入CommandData数据段
-    fn write_data_part(vec_cmd_data: &mut Vec<&CommandData>, writer: &mut MmapWriter, sparse_index: &mut BTreeMap<Vec<u8>, Position>) -> Result<()> {
-        let start_pos = writer.last_pos();
-        for cmd_data in vec_cmd_data.iter() {
-           CommandPackage::write(writer, &cmd_data)?;
-        }
-        // 获取数据段的长度
-        let part_len = writer.last_pos() - start_pos;
-
-        info!("[write_data_part][data_zone]: {} to {}", start_pos, part_len);
-        // 获取该段首位数据
-        if let Some(cmd) = vec_cmd_data.first() {
-            info!("[write_data_part][sparse_index]: index of the part: {:?}", cmd.get_key());
-            sparse_index.insert(cmd.get_key_clone(), Position { start: start_pos, len: part_len });
-        }
-
-        vec_cmd_data.clear();
-        Ok(())
-    }
-
-    pub(crate) fn get_level(&self) -> u64 {
-        self.meta_info.level
-    }
-
-    pub(crate) fn get_version(&self) -> u64 {
-        self.meta_info.version
-    }
-
-    pub(crate) fn get_gen(&self) -> u64 {
-        self.gen
-    }
-
-    pub(crate) fn level(&mut self, level: u64) {
-        self.meta_info.level = level;
-    }
-
-    /// Level0的压缩处理
-    pub(crate) fn minor_compaction(config: Config, manifest: &mut Manifest) -> Result<()> {
-        match manifest.get_mut_level_vec(LEVEL_0) {
-            // 注意! vec_ss_table_gen是由旧到新的
-            // 这样归并出来的数据才能保证数据是有效的
-            Some(vec_ss_table_gen) => {
-
-                // 获取当前level_0所属vec_gen的快照
-                let vec_shot_snap_gen = vec_ss_table_gen.clone();
-
-                let mut merge_map = BTreeMap::new();
-                // 将所有Level0的SSTable读取各自所有的key做归并
-                for gen in vec_shot_snap_gen.iter() {
-                    let ss_table = manifest.get_ss_table(gen).unwrap();
-                    for cmd_data in ss_table.get_all_data()? {
-                        merge_map.insert(cmd_data.get_key_clone(), cmd_data);
-                    }
-                }
-
-                // 复制出path用于文件删除
-                let path = config.dir_path.clone();
-                // 获取当前时间戳当Gen
-                let gen = Local::now().timestamp_millis() as u64;
-                // 构建Level1的SSTable
-                let mut level_1_ss_table = Self::create_form_immutable_table(config, gen, &merge_map)?;
-
-                level_1_ss_table.level(1);
-                manifest.insert(gen, level_1_ss_table)?;
-
-                manifest.retain_with_vec_gen_and_level(&vec_shot_snap_gen, LEVEL_0, &path)?;
-
-            }
-            None => {}
-        };
-        Ok(())
     }
 }
 

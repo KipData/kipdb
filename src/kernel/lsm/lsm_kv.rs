@@ -34,14 +34,7 @@ pub struct LsmStore {
     immutable_table_options: Option<Arc<RwLock<MemTable>>>,
     // SSTable详情集
     manifest: Manifest,
-    // 数据目录
-    data_dir: PathBuf,
-    // 持久化阈值数量
-    threshold_size: u64,
-    // 数据分区大小
-    part_size: u64,
-    // 文件大小
-    file_size: u64,
+    config: Config,
     /// WAL存储器
     ///
     /// SSTable持久化前会将gen写入
@@ -111,12 +104,14 @@ impl LsmStore {
             .write()
             .unwrap();
 
+        let threshold_size = self.config.threshold_size as usize;
+
         // Wal与MemTable双写
         let key = cmd.get_key();
         self.wal.set(key, CommandPackage::encode(&cmd)?)?;
         mem_table.insert(key.clone(), cmd);
 
-        if mem_table.len() > self.threshold_size as usize {
+        if mem_table.len() > threshold_size {
             drop(mem_table);
             self.store_to_ss_table()?;
         }
@@ -126,8 +121,10 @@ impl LsmStore {
 
     /// 使用Config进行LsmStore初始化
     pub fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
-        let path = config.dir_path;
+        let path = config.dir_path.clone();
         let file_size = config.file_size;
+        let wal_compaction_threshold = config.wal_compaction_threshold;
+        let wal_redundancy_size = config.wal_redundancy_size;
 
         let mem_table = Arc::new(RwLock::new(BTreeMap::new()));
         let mut ss_tables = BTreeMap::new();
@@ -137,8 +134,8 @@ impl LsmStore {
 
         // 初始化wal日志
         let wal = HashStore::open_with_compaction_threshold(&wal_path
-                                                              , config.wal_compaction_threshold
-                                                              , config.wal_redundancy_size)?;
+                                                              , wal_compaction_threshold
+                                                              , wal_redundancy_size)?;
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
         for gen in sorted_gen_list(&path)?.iter().rev() {
@@ -152,16 +149,14 @@ impl LsmStore {
             }
         }
 
-        let manifest = Manifest::new(ss_tables);
+        // 构建SSTable信息集
+        let manifest = Manifest::new(ss_tables, path.clone());
 
         Ok(LsmStore {
             mem_table,
             immutable_table_options: None,
             manifest,
-            data_dir: path,
-            threshold_size: config.threshold_size,
-            part_size: config.part_size,
-            file_size,
+            config,
             wal,
         })
     }
@@ -208,16 +203,11 @@ impl LsmStore {
             let vec_keys = immutable_table.keys()
                 .map(|k| k.clone())
                 .collect_vec();
+
             self.wal.set(&vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?)?;
 
-
-            let config = Config::new()
-                .dir_path(self.data_dir.clone())
-                .file_size(self.file_size)
-                .part_size(self.part_size);
-
             // 从内存表中将数据持久化为ss_table
-            let ss_table = SsTable::create_form_immutable_table(config
+            let ss_table = SsTable::create_form_immutable_table(&self.config
                                                                 , time_stamp
                                                                 , &immutable_table)?;
             self.manifest.insert(time_stamp, ss_table)?;
@@ -326,19 +316,6 @@ impl Config {
             wal_redundancy_size: DEFAULT_WAL_REDUNDANCY_SIZE,
             part_size: DEFAULT_PART_SIZE,
             file_size: DEFAULT_FILE_SIZE
-        }
-    }
-}
-
-// 对LevelVec插入的封装方法
-pub(crate) fn leve_vec_insert(level_vec: &mut LevelVec, level: u64, gen: u64) {
-    let option: Option<&mut Vec<u64>> = level_vec.get_mut(level as usize);
-    match option {
-        Some(vec) => {
-            vec.push(gen)
-        }
-        None => {
-            level_vec.push(vec![gen])
         }
     }
 }
