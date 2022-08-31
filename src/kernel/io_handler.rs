@@ -10,7 +10,7 @@ use crossbeam::queue::ArrayQueue;
 use tempfile::TempDir;
 use tokio::sync::{oneshot};
 use tokio::sync::oneshot::Receiver;
-use tracing::error;
+use tracing::{error, Instrument};
 use crate::kernel::{log_path};
 use crate::kernel::Result;
 use crate::kernel::thread_pool::ThreadPool;
@@ -35,6 +35,9 @@ pub(crate) struct IOHandlerFactory {
 impl IOHandlerFactory {
 
     pub(crate) fn create(&self, gen: u64) -> Result<IOHandler> {
+        let expired_set = Arc::clone(&self.expired_set);
+        expired_set.write().unwrap().remove(&gen);
+
         let dir_path = Arc::clone(&self.dir_path);
         let safe_point = Arc::clone(&self.safe_point);
         let reader_pool = Arc::clone(&self.reader_pool);
@@ -68,6 +71,16 @@ impl IOHandlerFactory {
         reader_pool.push(reader).unwrap();
 
         Self { dir_path, reader_pool, safe_point, expired_set, thread_pool }
+    }
+
+    pub(crate) fn clean(&self, io_handler: IOHandler) {
+        let safe_point = Arc::clone(&io_handler.safe_point);
+
+        self.expired_set.write().unwrap().insert(io_handler.gen);;
+
+        safe_point.fetch_add(1, Ordering::Relaxed);
+
+        drop(io_handler)
     }
 }
 
@@ -113,7 +126,7 @@ impl IOHandler {
     ///
     /// 通过Reader池与线程池进行多线程读取
     pub(crate) async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
-        let reader_pool = self.reader_pool.clone();
+        let reader_pool = Arc::clone(&self.reader_pool);
         let gen = self.gen;
         let version = self.safe_point.load(Ordering::SeqCst);
 
@@ -137,7 +150,7 @@ impl IOHandler {
     }
 
     pub(crate) async fn write(&self, buf: Vec<u8>) -> Result<()> {
-        let writer = self.writer.clone();
+        let writer = Arc::clone(&self.writer);
 
         let (tx, rx) = oneshot::channel();
         self.thread_pool.execute(move || {
@@ -160,7 +173,7 @@ impl IOHandler {
     }
 
     pub(crate) async fn flush(&self) -> Result<()> {
-        let writer = self.writer.clone();
+        let writer = Arc::clone(&self.writer);
 
         let (tx, rx) = oneshot::channel();
         self.thread_pool.execute(move || {
