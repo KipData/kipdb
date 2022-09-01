@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::btree_map::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use chrono::Local;

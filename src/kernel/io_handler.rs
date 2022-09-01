@@ -1,5 +1,6 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
+use std::collections::btree_map::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -76,7 +77,7 @@ impl IOHandlerFactory {
     pub(crate) fn clean(&self, io_handler: IOHandler) {
         let safe_point = Arc::clone(&io_handler.safe_point);
 
-        self.expired_set.write().unwrap().insert(io_handler.gen);;
+        self.expired_set.write().unwrap().insert(io_handler.gen);
 
         safe_point.fetch_add(1, Ordering::Relaxed);
 
@@ -149,15 +150,22 @@ impl IOHandler {
         Ok(rx.await.unwrap()?)
     }
 
-    pub(crate) async fn write(&self, buf: Vec<u8>) -> Result<()> {
+    pub(crate) fn writer_offset(&self) -> Result<u64> {
+        let writer = self.writer.read().unwrap();
+        Ok(writer.pos)
+    }
+
+    /// 写入并返回结束位置
+    pub(crate) async fn write(&self, buf: Vec<u8>) -> Result<usize> {
         let writer = Arc::clone(&self.writer);
 
         let (tx, rx) = oneshot::channel();
         self.thread_pool.execute(move || {
-            let res: Result<()> = (|| {
+            let res: Result<usize> = (|| {
                 let mut writer = writer.write().unwrap();
-                writer.write(&*buf)?;
-                Ok(())
+                let slice_buf = buf.as_slice();
+                writer.write(slice_buf)?;
+                Ok(slice_buf.len())
             })();
 
             if tx.send(res).is_err() {
@@ -168,7 +176,8 @@ impl IOHandler {
         Ok(rx.await.unwrap()?)
     }
 
-    pub(crate) async fn write_with_clone(&self, buf: &[u8]) -> Result<()> {
+    /// 克隆数据再写入并返回结束位置
+    pub(crate) async fn write_with_clone(&self, buf: &[u8]) -> Result<usize> {
         self.write(buf.to_vec()).await
     }
 
@@ -312,12 +321,22 @@ fn test_io() -> Result<()> {
     tokio_test::block_on(async move {
         let factory = IOHandlerFactory::new(temp_dir.path(), 10, 10);
         let handler1 = factory.create(1)?;
-        let data_write = vec![b'1', b'2', b'3'];
-        handler1.write_with_clone(&*data_write).await?;
+        let data_write1 = vec![b'1', b'2', b'3'];
+        let data_write2 = vec![b'4', b'5', b'6'];
+        let pos_1 = handler1.writer_offset()?;
+        let pos_w_1 = handler1.write(data_write1).await?;
+        let pos_2 = handler1.writer_offset()?;
+        let pos_w_2 = handler1.write(data_write2).await?;
+        let pos_3 = handler1.writer_offset()?;
         handler1.flush().await?;
-        let data_read = handler1.read_with_pos(0, 3).await?;
+        let data_read = handler1.read_with_pos(0, 6).await?;
 
-        assert_eq!(data_write, data_read);
+        assert_eq!(vec![b'1', b'2', b'3',b'4', b'5', b'6'], data_read);
+        assert_eq!(pos_1, 0);
+        assert_eq!(pos_2, 3);
+        assert_eq!(pos_3, 6);
+        assert_eq!(pos_w_1, 3);
+        assert_eq!(pos_w_2, 3);
 
         Ok(())
     })
