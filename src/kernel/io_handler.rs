@@ -150,22 +150,20 @@ impl IOHandler {
         Ok(rx.await.unwrap()?)
     }
 
-    pub(crate) fn writer_offset(&self) -> Result<u64> {
-        let writer = self.writer.read().unwrap();
-        Ok(writer.pos)
-    }
-
-    /// 写入并返回结束位置
-    pub(crate) async fn write(&self, buf: Vec<u8>) -> Result<usize> {
+    /// 写入并返回起始位置与写入长度
+    pub(crate) async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
         let writer = Arc::clone(&self.writer);
 
         let (tx, rx) = oneshot::channel();
         self.thread_pool.execute(move || {
-            let res: Result<usize> = (|| {
+            let res: Result<(u64, usize)> = (|| {
                 let mut writer = writer.write().unwrap();
+
+                let start_pos = writer.pos;
                 let slice_buf = buf.as_slice();
                 writer.write(slice_buf)?;
-                Ok(slice_buf.len())
+
+                Ok((start_pos, slice_buf.len()))
             })();
 
             if tx.send(res).is_err() {
@@ -176,8 +174,8 @@ impl IOHandler {
         Ok(rx.await.unwrap()?)
     }
 
-    /// 克隆数据再写入并返回结束位置
-    pub(crate) async fn write_with_clone(&self, buf: &[u8]) -> Result<usize> {
+    /// 克隆数据再写入并返回起始位置与写入长度
+    pub(crate) async fn write_with_clone(&self, buf: &[u8]) -> Result<(u64, usize)> {
         self.write(buf.to_vec()).await
     }
 
@@ -323,20 +321,16 @@ fn test_io() -> Result<()> {
         let handler1 = factory.create(1)?;
         let data_write1 = vec![b'1', b'2', b'3'];
         let data_write2 = vec![b'4', b'5', b'6'];
-        let pos_1 = handler1.writer_offset()?;
-        let pos_w_1 = handler1.write(data_write1).await?;
-        let pos_2 = handler1.writer_offset()?;
-        let pos_w_2 = handler1.write(data_write2).await?;
-        let pos_3 = handler1.writer_offset()?;
+        let (pos_1, len_1) = handler1.write(data_write1).await?;
+        let (pos_2, len_2) = handler1.write(data_write2).await?;
         handler1.flush().await?;
         let data_read = handler1.read_with_pos(0, 6).await?;
 
         assert_eq!(vec![b'1', b'2', b'3',b'4', b'5', b'6'], data_read);
         assert_eq!(pos_1, 0);
         assert_eq!(pos_2, 3);
-        assert_eq!(pos_3, 6);
-        assert_eq!(pos_w_1, 3);
-        assert_eq!(pos_w_2, 3);
+        assert_eq!(len_1, 3);
+        assert_eq!(len_2, 3);
 
         Ok(())
     })
