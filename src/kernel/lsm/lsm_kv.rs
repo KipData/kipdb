@@ -138,7 +138,7 @@ impl LsmStore {
                                                               , wal_redundancy_size)?;
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
-        for gen in sorted_gen_list(&path)?.iter().rev() {
+        for gen in sorted_gen_list(&path).await?.iter().rev() {
             // 尝试初始化Table
             if let Ok(ss_table) = SsTable::restore_from_file(&*path, *gen, file_size) {
                 // 初始化成功时直接传入SSTable的索引中

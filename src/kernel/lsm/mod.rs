@@ -45,7 +45,7 @@ impl MetaInfo {
     }
 
     fn read_to_file(reader: &MmapReader) -> Result<Self> {
-        let start_pos = CommandPackage::bytes_last_pos(reader);
+        let start_pos = CommandPackage::bytes_last_pos(reader).await?;
         let last_pos = start_pos + TABLE_META_INFO_SIZE;
         let table_meta_info = reader.read_zone(start_pos, last_pos)?;
 

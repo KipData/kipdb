@@ -18,7 +18,7 @@ const MAX_CONNECTIONS: usize = 250;
 /// 服务器监听器
 /// 用于监听端口的连接并分发给Handler进行多线程处理连接
 pub struct Listener {
-    kv_store_root: Arc<RwLock<dyn KVStore + Send + Sync>>,
+    kv_store_root: Arc<RwLock<dyn KVStore>>,
     listener: TcpListener,
     limit_connections: Arc<Semaphore>,
     notify_shutdown_sender: broadcast::Sender<()>,
@@ -29,7 +29,7 @@ pub struct Listener {
 /// 连接处理器
 /// 用于每个连接的响应处理
 struct Handler {
-    kv_store: Arc<RwLock<dyn KVStore + Send + Sync>>,
+    kv_store: Arc<RwLock<dyn KVStore>>,
     connection: Connection,
     notify_receiver: broadcast::Receiver<()>,
     shutdown: bool,

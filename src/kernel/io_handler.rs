@@ -2,20 +2,18 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::collections::btree_map::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::{fs, io};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use crossbeam::queue::ArrayQueue;
+use rayon::ThreadPool;
 use tempfile::TempDir;
 use tokio::sync::{oneshot};
-use tokio::sync::oneshot::Receiver;
-use tracing::{error, Instrument};
+use tracing::error;
 use crate::kernel::{log_path};
 use crate::kernel::Result;
-use crate::kernel::thread_pool::ThreadPool;
-
 pub(crate) type SingleWriter = Arc<RwLock<BufWriterWithPos<File>>>;
 
 pub(crate) struct UniversalReader {
@@ -55,7 +53,11 @@ impl IOHandlerFactory {
 
         let expired_set = Arc::new(RwLock::new(HashSet::new()));
 
-        let thread_pool = Arc::new(ThreadPool::new(thread_size));
+        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_size)
+            .build()
+            .unwrap());
+
 
         let reader = UniversalReader::new(
             Arc::clone(&dir_path),
@@ -74,14 +76,12 @@ impl IOHandlerFactory {
         Self { dir_path, reader_pool, safe_point, expired_set, thread_pool }
     }
 
-    pub(crate) fn clean(&self, io_handler: IOHandler) {
+    pub(crate) fn clean(&self, io_handler: &mut IOHandler) {
         let safe_point = Arc::clone(&io_handler.safe_point);
 
         self.expired_set.write().unwrap().insert(io_handler.gen);
 
         safe_point.fetch_add(1, Ordering::Relaxed);
-
-        drop(io_handler)
     }
 }
 
@@ -102,6 +102,7 @@ pub(crate) struct IOHandler {
 }
 
 impl IOHandler {
+
     pub(crate) fn new(
         dir_path: Arc<PathBuf>,
         gen: u64,
@@ -123,6 +124,15 @@ impl IOHandler {
         Ok(Self { gen, dir_path, reader_pool, safe_point, writer, thread_pool })
     }
 
+    pub (crate) fn get_gen(&self) -> u64 {
+        self.gen
+    }
+
+    pub(crate) async fn file_size(&self) -> Result<u64> {
+        let path = log_path(&self.dir_path, self.gen);
+        Ok(fs::metadata(path)?.len())
+    }
+
     /// 读取执行起始位置的指定长度的二进制数据
     ///
     /// 通过Reader池与线程池进行多线程读取
@@ -132,7 +142,7 @@ impl IOHandler {
         let version = self.safe_point.load(Ordering::SeqCst);
 
         let (tx, rx) = oneshot::channel();
-        self.thread_pool.execute(move || {
+        self.thread_pool.spawn(move || {
             let res: Result<Vec<u8>> = (|| {
                 let reader = reader_pool.pop().unwrap();
 
@@ -331,6 +341,8 @@ fn test_io() -> Result<()> {
         assert_eq!(pos_2, 3);
         assert_eq!(len_1, 3);
         assert_eq!(len_2, 3);
+
+        assert_eq!(handler1.file_size()?, 6);
 
         Ok(())
     })

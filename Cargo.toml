@@ -35,6 +35,7 @@ tokio = { version="1", features = ["full"] }
 futures = "0.3"
 tokio-util = { version="0.7.3", features = ["codec"] }
 tokio-stream = "0.1.9"
+async-trait = "0.1.57"
 # 数据承载媒介
 bytes = "1.2.1"
 # 文件IO
