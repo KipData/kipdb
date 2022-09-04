@@ -4,7 +4,6 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::kernel::io_handler::IOHandler;
 use async_trait::async_trait;
-use rmp_serde::decode::Error;
 
 use crate::{HashStore, KvsError};
 use crate::net::CommandOption;
@@ -39,6 +38,7 @@ pub trait KVStore: Clone + Send + 'static {
     /// 通过键删除键值对
     async fn remove(&self, key: &Vec<u8>) -> Result<()>;
 
+    /// 将内核关闭
     async fn shut_down(&self) -> Result<()>;
 }
 
@@ -70,6 +70,7 @@ pub enum CommandData {
 }
 
 impl CommandPos {
+    /// 重写自身数据
     pub fn change(&mut self, gen: u64, pos: u64, len: usize) {
         self.gen = gen;
         self.pos = pos;
@@ -115,7 +116,7 @@ impl CommandPackage {
         Ok((start + 4, len - 4))
     }
 
-    /// 以reader使用两个pos读取范围之中的单个Command
+    /// IOHandler的对应Gen，以起始位置与长度使用的单个Command
     pub async fn form_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandPackage>> {
         if let Some(cmd_data) =  Self::form_pos_unpack(io_handler, start, len).await? {
             Ok(Some(CommandPackage::new(cmd_data, start, len)))
@@ -124,6 +125,7 @@ impl CommandPackage {
         }
     }
 
+    /// 指定Gen，以起始位置与长度使用的单个Command
     pub async fn form_pos_with_gen(io_handler: &IOHandler, gen: u64, start: u64, len: usize) -> Result<Option<CommandPackage>> {
         if let Some(cmd_data) =  Self::form_pos_with_gen_unpack(io_handler, gen, start, len).await? {
             Ok(Some(CommandPackage::new(cmd_data, start, len)))
@@ -131,7 +133,7 @@ impl CommandPackage {
             Ok(None)
         }
     }
-
+    /// 指定Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub async fn form_pos_with_gen_unpack(io_handler: &IOHandler, gen: u64, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos_and_gen(gen, start, len).await?;
         Ok(match rmp_serde::decode::from_slice(cmd_u8.as_slice()) {
@@ -143,8 +145,7 @@ impl CommandPackage {
             }
         })
     }
-
-    /// 以reader使用两个pos读取范围之中的单个Command
+    /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub async fn form_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos(start, len).await?;
         Ok(match rmp_serde::decode::from_slice(cmd_u8.as_slice()) {
@@ -211,10 +212,7 @@ impl CommandPackage {
                 break
             }
             let len_u8 = &zone[last_pos..pos];
-            let len = usize::from(len_u8[3])
-                | usize::from(len_u8[2]) << 8
-                | usize::from(len_u8[1]) << 16
-                | usize::from(len_u8[0]) << 24;
+            let len = Self::from_4_bit_with_start(len_u8);
             if len < 1 {
                 break
             }
@@ -231,15 +229,20 @@ impl CommandPackage {
         let mut pos = 0;
         loop {
             let len_u8 = io_handler.read_with_pos(pos, 4).await?;
-            let len = usize::from(len_u8[3])
-                | usize::from(len_u8[2]) << 8
-                | usize::from(len_u8[1]) << 16
-                | usize::from(len_u8[0]) << 24;
+            let len = Self::from_4_bit_with_start(len_u8.as_slice());
             if len < 1 {
                 return Ok(pos + 4);
             }
             pos += len as u64 + 4;
         }
+    }
+
+    /// 从u8的slice中前四位获取数据的长度
+    fn from_4_bit_with_start(len_u8: &[u8]) -> usize {
+        usize::from(len_u8[3])
+            | usize::from(len_u8[2]) << 8
+            | usize::from(len_u8[1]) << 16
+            | usize::from(len_u8[0]) << 24
     }
 }
 
