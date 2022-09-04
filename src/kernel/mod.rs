@@ -1,12 +1,12 @@
-use std::{io::{Write}, path::PathBuf, fs};
+use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::kernel::io_handler::IOHandler;
 use async_trait::async_trait;
-use crate::kernel::lsm::lsm_kv::LsmStore;
+use rmp_serde::decode::Error;
 
-use crate::KvsError;
+use crate::{HashStore, KvsError};
 use crate::net::CommandOption;
 
 pub mod hash_kv;
@@ -25,7 +25,7 @@ pub trait KVStore: Clone + Send + 'static {
     fn name() -> &'static str where Self: Sized;
 
     /// 通过数据目录路径开启数据库
-    async fn open(path: impl Into<PathBuf>) -> Result<Self>;
+    async fn open(path: impl Into<PathBuf> + Send) -> Result<Self>;
 
     /// 强制将数据刷入硬盘
     async fn flush(&self) -> Result<()>;
@@ -38,6 +38,8 @@ pub trait KVStore: Clone + Send + 'static {
 
     /// 通过键删除键值对
     async fn remove(&self, key: &Vec<u8>) -> Result<()>;
+
+    async fn shut_down(&self) -> Result<()>;
 }
 
 /// 用于包装Command交予持久化核心实现使用的操作类
@@ -53,7 +55,7 @@ struct CommandPackage {
 /// gen 文件序号
 /// pos 开头指针
 /// len 命令长度
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 struct CommandPos {
     gen: u64,
     pos: u64,
@@ -65,6 +67,14 @@ pub enum CommandData {
     Set { key: Vec<u8>, value: Vec<u8> },
     Remove { key: Vec<u8> },
     Get { key: Vec<u8> }
+}
+
+impl CommandPos {
+    pub fn change(&mut self, gen: u64, pos: u64, len: usize) {
+        self.gen = gen;
+        self.pos = pos;
+        self.len = len;
+    }
 }
 
 impl CommandPackage {
@@ -101,14 +111,50 @@ impl CommandPackage {
                                 (i >> 8) as u8,
                                 i as u8 ];
         vec_head.extend(vec);
-        Ok(io_handler.write(vec_head).await?)
+        let (start, len) = io_handler.write(vec_head).await?;
+        Ok((start + 4, len - 4))
     }
 
     /// 以reader使用两个pos读取范围之中的单个Command
-    pub async fn form_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<CommandPackage> {
+    pub async fn form_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandPackage>> {
+        if let Some(cmd_data) =  Self::form_pos_unpack(io_handler, start, len).await? {
+            Ok(Some(CommandPackage::new(cmd_data, start, len)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn form_pos_with_gen(io_handler: &IOHandler, gen: u64, start: u64, len: usize) -> Result<Option<CommandPackage>> {
+        if let Some(cmd_data) =  Self::form_pos_with_gen_unpack(io_handler, gen, start, len).await? {
+            Ok(Some(CommandPackage::new(cmd_data, start, len)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn form_pos_with_gen_unpack(io_handler: &IOHandler, gen: u64, start: u64, len: usize) -> Result<Option<CommandData>> {
+        let cmd_u8 = io_handler.read_with_pos_and_gen(gen, start, len).await?;
+        Ok(match rmp_serde::decode::from_slice(cmd_u8.as_slice()) {
+            Ok(cmd) => {
+                Some(cmd)
+            }
+            Err(_) => {
+                None
+            }
+        })
+    }
+
+    /// 以reader使用两个pos读取范围之中的单个Command
+    pub async fn form_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos(start, len).await?;
-        let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8.as_slice())?;
-        Ok(CommandPackage::new(cmd, start, len))
+        Ok(match rmp_serde::decode::from_slice(cmd_u8.as_slice()) {
+            Ok(cmd) => {
+                Some(cmd)
+            }
+            Err(_) => {
+                None
+            }
+        })
     }
 
     /// 获取zone之中所有的Command
@@ -121,7 +167,7 @@ impl CommandPackage {
             let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
             vec.push(CommandPackage::new(cmd, pos, len));
             // 对pos进行长度自增并对占位符进行跳过
-            pos += len + 4;
+            pos += len as u64 + 4;
         }
         Ok(vec)
     }
@@ -137,15 +183,16 @@ impl CommandPackage {
                 return Ok(Some(CommandPackage::new(cmd, pos, len)));
             }
             // 对pos进行长度自增并对占位符进行跳过
-            pos += len + 4;
+            pos += len as u64 + 4;
         }
         Ok(None)
     }
 
     /// 获取reader之中所有的Command
     pub async fn form_read_to_vec(io_handler: &IOHandler) -> Result<Vec<CommandPackage>> {
-        let zone = io_handler.read_with_pos(0, io_handler.file_size()?).await?;
-        Self::form_zone_to_vec(zone.as_slice())
+        let len = io_handler.file_size().await? as usize;
+        let zone = io_handler.read_with_pos(0, len).await?;
+        Self::form_zone_to_vec(zone.as_slice()).await
     }
 
     /// 获取此reader的所有命令对应的字节数组段落
@@ -191,7 +238,7 @@ impl CommandPackage {
             if len < 1 {
                 return Ok(pos + 4);
             }
-            pos += len + 4;
+            pos += len as u64 + 4;
         }
     }
 }
@@ -241,7 +288,7 @@ impl CommandData {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 参数Arc<RwLock<KvStore>>为持久化内核
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
-    pub async fn apply(self, kv_store: &mut LsmStore) -> Result<CommandOption>{
+    pub async fn apply(self, kv_store: &mut HashStore) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
                 match kv_store.set(&key, value).await {

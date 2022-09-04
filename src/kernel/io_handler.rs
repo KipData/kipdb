@@ -9,21 +9,20 @@ use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use crossbeam::queue::ArrayQueue;
 use rayon::ThreadPool;
-use tempfile::TempDir;
 use tokio::sync::{oneshot};
 use tracing::error;
 use crate::kernel::{log_path};
 use crate::kernel::Result;
 pub(crate) type SingleWriter = Arc<RwLock<BufWriterWithPos<File>>>;
 
-pub(crate) struct UniversalReader {
+pub struct UniversalReader {
     dir_path: Arc<PathBuf>,
     version: u64,
     expired_set: Arc<RwLock<HashSet<u64>>>,
     readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>
 }
 
-pub(crate) struct IOHandlerFactory {
+pub struct IOHandlerFactory {
     dir_path: Arc<PathBuf>,
     reader_pool: Arc<ArrayQueue<UniversalReader>>,
     safe_point: Arc<AtomicU64>,
@@ -33,7 +32,7 @@ pub(crate) struct IOHandlerFactory {
 
 impl IOHandlerFactory {
 
-    pub(crate) fn create(&self, gen: u64) -> Result<IOHandler> {
+    pub fn create(&self, gen: u64) -> Result<IOHandler> {
         let expired_set = Arc::clone(&self.expired_set);
         expired_set.write().unwrap().remove(&gen);
 
@@ -42,7 +41,7 @@ impl IOHandlerFactory {
         let reader_pool = Arc::clone(&self.reader_pool);
         let thread_pool = Arc::clone(&self.thread_pool);
 
-        Ok(IOHandler::new(dir_path,gen, reader_pool, thread_pool, safe_point)?)
+        Ok(IOHandler::new(dir_path, gen, reader_pool, thread_pool, safe_point)?)
     }
 
     pub fn new(dir_path: impl Into<PathBuf>, readers_size: u64, thread_size: usize) -> Self {
@@ -76,12 +75,14 @@ impl IOHandlerFactory {
         Self { dir_path, reader_pool, safe_point, expired_set, thread_pool }
     }
 
-    pub(crate) fn clean(&self, io_handler: &mut IOHandler) {
+    pub fn clean(&self, io_handler: &mut IOHandler) -> Result<()>{
         let safe_point = Arc::clone(&io_handler.safe_point);
 
         self.expired_set.write().unwrap().insert(io_handler.gen);
 
         safe_point.fetch_add(1, Ordering::Relaxed);
+        fs::remove_file(log_path(&self.dir_path, io_handler.gen))?;
+        Ok(())
     }
 }
 
@@ -92,7 +93,7 @@ impl IOHandlerFactory {
 ///
 /// Writer是私有的
 /// 每个文件的写入是阻塞的
-pub(crate) struct IOHandler {
+pub struct IOHandler {
     gen: u64,
     dir_path: Arc<PathBuf>,
     safe_point: Arc<AtomicU64>,
@@ -103,7 +104,7 @@ pub(crate) struct IOHandler {
 
 impl IOHandler {
 
-    pub(crate) fn new(
+    pub fn new(
         dir_path: Arc<PathBuf>,
         gen: u64,
         reader_pool: Arc<ArrayQueue<UniversalReader>>,
@@ -124,21 +125,31 @@ impl IOHandler {
         Ok(Self { gen, dir_path, reader_pool, safe_point, writer, thread_pool })
     }
 
-    pub (crate) fn get_gen(&self) -> u64 {
+    pub fn get_gen(&self) -> u64 {
         self.gen
     }
 
-    pub(crate) async fn file_size(&self) -> Result<u64> {
+    pub fn get_dir_path(&self) -> Arc<PathBuf> {
+        Arc::clone(&self.dir_path)
+    }
+
+    pub async fn file_size(&self) -> Result<u64> {
         let path = log_path(&self.dir_path, self.gen);
         Ok(fs::metadata(path)?.len())
+    }
+
+    /// 使用自身的gen读取执行起始位置的指定长度的二进制数据
+    ///
+    /// 通过Reader池与线程池进行多线程读取
+    pub async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
+        self.read_with_pos_and_gen(self.gen, start, len).await
     }
 
     /// 读取执行起始位置的指定长度的二进制数据
     ///
     /// 通过Reader池与线程池进行多线程读取
-    pub(crate) async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
+    pub async fn read_with_pos_and_gen(&self, gen: u64, start: u64, len: usize) -> Result<Vec<u8>> {
         let reader_pool = Arc::clone(&self.reader_pool);
-        let gen = self.gen;
         let version = self.safe_point.load(Ordering::SeqCst);
 
         let (tx, rx) = oneshot::channel();
@@ -161,11 +172,11 @@ impl IOHandler {
     }
 
     /// 写入并返回起始位置与写入长度
-    pub(crate) async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
+    pub async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
         let writer = Arc::clone(&self.writer);
 
         let (tx, rx) = oneshot::channel();
-        self.thread_pool.execute(move || {
+        self.thread_pool.spawn(move || {
             let res: Result<(u64, usize)> = (|| {
                 let mut writer = writer.write().unwrap();
 
@@ -185,15 +196,15 @@ impl IOHandler {
     }
 
     /// 克隆数据再写入并返回起始位置与写入长度
-    pub(crate) async fn write_with_clone(&self, buf: &[u8]) -> Result<(u64, usize)> {
+    pub async fn write_with_clone(&self, buf: &[u8]) -> Result<(u64, usize)> {
         self.write(buf.to_vec()).await
     }
 
-    pub(crate) async fn flush(&self) -> Result<()> {
+    pub async fn flush(&self) -> Result<()> {
         let writer = Arc::clone(&self.writer);
 
         let (tx, rx) = oneshot::channel();
-        self.thread_pool.execute(move || {
+        self.thread_pool.spawn(move || {
             let res: Result<()> = (|| {
                 let mut writer = writer.write().unwrap();
                 writer.flush()?;
@@ -242,7 +253,7 @@ impl UniversalReader {
 
         Ok(buffer)
     }
-    pub fn new(dir_path: Arc<PathBuf>, version: u64, expired_set: Arc<RwLock<HashSet<u64>>>, readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>) -> Self {
+    pub(crate) fn new(dir_path: Arc<PathBuf>, version: u64, expired_set: Arc<RwLock<HashSet<u64>>>, readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>) -> Self {
         Self { dir_path, version, expired_set, readers }
     }
 }
@@ -321,29 +332,4 @@ impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
         self.pos = self.writer.seek(pos)?;
         Ok(self.pos)
     }
-}
-
-#[test]
-fn test_io() -> Result<()> {
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    tokio_test::block_on(async move {
-        let factory = IOHandlerFactory::new(temp_dir.path(), 10, 10);
-        let handler1 = factory.create(1)?;
-        let data_write1 = vec![b'1', b'2', b'3'];
-        let data_write2 = vec![b'4', b'5', b'6'];
-        let (pos_1, len_1) = handler1.write(data_write1).await?;
-        let (pos_2, len_2) = handler1.write(data_write2).await?;
-        handler1.flush().await?;
-        let data_read = handler1.read_with_pos(0, 6).await?;
-
-        assert_eq!(vec![b'1', b'2', b'3',b'4', b'5', b'6'], data_read);
-        assert_eq!(pos_1, 0);
-        assert_eq!(pos_2, 3);
-        assert_eq!(len_1, 3);
-        assert_eq!(len_2, 3);
-
-        assert_eq!(handler1.file_size()?, 6);
-
-        Ok(())
-    })
 }

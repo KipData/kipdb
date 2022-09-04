@@ -1,36 +1,48 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use sled::Db;
+use async_trait::async_trait;
 use crate::kernel::KVStore;
 use crate::KvsError;
 
 pub struct SledStore {
-    data_base: Db
+    data_base: Arc<Db>
 }
 
+impl Clone for SledStore {
+    fn clone(&self) -> Self {
+        SledStore {
+            data_base: Arc::clone(&self.data_base)
+        }
+    }
+}
+
+#[async_trait]
 impl KVStore for SledStore {
+
     fn name() -> &'static str where Self: Sized {
         "Sled made in spacejam"
     }
 
-    fn open(path: impl Into<PathBuf>) -> crate::kernel::Result<Self> where Self: Sized {
-        let db = sled::open(&path.into())?;
+    async fn open(path: impl Into<PathBuf> + Send) -> crate::kernel::Result<Self> {
+        let db = Arc::new(sled::open(&path.into())?);
 
         Ok(SledStore {
             data_base: db
         })
     }
 
-    fn flush(&mut self) -> crate::kernel::Result<()> {
+    async fn flush(&self) -> crate::kernel::Result<()> {
         self.data_base.flush()?;
         Ok(())
     }
 
-    fn set(&mut self, key: &Vec<u8>, value: Vec<u8>) -> crate::kernel::Result<()> {
+    async fn set(&self, key: &Vec<u8>, value: Vec<u8>) -> crate::kernel::Result<()> {
         self.data_base.insert(key, value)?;
         Ok(())
     }
 
-    fn get(&self, key: &Vec<u8>) -> crate::kernel::Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &Vec<u8>) -> crate::kernel::Result<Option<Vec<u8>>> {
         match self.data_base.get(key)? {
             None => { Ok(None) }
             Some(i_vec) => {
@@ -39,17 +51,15 @@ impl KVStore for SledStore {
         }
     }
 
-    fn remove(&mut self, key: &Vec<u8>) -> crate::kernel::Result<()> {
+    async fn remove(&self, key: &Vec<u8>) -> crate::kernel::Result<()> {
         match self.data_base.remove(key) {
             Ok(Some(_)) => { Ok(()) }
             Ok(None) => { Err(KvsError::KeyNotFound) }
             Err(e) => { Err(KvsError::Sled(e)) }
         }
     }
-}
 
-impl Drop for SledStore {
-    fn drop(&mut self) {
-        self.data_base.flush().unwrap();
+    async fn shut_down(&self) -> crate::kernel::Result<()> {
+        self.flush().await
     }
 }
