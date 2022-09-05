@@ -1,15 +1,18 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use crate::kernel::{CommandPackage, log_path, Result};
+use crate::kernel::{CommandData, CommandPackage, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::lsm_kv::{LevelVec, SsTableMap};
+use crate::kernel::lsm::lsm_kv::{LevelVec, MemTable, SsTableMap};
 use crate::kernel::lsm::ss_table::SsTable;
 
 pub(crate) mod ss_table;
 pub mod lsm_kv;
+
+pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
 
 // META_INFO序列化长度定长
 const TABLE_META_INFO_SIZE: usize = 40;
@@ -30,6 +33,47 @@ pub(crate) struct Manifest {
     // Level层级Vec
     // 以索引0为level-0这样的递推，存储文件的gen值
     level_vec: LevelVec,
+}
+
+pub(crate) struct MemTableSlice {
+    mem_table_slice: [MemTable; 2]
+}
+
+impl MemTableSlice {
+
+    fn new() -> MemTableSlice {
+        MemTableSlice {
+            mem_table_slice: [MemTable::new(), MemTable::new()]
+        }
+    }
+
+    fn load(mem_table: MemTable) -> MemTableSlice {
+        MemTableSlice {
+            mem_table_slice: [mem_table, MemTable::new()]
+        }
+    }
+
+    fn get_cmd_data(&self, key: &Vec<u8>) -> Option<&CommandData> {
+        if let Some(data) = self.mem_table_slice[0].get(key) {
+            Some(data)
+        } else {
+            if let Some(data) = self.mem_table_slice[1].get(key) {
+                Some(data)
+            } else {
+                None
+            }
+        }
+    }
+
+    fn table_swap(&mut self) -> (Vec<Vec<u8>>, Vec<CommandData>){
+        self.mem_table_slice.swap(0, 1);
+        let mut mem_table = &mut self.mem_table_slice[0];
+        let vec_keys = mem_table.keys().cloned().collect_vec();
+        let vec_values = mem_table.values().cloned().collect_vec();
+        *mem_table = MemTable::new();
+
+        (vec_keys, vec_values)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]

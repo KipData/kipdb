@@ -2,19 +2,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use chrono::Local;
-use itertools::Itertools;
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
-use crate::kernel::lsm::Manifest;
+use crate::kernel::lsm::{Manifest, MemTable, MemTableSlice};
 use crate::kernel::lsm::ss_table::{LEVEL_0, SsTable};
 use crate::kernel::Result;
 
 pub(crate) type LevelVec = Vec<Vec<u64>>;
 
 pub(crate) type SsTableMap = BTreeMap<u64, SsTable>;
-
-pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
@@ -28,9 +25,7 @@ pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv:
 
 pub struct LsmStore {
     // 内存表
-    mem_table: Arc<RwLock<MemTable>>,
-    // 不可变内存表 持久化内存表时数据暂存用
-    immutable_table: Arc<RwLock<MemTable>>,
+    mem_table_slice: Arc<RwLock<MemTableSlice>>,
     // SSTable详情集
     manifest: Arc<RwLock<Manifest>>,
     config: Config,
@@ -63,26 +58,23 @@ impl KVStore for LsmStore {
     }
 
     async fn flush(&self) -> Result<()> {
-        self.wal.flush()?;
+        self.wal.flush().await?;
 
         Ok(())
     }
 
     async fn set(&self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data(CommandData::Set { key: key.clone(), value })
+        self.append_cmd_data(CommandData::Set { key: key.clone(), value }).await
     }
 
     async fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let mem_table = self.mem_table.read().unwrap();
-        if let Some(cmd_data) = mem_table.get(key) {
-            return LsmStore::cmd_unpack(cmd_data);
-        }
+        let mem_table_slice = self.mem_table_slice.read().unwrap();
+        let manifest = self.manifest.read().unwrap();
 
-        let immutable_table = self.immutable_table.read().unwrap();
-        if let Some(cmd_data) = immutable_table.get(key) {
+        if let Some(cmd_data) = mem_table_slice.get_cmd_data(key) {
             return LsmStore::cmd_unpack(cmd_data);
         }
-        for (_, ss_table) in self.manifest.get_ss_table_map() {
+        for (_, ss_table) in manifest.get_ss_table_map() {
             if let Some(cmd_data) = ss_table.query(key)? {
                 return LsmStore::cmd_unpack_with_owner(cmd_data);
             }
@@ -92,29 +84,34 @@ impl KVStore for LsmStore {
     }
 
     async fn remove(&self, key: &Vec<u8>) -> Result<()> {
-        match self.get(key)? {
-            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.clone() }) }
+        match self.get(key).await? {
+            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.clone() }).await }
             None => { Err(KvsError::KeyNotFound) }
         }
+    }
+
+    async fn shut_down(&self) -> Result<()> {
+        self.wal.flush().await?;
+        self.store_to_ss_table().await?;
+
+        Ok(())
     }
 }
 
 impl LsmStore {
 
     /// 追加数据
-    fn append_cmd_data(&self, cmd: CommandData) -> Result<()> {
-        let mut mem_table = self.mem_table.write().unwrap();
-
+    async fn append_cmd_data(&self, cmd: CommandData) -> Result<()> {
         let threshold_size = self.config.threshold_size as usize;
 
         // Wal与MemTable双写
         let key = cmd.get_key();
-        self.wal.set(key, CommandPackage::encode(&cmd)?)?;
+        self.wal.set(key, CommandPackage::encode(&cmd)?).await?;
         mem_table.insert(key.clone(), cmd);
 
         if mem_table.len() > threshold_size {
             drop(mem_table);
-            self.store_to_ss_table()?;
+            self.store_to_ss_table().await?;
         }
 
         Ok(())
@@ -127,7 +124,7 @@ impl LsmStore {
         let reader_size = config.reader_size;
         let thread_size = config.thread_size;
 
-        let mem_table = Arc::new(RwLock::new(BTreeMap::new()));
+        let mut mem_table = MemTable::new();
         let mut ss_tables = BTreeMap::new();
 
         let mut wal_path = path.clone();
@@ -141,13 +138,13 @@ impl LsmStore {
         for gen in sorted_gen_list(&path).await?.iter().rev() {
             let mut io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
-            if let Ok(ss_table) = SsTable::restore_from_file(io_handler) {
+            if let Ok(ss_table) = SsTable::restore_from_file(io_handler).await {
                 // 初始化成功时直接传入SSTable的索引中
                 ss_tables.insert(*gen, ss_table);
             } else {
                 io_handler_factory.clean(&mut io_handler)?;
                 // 从wal将有问题的ss_table恢复到mem_table中
-                Self::reload_for_wal(&mem_table, &wal, &gen).await?;
+                Self::reload_for_wal(&mut mem_table, &wal, &gen).await?;
             }
         }
 
@@ -155,8 +152,7 @@ impl LsmStore {
         let manifest = Arc::new(RwLock::new(Manifest::new(ss_tables, Arc::new(path.clone()))));
 
         Ok(LsmStore {
-            mem_table,
-            immutable_table: Arc::new(RwLock::new(BTreeMap::new())),
+            mem_table_slice: Arc::new(RwLock::new(MemTableSlice::load(mem_table))),
             manifest,
             config,
             io_handler_factory,
@@ -166,15 +162,13 @@ impl LsmStore {
 
     /// 从Wal恢复SSTable数据
     /// 初始化失败时遍历wal的key并检测key是否为gen
-    async fn reload_for_wal(mem_table: &Arc<RwLock<BTreeMap<Vec<u8>, CommandData>>>, wal: &HashStore, gen: &u64) -> Result<()>{
-        let mut mem_table = mem_table.write().unwrap();
-
+    async fn reload_for_wal(mem_table: &mut MemTable, wal: &HashStore, gen: &u64) -> Result<()>{
         // 将SSTable持久化失败前预存入的指令键集合从wal中获取
         // 随后将每一条指令键对应的指令恢复到mem_table中
         let key_gen = CommandCodec::encode_str_key(gen.to_string())?;
-        if let Some(key_cmd_u8) = wal.get(&key_gen)? {
+        if let Some(key_cmd_u8) = wal.get(&key_gen).await? {
             for key in CommandCodec::decode_keys(&key_cmd_u8)? {
-                if let Some(cmd_data_u8) = wal.get(&key)? {
+                if let Some(cmd_data_u8) = wal.get(&key).await? {
                     let cmd_data = CommandPackage::decode(&cmd_data_u8)?;
 
                     mem_table.insert(cmd_data.get_key_clone(), cmd_data);
@@ -189,32 +183,30 @@ impl LsmStore {
     }
 
     /// 持久化immutable_table为SSTable
-    pub(crate) async fn store_to_ss_table(&mut self) -> Result<()> {
+    pub(crate) async fn store_to_ss_table(&self) -> Result<()> {
+        let mut mem_table_slice = self.mem_table_slice.write().unwrap();
+        let mut manifest = self.manifest.write().unwrap();
+
         // 切换mem_table并准备持久化
-        self.immutable_table = Arc::clone(&self.mem_table);
-        self.mem_table = Arc::new(RwLock::new(BTreeMap::new()));
+        let (vec_keys, vec_values) = mem_table_slice.table_swap();
 
         // 获取当前时间戳当gen
         let time_stamp = Local::now().timestamp_millis() as u64;
         let vec_ts_u8 = CommandCodec::encode_str_key(time_stamp.to_string())?;
-        if let Some(immutable_table) = &self.immutable_table.clone() {
 
-            // 将这些索引的key序列化后预先存入wal中作防灾准备
-            // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
-            let vec_keys = self.immutable_table.keys()
-                .map(|k| k.clone())
-                .collect_vec();
 
-            self.wal.set(&vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?).await?;
+        // 将这些索引的key序列化后预先存入wal中作防灾准备
+        // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
 
-            let handler = self.io_handler_factory.create(time_stamp)?;
-            // 从内存表中将数据持久化为ss_table
-            let ss_table = SsTable::create_form_immutable_table(&self.config
-                                                                , handler
-                                                                , &immutable_table
-                                                                , LEVEL_0)?;
-            self.manifest.insert(time_stamp, ss_table)?;
-        }
+        self.wal.set(&vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?).await?;
+
+        let handler = self.io_handler_factory.create(time_stamp)?;
+        // 从内存表中将数据持久化为ss_table
+        let ss_table = SsTable::create_form_immutable_table(&self.config
+                                                            , handler
+                                                            , &vec_values
+                                                            , LEVEL_0).await?;
+        manifest.insert(time_stamp, ss_table)?;
         Ok(())
     }
 
@@ -232,13 +224,6 @@ impl LsmStore {
             None => { Ok(None) }
             Some(value) => { Ok(Some(value)) }
         }
-    }
-}
-
-impl Drop for LsmStore {
-    fn drop(&mut self) {
-        self.wal.flush().unwrap();
-        self.store_to_ss_table().unwrap();
     }
 }
 

@@ -291,7 +291,7 @@ impl CommandData {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 参数Arc<RwLock<KvStore>>为持久化内核
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
-    pub async fn apply(self, kv_store: &mut HashStore) -> Result<CommandOption>{
+    pub async fn apply<K: KVStore>(self, kv_store: &mut K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
                 match kv_store.set(&key, value).await {
