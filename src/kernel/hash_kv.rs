@@ -11,7 +11,7 @@ use crate::kernel::{CommandData, CommandPackage, CommandPos, KVStore, Result, so
 use crate::kernel::io_handler::{IOHandler, IOHandlerFactory};
 
 /// 默认压缩大小触发阈值
-pub(crate) const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 6;
+pub(crate) const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 64;
 /// Reader池数量
 /// 读取是多线程并发的
 pub(crate) const DEFAULT_READER_SIZE: u64 = 10;
@@ -187,7 +187,7 @@ impl KVStore for HashStore {
     }
 
     async fn set(&self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
-        let manifest = self.manifest.read().await;
+        let mut manifest = self.manifest.write().await;
 
         //将数据包装为命令
         let gen = manifest.current_gen;
@@ -200,9 +200,7 @@ impl KVStore for HashStore {
         if let CommandData::Set { key, .. } = cmd {
             // 封装为CommandPos
             let cmd_pos = CommandPos {gen, pos, len };
-            drop(manifest);
 
-            let mut manifest = self.manifest.write().await;
             // 将封装CommandPos存入索引Map中
             if let Some(old_cmd) = manifest.insert_command_pos(key, cmd_pos) {
                 // 将阈值提升至该命令的大小
@@ -227,12 +225,12 @@ impl KVStore for HashStore {
 
             if let Some(cmd) = CommandPackage::form_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await? {
                 // 将命令进行转换
-                if let CommandData::Set { value, .. } = cmd {
+                return if let CommandData::Set { value, .. } = cmd {
                     //返回匹配成功的数据
-                    return Ok(Some(value));
+                    Ok(Some(value))
                 } else {
                     //返回错误（错误的指令类型）
-                    return Err(KvsError::UnexpectedCommandType);
+                    Err(KvsError::UnexpectedCommandType)
                 }
             }
         }
@@ -321,7 +319,7 @@ impl Manifest {
             .collect_vec()
     }
     /// 提升最新Gen位置
-    fn fetch_add(&mut self, num: u64) {
+    fn gen_add(&mut self, num: u64) {
         self.current_gen += num;
     }
     /// 插入新的CommandPos
@@ -384,7 +382,7 @@ impl Manifest {
         // 插入新的写入IOHandler
         self.insert_io_handler(factory.create(current + 2)?);
         // 新的写入位置为原位置的向上两位
-        self.fetch_add(2);
+        self.gen_add(2);
 
         let compaction_gen = current + 1;
         Ok((compaction_gen, factory.create(compaction_gen)?))
