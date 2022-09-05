@@ -28,6 +28,9 @@ pub enum KvsError {
     #[fail(display = "WAL log load error")]
     WalLoadError,
 
+    #[fail(display = "Could not found the SSTable")]
+    SSTableLostError,
+
     /// Unexpected command type error.
     /// It indicated a corrupted log or a program bug.
     #[fail(display = "Unexpected command type")]
