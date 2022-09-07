@@ -6,8 +6,9 @@ use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
 use tracing::{debug, error, info};
 use crate::error::ConnectionError;
-use crate::{HashStore, KvsError};
+use crate::KvsError;
 use crate::kernel::KVStore;
+use crate::kernel::lsm::lsm_kv::LsmStore;
 use crate::net::connection::Connection;
 use crate::net::Result;
 use crate::net::CommandOption;
@@ -17,7 +18,7 @@ const MAX_CONNECTIONS: usize = 250;
 /// 服务器监听器
 /// 用于监听端口的连接并分发给Handler进行多线程处理连接
 pub struct Listener {
-    kv_store_root: HashStore,
+    kv_store_root: Arc<LsmStore>,
     listener: TcpListener,
     limit_connections: Arc<Semaphore>,
     notify_shutdown_sender: broadcast::Sender<()>,
@@ -28,7 +29,7 @@ pub struct Listener {
 /// 连接处理器
 /// 用于每个连接的响应处理
 struct Handler {
-    kv_store: HashStore,
+    kv_store: Arc<LsmStore>,
     connection: Connection,
     notify_receiver: broadcast::Receiver<()>,
     shutdown: bool,
@@ -37,7 +38,7 @@ struct Handler {
 }
 
 pub async fn run(listener: TcpListener, shutdown: impl Future) {
-    let kv_store_root = HashStore::open("./data").await.unwrap();
+    let kv_store_root = Arc::new(LsmStore::open("./data").await.unwrap());
     let (notify_shutdown_sender, _) = broadcast::channel(1);
     let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
@@ -78,7 +79,7 @@ impl Listener {
             let addr = socket.peer_addr()?;
 
             let mut handler = Handler {
-                kv_store: self.kv_store_root.clone(),
+                kv_store: Arc::clone(&self.kv_store_root),
                 connection: Connection::new(socket),
                 notify_receiver: self.notify_shutdown_sender.subscribe(),
                 shutdown: false,

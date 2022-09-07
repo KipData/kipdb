@@ -9,14 +9,6 @@ pub struct SledStore {
     data_base: Arc<Db>
 }
 
-impl Clone for SledStore {
-    fn clone(&self) -> Self {
-        SledStore {
-            data_base: Arc::clone(&self.data_base)
-        }
-    }
-}
-
 #[async_trait]
 impl KVStore for SledStore {
 

@@ -1,7 +1,6 @@
 use std::{path::PathBuf, collections::HashMap, fs};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
-use std::sync::{Arc};
 use itertools::Itertools;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -22,8 +21,8 @@ pub(crate) const DEFAULT_THREAD_SIZE: usize = 10;
 
 /// The `HashKvStore` stores string key/value pairs.
 pub struct HashStore {
-    io_handler_factory: Arc<IOHandlerFactory>,
-    manifest: Arc<RwLock<Manifest>>
+    io_handler_factory: IOHandlerFactory,
+    manifest: RwLock<Manifest>
 }
 /// 用于状态方面的管理
 pub(crate) struct Manifest {
@@ -73,7 +72,7 @@ impl HashStore {
         // 通过path获取有序的log序名Vec
         let gen_list = sorted_gen_list(&path).await?;
         // 创建IOHandlerFactory
-        let io_handler_factory = Arc::new(IOHandlerFactory::new(path, reader_size, thread_size));
+        let io_handler_factory = IOHandlerFactory::new(path, reader_size, thread_size);
         // 初始化压缩阈值
         let mut un_compacted = 0;
         // 对读入其Map进行初始化并计算对应的压缩阈值
@@ -88,13 +87,13 @@ impl HashStore {
         // 以最新的写入序名创建新的日志文件
         io_handler_index.insert(last_gen, io_handler_factory.create(last_gen)?);
 
-        let manifest = Arc::new(RwLock::new(Manifest {
+        let manifest = RwLock::new(Manifest {
             index,
             current_gen,
             un_compacted,
             compaction_threshold,
             io_handler_index
-        }));
+        });
 
         let store = HashStore {
             io_handler_factory,
@@ -140,7 +139,7 @@ impl HashStore {
             compact_handler.flush().await?;
             manifest.insert_io_handler(compact_handler);
             // 清除过期文件等信息
-            manifest.retain(compact_gen, Arc::clone(&self.io_handler_factory))?;
+            manifest.retain(compact_gen, &self.io_handler_factory)?;
             manifest.un_compacted_add(write_len as u64);
         }
 
@@ -156,15 +155,6 @@ impl HashStore {
             }
         }
         return 0;
-    }
-}
-
-impl Clone for HashStore {
-    fn clone(&self) -> Self {
-        HashStore {
-            io_handler_factory: Arc::clone(&self.io_handler_factory),
-            manifest: Arc::clone(&self.manifest)
-        }
     }
 }
 
@@ -331,7 +321,7 @@ impl Manifest {
         self.io_handler_index.insert(io_handler.get_gen(), io_handler);
     }
     /// 保留压缩Gen及以上的IOHandler与文件，其余清除
-    fn retain(&mut self, expired_gen: u64, io_handler_factory: Arc<IOHandlerFactory>) -> Result<()> {
+    fn retain(&mut self, expired_gen: u64, io_handler_factory: &IOHandlerFactory) -> Result<()> {
         // 遍历过滤出小于压缩文件序号的文件号名收集为过期Vec
         let stale_gens: HashSet<u64> = self.io_handler_index.keys()
             .filter(|&&stale_gen| stale_gen < expired_gen)

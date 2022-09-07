@@ -21,10 +21,14 @@ pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024 * 3;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 1024 * 2;
 
+pub(crate) const DEFAULT_READER_SIZE: u64 = 4;
+
+pub(crate) const DEFAULT_THREAD_SIZE: usize = 4;
+
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
-    manifest: Arc<RwLock<Manifest>>,
+    manifest: RwLock<Manifest>,
     config: Config,
     io_handler_factory: IOHandlerFactory,
     /// WAL存储器
@@ -37,12 +41,6 @@ pub struct LsmStore {
     /// 2、作Key-Value分离的准备，当作vLog
     /// 3、HashStore会丢弃超出大小的数据，保证最新数据不会丢失
     wal: HashStore,
-}
-
-impl Clone for LsmStore {
-    fn clone(&self) -> Self {
-        todo!()
-    }
 }
 
 #[async_trait]
@@ -146,7 +144,7 @@ impl LsmStore {
         }
 
         // 构建SSTable信息集
-        let manifest = Arc::new(RwLock::new(Manifest::new(ss_tables, Arc::new(path.clone()), threshold_size)));
+        let manifest = RwLock::new(Manifest::new(ss_tables, Arc::new(path.clone()), threshold_size));
 
         Ok(LsmStore {
             manifest,
@@ -293,8 +291,8 @@ impl Config {
             threshold_size: DEFAULT_THRESHOLD_SIZE,
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
             part_size: DEFAULT_PART_SIZE,
-            reader_size: 0,
-            thread_size: 0
+            reader_size: DEFAULT_READER_SIZE,
+            thread_size: DEFAULT_THREAD_SIZE
         }
     }
 }
