@@ -75,13 +75,11 @@ impl IOHandlerFactory {
         Self { dir_path, reader_pool, safe_point, expired_set, thread_pool }
     }
 
-    pub fn clean(&self, io_handler: &mut IOHandler) -> Result<()>{
-        let safe_point = Arc::clone(&io_handler.safe_point);
+    pub fn clean(&self, gen: u64) -> Result<()>{
+        self.expired_set.write().unwrap().insert(gen);
+        self.safe_point.fetch_add(1, Ordering::Relaxed);
 
-        self.expired_set.write().unwrap().insert(io_handler.gen);
-
-        safe_point.fetch_add(1, Ordering::Relaxed);
-        fs::remove_file(log_path(&self.dir_path, io_handler.gen))?;
+        fs::remove_file(log_path(&self.dir_path, gen))?;
         Ok(())
     }
 }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::io_handler::IOHandler;
 use async_trait::async_trait;
 
-use crate::{HashStore, KvsError};
+use crate::KvsError;
 use crate::net::CommandOption;
 
 pub mod hash_kv;
@@ -62,7 +62,7 @@ struct CommandPos {
     len: usize,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum CommandData {
     Set { key: Vec<u8>, value: Vec<u8> },
     Remove { key: Vec<u8> },

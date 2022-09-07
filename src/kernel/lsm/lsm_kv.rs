@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
 use chrono::Local;
+use async_trait::async_trait;
+use tokio::sync::RwLock;
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
-use crate::kernel::lsm::{Manifest, MemTable, MemTableSlice};
+use crate::kernel::lsm::{Manifest, MemTable};
 use crate::kernel::lsm::ss_table::{LEVEL_0, SsTable};
 use crate::kernel::Result;
 
@@ -19,14 +21,9 @@ pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024 * 3;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 1024 * 2;
 
-pub(crate) const DEFAULT_FILE_SIZE: u64 = 1024 * 1024 * 14;
-
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
-    // 内存表
-    mem_table_slice: Arc<RwLock<MemTableSlice>>,
-    // SSTable详情集
     manifest: Arc<RwLock<Manifest>>,
     config: Config,
     io_handler_factory: IOHandlerFactory,
@@ -48,12 +45,13 @@ impl Clone for LsmStore {
     }
 }
 
+#[async_trait]
 impl KVStore for LsmStore {
     fn name() -> &'static str where Self: Sized {
         "LsmStore made in Kould"
     }
 
-    async fn open(path: impl Into<PathBuf>) -> Result<Self> {
+    async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
         LsmStore::open_with_config(Config::new().dir_path(path.into())).await
     }
 
@@ -68,14 +66,13 @@ impl KVStore for LsmStore {
     }
 
     async fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let mem_table_slice = self.mem_table_slice.read().unwrap();
-        let manifest = self.manifest.read().unwrap();
+        let manifest = self.manifest.read().await;
 
-        if let Some(cmd_data) = mem_table_slice.get_cmd_data(key) {
+        if let Some(cmd_data) = manifest.get_cmd_data(key) {
             return LsmStore::cmd_unpack(cmd_data);
         }
         for (_, ss_table) in manifest.get_ss_table_map() {
-            if let Some(cmd_data) = ss_table.query(key)? {
+            if let Some(cmd_data) = ss_table.query(key).await? {
                 return LsmStore::cmd_unpack_with_owner(cmd_data);
             }
         }
@@ -102,15 +99,14 @@ impl LsmStore {
 
     /// 追加数据
     async fn append_cmd_data(&self, cmd: CommandData) -> Result<()> {
-        let threshold_size = self.config.threshold_size as usize;
+        let mut manifest = self.manifest.write().await;
 
         // Wal与MemTable双写
         let key = cmd.get_key();
         self.wal.set(key, CommandPackage::encode(&cmd)?).await?;
-        mem_table.insert(key.clone(), cmd);
+        manifest.insert_data(key.clone(), cmd);
 
-        if mem_table.len() > threshold_size {
-            drop(mem_table);
+        if manifest.is_threshold_exceeded() {
             self.store_to_ss_table().await?;
         }
 
@@ -123,6 +119,7 @@ impl LsmStore {
         let wal_compaction_threshold = config.wal_compaction_threshold;
         let reader_size = config.reader_size;
         let thread_size = config.thread_size;
+        let threshold_size = config.threshold_size;
 
         let mut mem_table = MemTable::new();
         let mut ss_tables = BTreeMap::new();
@@ -132,27 +129,26 @@ impl LsmStore {
 
         // 初始化wal日志
         let wal = HashStore::open_with_compaction_threshold(&wal_path, wal_compaction_threshold, reader_size, thread_size).await?;
-        let io_handler_factory = IOHandlerFactory::new(path, reader_size, thread_size);
+        let io_handler_factory = IOHandlerFactory::new(path.clone(), reader_size, thread_size);
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
         for gen in sorted_gen_list(&path).await?.iter().rev() {
-            let mut io_handler = io_handler_factory.create(*gen)?;
+            let io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
             if let Ok(ss_table) = SsTable::restore_from_file(io_handler).await {
                 // 初始化成功时直接传入SSTable的索引中
                 ss_tables.insert(*gen, ss_table);
             } else {
-                io_handler_factory.clean(&mut io_handler)?;
+                io_handler_factory.clean(*gen)?;
                 // 从wal将有问题的ss_table恢复到mem_table中
                 Self::reload_for_wal(&mut mem_table, &wal, &gen).await?;
             }
         }
 
         // 构建SSTable信息集
-        let manifest = Arc::new(RwLock::new(Manifest::new(ss_tables, Arc::new(path.clone()))));
+        let manifest = Arc::new(RwLock::new(Manifest::new(ss_tables, Arc::new(path.clone()), threshold_size)));
 
         Ok(LsmStore {
-            mem_table_slice: Arc::new(RwLock::new(MemTableSlice::load(mem_table))),
             manifest,
             config,
             io_handler_factory,
@@ -184,11 +180,10 @@ impl LsmStore {
 
     /// 持久化immutable_table为SSTable
     pub(crate) async fn store_to_ss_table(&self) -> Result<()> {
-        let mut mem_table_slice = self.mem_table_slice.write().unwrap();
-        let mut manifest = self.manifest.write().unwrap();
+        let mut manifest = self.manifest.write().await;
 
         // 切换mem_table并准备持久化
-        let (vec_keys, vec_values) = mem_table_slice.table_swap();
+        let (vec_keys, vec_values) = manifest.table_swap();
 
         // 获取当前时间戳当gen
         let time_stamp = Local::now().timestamp_millis() as u64;
@@ -206,7 +201,7 @@ impl LsmStore {
                                                             , handler
                                                             , &vec_values
                                                             , LEVEL_0).await?;
-        manifest.insert(time_stamp, ss_table)?;
+        manifest.insert_ss_table(time_stamp, ss_table);
         Ok(())
     }
 

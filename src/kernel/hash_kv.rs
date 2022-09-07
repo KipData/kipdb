@@ -341,7 +341,7 @@ impl Manifest {
         // 遍历过期Vec对数据进行旧文件删除
         for stale_gen in stale_gens.iter() {
             if let Some(io_handler) = self.get_mut_io_handler(stale_gen) {
-                io_handler_factory.clean(io_handler)?;
+                io_handler_factory.clean(io_handler.get_gen())?;
             }
         }
         // 清除索引中过期Key

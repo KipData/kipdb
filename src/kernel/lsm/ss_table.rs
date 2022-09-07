@@ -85,7 +85,7 @@ impl SsTable {
     pub(crate) async fn level_up_for_level_0(level_1_ss_table: SsTable, manifest: Arc<RwLock<Manifest>>, vec_level_0_gen: &ExpiredGenVec) -> Result<()> {
         let mut manifest = manifest.write().await;
 
-        manifest.insert(level_1_ss_table.gen, level_1_ss_table)?;
+        manifest.insert_ss_table(level_1_ss_table.gen, level_1_ss_table);
         manifest.retain_with_vec_gen_and_level(vec_level_0_gen)?;
         Ok(())
     }
@@ -147,22 +147,22 @@ impl SsTable {
             }
         }
 
-        let mut len = 0;
+        let mut _len = 0;
         let first_big = position_arr.0;
         let last_small = position_arr.1;
 
         // 找出数据可能存在的区间
         let start_pos = first_big.start;
         if first_big != empty_position {
-            len = first_big.len;
+            _len = first_big.len;
         } else if last_small != empty_position {
-            len = last_small.len + (last_small.start - start_pos) as usize;
+            _len = last_small.len + (last_small.start - start_pos) as usize;
         } else {
             return Ok(None);
         }
-        info!("[SsTable: {}][query][data_zone]: {} to {}", self.gen, start_pos, len);
+        info!("[SsTable: {}][query][data_zone]: {} to {}", self.gen, start_pos, _len);
         // 获取该区间段的数据
-        let zone = self.io_handler.read_with_pos(start_pos, len).await?;
+        let zone = self.io_handler.read_with_pos(start_pos, _len).await?;
 
         // 返回该区间段对应的数据结果
         Ok(if let Some(cmd_p) =
@@ -216,7 +216,7 @@ impl SsTable {
         // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
         let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
         // 进行连续数据的断点处理，让后面写入的数据不影响前段数据的读取
-        CommandPackage::end_tag(&io_handler);
+        CommandPackage::end_tag(&io_handler).await?;
 
         // 将以上持久化信息封装为MetaInfo
         let meta_info = MetaInfo{

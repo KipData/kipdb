@@ -6,7 +6,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, CommandPackage, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::lsm_kv::{LevelVec, MemTable, SsTableMap};
+use crate::kernel::lsm::lsm_kv::{LevelVec, SsTableMap};
 use crate::kernel::lsm::ss_table::SsTable;
 
 pub(crate) mod ss_table;
@@ -27,53 +27,15 @@ struct MetaInfo {
 }
 
 pub(crate) struct Manifest {
+    threshold_size: u64,
+    // MemTable切片，管理MemTable和ImmutableMemTable
+    mem_table_slice: [MemTable; 2],
     _path: Arc<PathBuf>,
     // SSTable有序存储集合
     ss_tables_map: SsTableMap,
     // Level层级Vec
     // 以索引0为level-0这样的递推，存储文件的gen值
     level_vec: LevelVec,
-}
-
-pub(crate) struct MemTableSlice {
-    mem_table_slice: [MemTable; 2]
-}
-
-impl MemTableSlice {
-
-    fn new() -> MemTableSlice {
-        MemTableSlice {
-            mem_table_slice: [MemTable::new(), MemTable::new()]
-        }
-    }
-
-    fn load(mem_table: MemTable) -> MemTableSlice {
-        MemTableSlice {
-            mem_table_slice: [mem_table, MemTable::new()]
-        }
-    }
-
-    fn get_cmd_data(&self, key: &Vec<u8>) -> Option<&CommandData> {
-        if let Some(data) = self.mem_table_slice[0].get(key) {
-            Some(data)
-        } else {
-            if let Some(data) = self.mem_table_slice[1].get(key) {
-                Some(data)
-            } else {
-                None
-            }
-        }
-    }
-
-    fn table_swap(&mut self) -> (Vec<Vec<u8>>, Vec<CommandData>){
-        self.mem_table_slice.swap(0, 1);
-        let mut mem_table = &mut self.mem_table_slice[0];
-        let vec_keys = mem_table.keys().cloned().collect_vec();
-        let vec_values = mem_table.values().cloned().collect_vec();
-        *mem_table = MemTable::new();
-
-        (vec_keys, vec_values)
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -101,10 +63,10 @@ impl MetaInfo {
 }
 
 impl Manifest {
-    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>) -> Self {
+    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>, threshold_size: u64) -> Self {
         // 获取ss_table分级Vec
         let level_vec = Self::level_layered(&mut ss_tables_map);
-        Self { _path: path, ss_tables_map, level_vec }
+        Self { threshold_size, mem_table_slice: [MemTable::new(), MemTable::new()], _path: path, ss_tables_map, level_vec }
     }
 
     /// 使用ss_tables返回LevelVec
@@ -119,14 +81,17 @@ impl Manifest {
         level_vec
     }
 
-    pub(crate) fn insert(&mut self, gen: u64, ss_table: SsTable) -> Result<()> {
+    pub(crate) fn insert_ss_table(&mut self, gen: u64, ss_table: SsTable) {
         let level = ss_table.get_level();
         self.ss_tables_map.insert(gen, ss_table);
         leve_vec_insert(&mut self.level_vec, level, gen);
-        Ok(())
     }
 
-    // 删除指定的过期gen
+    pub(crate) fn insert_data(&mut self, key: Vec<u8>, value: CommandData) {
+        self.mem_table_slice[0].insert(key, value);
+    }
+
+    /// 删除指定的过期gen
     pub(crate) fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &Vec<u64>) -> Result<()> {
         // 遍历过期Vec对数据进行旧文件删除
         for expired_gen in vec_expired_gen.iter() {
@@ -153,6 +118,36 @@ impl Manifest {
 
     pub(crate) fn get_ss_table_map(&self) -> &SsTableMap {
         &self.ss_tables_map
+    }
+
+    fn load(&mut self, mem_table: MemTable) {
+        self.mem_table_slice[0] = mem_table;
+    }
+
+    fn get_cmd_data(&self, key: &Vec<u8>) -> Option<&CommandData> {
+        if let Some(data) = self.mem_table_slice[0].get(key) {
+            Some(data)
+        } else {
+            if let Some(data) = self.mem_table_slice[1].get(key) {
+                Some(data)
+            } else {
+                None
+            }
+        }
+    }
+
+    fn is_threshold_exceeded(&self) -> bool {
+        self.mem_table_slice[0].len() > self.threshold_size as usize
+    }
+
+    fn table_swap(&mut self) -> (Vec<Vec<u8>>, Vec<CommandData>){
+        self.mem_table_slice.swap(0, 1);
+        let mem_table = &mut self.mem_table_slice[0];
+        let vec_keys = mem_table.keys().cloned().collect_vec();
+        let vec_values = mem_table.values().cloned().collect_vec();
+        *mem_table = MemTable::new();
+
+        (vec_keys, vec_values)
     }
 }
 
