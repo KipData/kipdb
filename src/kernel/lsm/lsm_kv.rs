@@ -4,6 +4,7 @@ use std::sync::{Arc};
 use chrono::Local;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
+use tracing::{error, info, warn};
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
@@ -17,9 +18,9 @@ pub(crate) type SsTableMap = BTreeMap<u64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024 * 3;
+pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024;
 
-pub(crate) const DEFAULT_PART_SIZE: u64 = 1024 * 2;
+pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
 pub(crate) const DEFAULT_READER_SIZE: u64 = 4;
 
@@ -86,8 +87,10 @@ impl KVStore for LsmStore {
     }
 
     async fn shut_down(&self) -> Result<()> {
+        let mut manifest = self.manifest.write().await;
+
         self.wal.flush().await?;
-        self.store_to_ss_table().await?;
+        self.store_to_ss_table(&mut manifest).await?;
 
         Ok(())
     }
@@ -105,7 +108,7 @@ impl LsmStore {
         manifest.insert_data(key.clone(), cmd);
 
         if manifest.is_threshold_exceeded() {
-            self.store_to_ss_table().await?;
+            self.store_to_ss_table(&mut manifest).await?;
         }
 
         Ok(())
@@ -133,21 +136,27 @@ impl LsmStore {
         for gen in sorted_gen_list(&path).await?.iter().rev() {
             let io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
-            if let Ok(ss_table) = SsTable::restore_from_file(io_handler).await {
-                // 初始化成功时直接传入SSTable的索引中
-                ss_tables.insert(*gen, ss_table);
-            } else {
-                io_handler_factory.clean(*gen)?;
-                // 从wal将有问题的ss_table恢复到mem_table中
-                Self::reload_for_wal(&mut mem_table, &wal, &gen).await?;
+            match SsTable::restore_from_file(io_handler).await {
+                Ok(ss_table) => {
+                    // 初始化成功时直接传入SSTable的索引中
+                    ss_tables.insert(*gen, ss_table);
+                }
+                Err(err) => {
+                    error!("[LsmKVStore][Load SSTable][Error]: {:?}", err);
+                    //是否删除可能还是得根据用户选择
+                    // io_handler_factory.clean(*gen)?;
+                    // 从wal将有问题的ss_table恢复到mem_table中
+                    Self::reload_for_wal(&mut mem_table, &wal, &gen).await?;
+                }
             }
         }
 
         // 构建SSTable信息集
-        let manifest = RwLock::new(Manifest::new(ss_tables, Arc::new(path.clone()), threshold_size));
+        let mut manifest = Manifest::new(ss_tables, Arc::new(path.clone()), threshold_size);
+        manifest.load(mem_table);
 
         Ok(LsmStore {
-            manifest,
+            manifest: RwLock::new(manifest),
             config,
             io_handler_factory,
             wal,
@@ -159,6 +168,7 @@ impl LsmStore {
     async fn reload_for_wal(mem_table: &mut MemTable, wal: &HashStore, gen: &u64) -> Result<()>{
         // 将SSTable持久化失败前预存入的指令键集合从wal中获取
         // 随后将每一条指令键对应的指令恢复到mem_table中
+        warn!("[SsTable: {}][reload_from_wal]", gen);
         let key_gen = CommandCodec::encode_str_key(gen.to_string())?;
         if let Some(key_cmd_u8) = wal.get(&key_gen).await? {
             for key in CommandCodec::decode_keys(&key_cmd_u8)? {
@@ -177,9 +187,8 @@ impl LsmStore {
     }
 
     /// 持久化immutable_table为SSTable
-    pub(crate) async fn store_to_ss_table(&self) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
-
+    /// 此处manifest参数需要传入是因为Rust的锁不可重入所以需要从外部将锁对象传入
+    pub(crate) async fn store_to_ss_table(&self, manifest: &mut Manifest) -> Result<()> {
         // 切换mem_table并准备持久化
         let (vec_keys, vec_values) = manifest.table_swap();
 
@@ -195,10 +204,10 @@ impl LsmStore {
 
         let handler = self.io_handler_factory.create(time_stamp)?;
         // 从内存表中将数据持久化为ss_table
-        let ss_table = SsTable::create_form_immutable_table(&self.config
-                                                            , handler
-                                                            , &vec_values
-                                                            , LEVEL_0).await?;
+        let ss_table = SsTable::create_for_immutable_table(&self.config
+                                                           , handler
+                                                           , &vec_values
+                                                           , LEVEL_0).await?;
         manifest.insert_ss_table(time_stamp, ss_table);
         Ok(())
     }

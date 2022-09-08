@@ -104,8 +104,16 @@ impl CommandPackage {
 
     /// 写入一个Command
     ///
-    /// 写入完成后该cmd的写入起始位置与长度
+    /// 写入完成后该cmd的去除len位置的写入起始位置与长度
     pub async fn write(io_handler: &IOHandler, cmd: &CommandData) -> Result<(u64, usize)> {
+        let (start, len) = Self::write_back_real_pos(io_handler, cmd).await?;
+        Ok((start + 4, len - 4))
+    }
+
+    /// 写入一个Command
+    ///
+    /// 写入完成后该cmd的真实写入起始位置与长度
+    pub async fn write_back_real_pos(io_handler: &IOHandler, cmd: &CommandData) -> Result<(u64, usize)> {
         let vec = rmp_serde::encode::to_vec(cmd)?;
         let i = vec.len();
         let mut vec_head = vec![(i >> 24) as u8,
@@ -113,8 +121,7 @@ impl CommandPackage {
                                 (i >> 8) as u8,
                                 i as u8 ];
         vec_head.extend(vec);
-        let (start, len) = io_handler.write(vec_head).await?;
-        Ok((start + 4, len - 4))
+        Ok(io_handler.write(vec_head).await?)
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command

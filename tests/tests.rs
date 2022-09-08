@@ -3,6 +3,7 @@ use walkdir::WalkDir;
 use kip_db::kernel::hash_kv::HashStore;
 use kip_db::kernel::io_handler::IOHandlerFactory;
 use kip_db::kernel::KVStore;
+use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::Result;
 use kip_db::kernel::sled_kv::SledStore;
 
@@ -10,7 +11,7 @@ use kip_db::kernel::sled_kv::SledStore;
 fn get_stored_value() -> Result<()> {
     get_stored_value_with_kv_store::<HashStore>()?;
     get_stored_value_with_kv_store::<SledStore>()?;
-    // get_stored_value_with_kv_store::<LsmStore>()?;
+    get_stored_value_with_kv_store::<LsmStore>()?;
     Ok(())
 }
 

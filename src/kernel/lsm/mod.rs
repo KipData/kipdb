@@ -14,7 +14,8 @@ pub mod lsm_kv;
 
 pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
 
-// META_INFO序列化长度定长
+/// META_INFO序列化长度定长
+/// 注意MetaInfo序列化时，需要使用类似Bincode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
 const TABLE_META_INFO_SIZE: usize = 40;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -47,18 +48,17 @@ struct Position {
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
     async fn write_to_file(&self, io_handler: &IOHandler) -> Result<()> {
-        let vec_u8 = rmp_serde::to_vec(&self)?;
+        let vec_u8 = bincode::serialize(&self)?;
         io_handler.write(vec_u8).await?;
         Ok(())
     }
 
     /// 从对应文件的IOHandler中将MetaInfo读取出来
     async fn read_to_file(io_handler: &IOHandler) -> Result<Self> {
-        let start_pos = CommandPackage::bytes_last_pos(io_handler).await?;
-        let table_meta_info = io_handler.read_with_pos(start_pos, TABLE_META_INFO_SIZE)
-            .await?;
+        let start_pos = io_handler.file_size().await? - TABLE_META_INFO_SIZE as u64;
+        let table_meta_info = io_handler.read_with_pos(start_pos, TABLE_META_INFO_SIZE).await?;
 
-        Ok(rmp_serde::from_slice(table_meta_info.as_slice())?)
+        Ok(bincode::deserialize(table_meta_info.as_slice())?)
     }
 }
 
@@ -142,7 +142,7 @@ impl Manifest {
 
     fn table_swap(&mut self) -> (Vec<Vec<u8>>, Vec<CommandData>){
         self.mem_table_slice.swap(0, 1);
-        let mem_table = &mut self.mem_table_slice[0];
+        let mem_table = &mut self.mem_table_slice[1];
         let vec_keys = mem_table.keys().cloned().collect_vec();
         let vec_values = mem_table.values().cloned().collect_vec();
         *mem_table = MemTable::new();
@@ -168,4 +168,21 @@ fn leve_vec_insert(level_vec: &mut LevelVec, level: u64, gen: u64) {
             level_vec.push(vec![gen])
         }
     }
+}
+
+#[test]
+fn test_meta_info() -> Result<()> {
+    let info = MetaInfo {
+        level: 0,
+        version: 0,
+        data_len: 0,
+        index_len: 0,
+        part_size: 0
+    };
+
+    let vec_u8 = bincode::serialize(&info)?;
+
+    assert_eq!(vec_u8.len(), TABLE_META_INFO_SIZE);
+
+    Ok(())
 }

@@ -3,7 +3,7 @@ use std::collections::btree_map::BTreeMap;
 use std::sync::{Arc};
 use itertools::Itertools;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::{Manifest, MetaInfo, Position};
@@ -62,7 +62,7 @@ impl SsTable {
         let mut start_pos = 0;
         let mut part_len = 0;
         for (index, cmd_data) in vec_cmd_data.iter().enumerate() {
-            let (start, len) = CommandPackage::write(io_handler, cmd_data).await?;
+            let (start, len) = CommandPackage::write_back_real_pos(io_handler, cmd_data).await?;
             if index == 0 {
                 start_pos = start;
             }
@@ -124,7 +124,7 @@ impl SsTable {
                 }
 
                 // 构建Level1的SSTable
-                let level_1_ss_table = Self::create_form_immutable_table(&config, io_handler, &vec_cmd_data, LEVEL_1).await?;
+                let level_1_ss_table = Self::create_for_immutable_table(&config, io_handler, &vec_cmd_data, LEVEL_1).await?;
 
                 Ok(Some((level_1_ss_table, vec_shot_snap_gen)))
             }
@@ -190,7 +190,7 @@ impl SsTable {
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) async fn create_form_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: u64) -> Result<Self> {
+    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: u64) -> Result<Self> {
         // 获取地址
         let part_size = config.part_size;
         let gen = io_handler.get_gen();
@@ -215,8 +215,7 @@ impl SsTable {
         let cmd_sparse_index = CommandData::Get { key: rmp_serde::to_vec(&sparse_index)?};
         // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
         let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
-        // 进行连续数据的断点处理，让后面写入的数据不影响前段数据的读取
-        CommandPackage::end_tag(&io_handler).await?;
+
 
         // 将以上持久化信息封装为MetaInfo
         let meta_info = MetaInfo{
@@ -227,6 +226,8 @@ impl SsTable {
             part_size
         };
         meta_info.write_to_file(&io_handler).await?;
+
+        io_handler.flush().await?;
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
         Ok(SsTable {
