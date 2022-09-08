@@ -90,7 +90,9 @@ impl KVStore for LsmStore {
         let mut manifest = self.manifest.write().await;
 
         self.wal.flush().await?;
-        self.store_to_ss_table(&mut manifest).await?;
+        if !manifest.mem_table_is_empty() {
+            self.store_to_ss_table(&mut manifest).await?;
+        }
 
         Ok(())
     }

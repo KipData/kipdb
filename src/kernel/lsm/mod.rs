@@ -116,6 +116,10 @@ impl Manifest {
         self.ss_tables_map.get(&gen)
     }
 
+    pub(crate) fn mem_table_is_empty(&self) -> bool {
+        self.mem_table_slice[0].len() < 1 && self.mem_table_slice[1].len() < 1
+    }
+
     pub(crate) fn get_ss_table_map(&self) -> &SsTableMap {
         &self.ss_tables_map
     }
