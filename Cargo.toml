@@ -48,9 +48,9 @@ clap = { version = "3.1.18", features = ["derive"] }
 snowflake = { version = "1.2", features = ["serde_support"] }
 itertools = "0.10.3"
 chrono = "0.4.19"
-crossbeam = "0.7.1"
-# 线程池
-rayon = "1.0.3"
+#crossbeam = "0.7.1"
+## 线程池
+#rayon = "1.0.3"
 # 其他数据库内核
 sled = "0.34.7"
 # 单元测试用

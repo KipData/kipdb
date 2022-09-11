@@ -4,7 +4,7 @@ use std::sync::{Arc};
 use chrono::Local;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
@@ -22,10 +22,6 @@ pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
-pub(crate) const DEFAULT_READER_SIZE: u64 = 4;
-
-pub(crate) const DEFAULT_THREAD_SIZE: usize = 4;
-
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
@@ -41,7 +37,7 @@ pub struct LsmStore {
     /// 1、操作简易，不需要重新写一个WAL
     /// 2、作Key-Value分离的准备，当作vLog
     /// 3、HashStore会丢弃超出大小的数据，保证最新数据不会丢失
-    wal: HashStore,
+    wal: Arc<HashStore>,
 }
 
 #[async_trait]
@@ -106,7 +102,7 @@ impl LsmStore {
 
         // Wal与MemTable双写
         let key = cmd.get_key();
-        self.wal.set(key, CommandPackage::encode(&cmd)?).await?;
+        self.wal_put(key.clone(), CommandPackage::encode(&cmd)?);
         manifest.insert_data(key.clone(), cmd);
 
         if manifest.is_threshold_exceeded() {
@@ -120,8 +116,6 @@ impl LsmStore {
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
         let path = config.dir_path.clone();
         let wal_compaction_threshold = config.wal_compaction_threshold;
-        let reader_size = config.reader_size;
-        let thread_size = config.thread_size;
         let threshold_size = config.threshold_size;
 
         let mut mem_table = MemTable::new();
@@ -131,8 +125,8 @@ impl LsmStore {
         wal_path.push(DEFAULT_WAL_PATH);
 
         // 初始化wal日志
-        let wal = HashStore::open_with_compaction_threshold(&wal_path, wal_compaction_threshold, reader_size, thread_size).await?;
-        let io_handler_factory = IOHandlerFactory::new(path.clone(), reader_size, thread_size);
+        let wal = Arc::new(HashStore::open_with_compaction_threshold(&wal_path, wal_compaction_threshold).await?);
+        let io_handler_factory = IOHandlerFactory::new(path.clone());
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
         for gen in sorted_gen_list(&path).await?.iter().rev() {
@@ -201,8 +195,7 @@ impl LsmStore {
 
         // 将这些索引的key序列化后预先存入wal中作防灾准备
         // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
-
-        self.wal.set(&vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?).await?;
+        self.wal_put(vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?);
 
         let handler = self.io_handler_factory.create(time_stamp)?;
         // 从内存表中将数据持久化为ss_table
@@ -228,6 +221,17 @@ impl LsmStore {
             None => { Ok(None) }
             Some(value) => { Ok(Some(value)) }
         }
+    }
+
+    /// 以Task类似的异步写数据，避免影响数据写入性能
+    /// 当然，LevelDB的话虽然wal写入会提供是否同步的选项，此处先简化优先使用异步
+    fn wal_put(&self, key: Vec<u8>, value: Vec<u8>) {
+        let wal = Arc::clone(&self.wal);
+        tokio::spawn(async move {
+            if let Err(err) = wal.set(&key, value).await {
+                error!("[LsmStore][wal_put][error happen]: {:?}", err);
+            }
+        });
     }
 }
 
@@ -260,8 +264,6 @@ pub struct Config {
     pub(crate) wal_compaction_threshold: u64,
     // 数据分块大小
     pub(crate) part_size: u64,
-    pub(crate) reader_size: u64,
-    pub(crate) thread_size: usize,
 }
 
 impl Config {
@@ -286,24 +288,12 @@ impl Config {
         self
     }
 
-    pub fn reader_size(mut self, reader_size: u64) -> Self {
-        self.reader_size = reader_size;
-        self
-    }
-
-    pub fn thread_size(mut self, thread_size: usize) -> Self {
-        self.thread_size = thread_size;
-        self
-    }
-
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
             threshold_size: DEFAULT_THRESHOLD_SIZE,
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
             part_size: DEFAULT_PART_SIZE,
-            reader_size: DEFAULT_READER_SIZE,
-            thread_size: DEFAULT_THREAD_SIZE
         }
     }
 }

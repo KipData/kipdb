@@ -3,7 +3,7 @@ use std::collections::btree_map::BTreeMap;
 use std::sync::{Arc};
 use itertools::Itertools;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{info};
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::{Manifest, MetaInfo, Position};

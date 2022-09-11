@@ -1,84 +1,36 @@
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::collections::btree_map::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::{fs, io};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicU64, Ordering};
-use crossbeam::queue::ArrayQueue;
-use rayon::ThreadPool;
-use tokio::sync::{oneshot};
-use tracing::error;
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
 use crate::kernel::{log_path};
 use crate::kernel::Result;
-pub(crate) type SingleWriter = Arc<RwLock<BufWriterWithPos<File>>>;
 
-pub struct UniversalReader {
-    dir_path: Arc<PathBuf>,
-    version: u64,
-    expired_set: Arc<RwLock<HashSet<u64>>>,
-    readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>
-}
+pub(crate) type SyncWriter = RwLock<BufWriterWithPos<File>>;
+
+pub(crate) type SyncReader = Mutex<BufReaderWithPos<File>>;
 
 pub struct IOHandlerFactory {
-    dir_path: Arc<PathBuf>,
-    reader_pool: Arc<ArrayQueue<UniversalReader>>,
-    safe_point: Arc<AtomicU64>,
-    expired_set: Arc<RwLock<HashSet<u64>>>,
-    thread_pool: Arc<ThreadPool>
+    dir_path: Arc<PathBuf>
 }
 
 impl IOHandlerFactory {
 
     pub fn create(&self, gen: u64) -> Result<IOHandler> {
-        let expired_set = Arc::clone(&self.expired_set);
-        expired_set.write().unwrap().remove(&gen);
-
         let dir_path = Arc::clone(&self.dir_path);
-        let safe_point = Arc::clone(&self.safe_point);
-        let reader_pool = Arc::clone(&self.reader_pool);
-        let thread_pool = Arc::clone(&self.thread_pool);
 
-        Ok(IOHandler::new(dir_path, gen, reader_pool, thread_pool, safe_point)?)
+        Ok(IOHandler::new(dir_path, gen)?)
     }
 
-    pub fn new(dir_path: impl Into<PathBuf>, readers_size: u64, thread_size: usize) -> Self {
+    pub fn new(dir_path: impl Into<PathBuf>) -> Self {
 
         let dir_path = Arc::new(dir_path.into());
 
-        let safe_point = Arc::new(AtomicU64::new(0));
-
-        let expired_set = Arc::new(RwLock::new(HashSet::new()));
-
-        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new()
-            .num_threads(thread_size)
-            .build()
-            .unwrap());
-
-
-        let reader = UniversalReader::new(
-            Arc::clone(&dir_path),
-            0,
-            Arc::clone(&expired_set),
-            RefCell::new(BTreeMap::new())
-        );
-
-        let reader_pool = Arc::new(ArrayQueue::new(readers_size as usize));
-
-        for _ in 1..readers_size {
-            reader_pool.push(reader.clone()).unwrap();
-        }
-        reader_pool.push(reader).unwrap();
-
-        Self { dir_path, reader_pool, safe_point, expired_set, thread_pool }
+        Self { dir_path }
     }
 
     pub fn clean(&self, gen: u64) -> Result<()>{
-        self.expired_set.write().unwrap().insert(gen);
-        self.safe_point.fetch_add(1, Ordering::Relaxed);
-
         fs::remove_file(log_path(&self.dir_path, gen))?;
         Ok(())
     }
@@ -94,21 +46,13 @@ impl IOHandlerFactory {
 pub struct IOHandler {
     gen: u64,
     dir_path: Arc<PathBuf>,
-    safe_point: Arc<AtomicU64>,
-    reader_pool: Arc<ArrayQueue<UniversalReader>>,
-    writer: SingleWriter,
-    thread_pool: Arc<ThreadPool>
+    writer: SyncWriter,
+    reader: SyncReader
 }
 
 impl IOHandler {
 
-    pub fn new(
-        dir_path: Arc<PathBuf>,
-        gen: u64,
-        reader_pool: Arc<ArrayQueue<UniversalReader>>,
-        thread_pool: Arc<ThreadPool>,
-        safe_point: Arc<AtomicU64>,
-    ) -> Result<Self> {
+    pub fn new(dir_path: Arc<PathBuf>, gen: u64) -> Result<Self> {
         let path = log_path(&dir_path, gen);
 
         // 通过路径构造写入器
@@ -118,9 +62,15 @@ impl IOHandler {
             .read(true)
             .open(&path)?;
 
-        let writer = Arc::new(RwLock::new(BufWriterWithPos::new(file)?));
+        let writer = RwLock::new(BufWriterWithPos::new(file)?);
+        let reader = Mutex::new(BufReaderWithPos::new(File::open(path)?)?);
 
-        Ok(Self { gen, dir_path, reader_pool, safe_point, writer, thread_pool })
+        Ok(Self {
+            gen,
+            dir_path,
+            writer,
+            reader
+        })
     }
 
     pub fn get_gen(&self) -> u64 {
@@ -140,109 +90,7 @@ impl IOHandler {
     ///
     /// 通过Reader池与线程池进行多线程读取
     pub async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
-        self.read_with_pos_and_gen(self.gen, start, len).await
-    }
-
-    /// 读取执行起始位置的指定长度的二进制数据
-    ///
-    /// 通过Reader池与线程池进行多线程读取
-    pub async fn read_with_pos_and_gen(&self, gen: u64, start: u64, len: usize) -> Result<Vec<u8>> {
-        let reader_pool = Arc::clone(&self.reader_pool);
-        let version = self.safe_point.load(Ordering::SeqCst);
-
-        let (tx, rx) = oneshot::channel();
-        self.thread_pool.spawn(move || {
-            let res: Result<Vec<u8>> = (|| {
-                let reader = reader_pool.pop().unwrap();
-
-                let vec = reader.read(gen, start, len, version)?;
-
-                reader_pool.push(reader).unwrap();
-                Ok(vec)
-            })();
-
-            if tx.send(res).is_err() {
-                error!("[IOHandler][Get][End is Dropped]");
-            }
-        });
-
-        Ok(rx.await.unwrap()?)
-    }
-
-    /// 写入并返回起始位置与写入长度
-    pub async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
-        let writer = Arc::clone(&self.writer);
-
-        let (tx, rx) = oneshot::channel();
-        self.thread_pool.spawn(move || {
-            let res: Result<(u64, usize)> = (|| {
-                let mut writer = writer.write().unwrap();
-
-                let start_pos = writer.pos;
-                let slice_buf = buf.as_slice();
-                writer.write(slice_buf)?;
-
-                Ok((start_pos, slice_buf.len()))
-            })();
-
-            if tx.send(res).is_err() {
-                error!("[IOHandler][Get][End is Dropped]");
-            }
-        });
-
-        Ok(rx.await.unwrap()?)
-    }
-
-    /// 克隆数据再写入并返回起始位置与写入长度
-    pub async fn write_with_clone(&self, buf: &[u8]) -> Result<(u64, usize)> {
-        self.write(buf.to_vec()).await
-    }
-
-    pub async fn flush(&self) -> Result<()> {
-        let writer = Arc::clone(&self.writer);
-
-        let (tx, rx) = oneshot::channel();
-        self.thread_pool.spawn(move || {
-            let res: Result<()> = (|| {
-                let mut writer = writer.write().unwrap();
-                writer.flush()?;
-
-                Ok(())
-            })();
-
-            if tx.send(res).is_err() {
-                error!("[IOHandler][Get][End is Dropped]");
-            }
-        });
-
-        Ok(rx.await.unwrap()?)
-    }
-}
-
-impl UniversalReader {
-
-    pub(crate) fn close_stale_handles(&self, version: u64) {
-        if !self.version.eq(&version) {
-            let mut readers = self.readers.borrow_mut();
-            readers.retain(|gen, _| {
-                let expired_set = self.expired_set.read().unwrap();
-                !expired_set.contains(gen)
-            })
-        }
-    }
-
-    pub(crate) fn read(&self, gen: u64, start: u64, len: usize, version: u64) -> Result<Vec<u8>> {
-        self.close_stale_handles(version);
-
-        let mut readers = self.readers.borrow_mut();
-        // Open the file if we haven't opened it in this `KvStoreReader`.
-        // We don't use entry API here because we want the errors to be propogated.
-        if !readers.contains_key(&gen) {
-            let reader = BufReaderWithPos::new(File::open(log_path(&self.dir_path, gen))?)?;
-            readers.insert(gen, reader);
-        }
-        let reader = readers.get_mut(&gen).unwrap();
-
+        let mut reader = self.reader.lock().await;
 
         let mut buffer = vec![0;len];
         // 使用Vec buffer获取数据
@@ -251,20 +99,33 @@ impl UniversalReader {
 
         Ok(buffer)
     }
-    pub(crate) fn new(dir_path: Arc<PathBuf>, version: u64, expired_set: Arc<RwLock<HashSet<u64>>>, readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>) -> Self {
-        Self { dir_path, version, expired_set, readers }
-    }
-}
 
-impl Clone for UniversalReader {
-    fn clone(&self) -> Self {
-        UniversalReader {
-            dir_path: Arc::clone(&self.dir_path),
-            expired_set: Arc::clone(&self.expired_set),
-            // don't use other KvStoreReader's readers
-            readers: RefCell::new(BTreeMap::new()),
-            version: 0,
-        }
+    /// 写入并返回起始位置与写入长度
+    pub async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
+        let mut writer = self.writer.write().await;
+
+        let start_pos = writer.pos;
+        let slice_buf = buf.as_slice();
+        writer.write(slice_buf)?;
+
+        Ok((start_pos, slice_buf.len()))
+    }
+
+    /// 克隆数据再写入并返回起始位置与写入长度
+    pub async fn write_with_clone(&self, buf: &[u8]) -> Result<(u64, usize)> {
+        self.write(buf.to_vec()).await
+    }
+
+    pub async fn write_pos(&self) -> Result<u64> {
+        let writer = self.writer.read().await;
+
+        Ok(writer.pos)
+    }
+
+    pub async fn flush(&self) -> Result<()> {
+        let mut writer = self.writer.write().await;
+
+        Ok(writer.flush()?)
     }
 }
 

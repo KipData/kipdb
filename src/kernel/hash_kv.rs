@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use itertools::Itertools;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
+use tracing::error;
 
 use crate::{error::{KvsError}};
 use crate::kernel::{CommandData, CommandPackage, CommandPos, KVStore, Result, sorted_gen_list};
@@ -11,13 +12,6 @@ use crate::kernel::io_handler::{IOHandler, IOHandlerFactory};
 
 /// 默认压缩大小触发阈值
 pub(crate) const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 64;
-/// Reader池数量
-/// 读取是多线程并发的
-pub(crate) const DEFAULT_READER_SIZE: u64 = 10;
-/// 默认线程数
-/// 实际上我认为线程池数量为Reader Size即可
-/// 因为write和flush都为写锁，所以基本让Reader能够充分利用线程就好了
-pub(crate) const DEFAULT_THREAD_SIZE: usize = 10;
 
 /// The `HashKvStore` stores string key/value pairs.
 pub struct HashStore {
@@ -58,9 +52,7 @@ impl HashStore {
     /// 通过目录路径启动数据库
     pub async fn open_with_compaction_threshold(
         path: impl Into<PathBuf>,
-        compaction_threshold: u64,
-        reader_size: u64,
-        thread_size: usize
+        compaction_threshold: u64
     ) -> Result<Self> where Self: Sized {
         // 获取地址
         let path = path.into();
@@ -72,7 +64,7 @@ impl HashStore {
         // 通过path获取有序的log序名Vec
         let gen_list = sorted_gen_list(&path).await?;
         // 创建IOHandlerFactory
-        let io_handler_factory = IOHandlerFactory::new(path, reader_size, thread_size);
+        let io_handler_factory = IOHandlerFactory::new(path);
         // 初始化压缩阈值
         let mut un_compacted = 0;
         // 对读入其Map进行初始化并计算对应的压缩阈值
@@ -114,7 +106,7 @@ impl HashStore {
         let (compact_gen,compact_handler) = manifest.compaction_increment(&self.io_handler_factory).await?;
         // 压缩时对values进行顺序排序
         // 以gen,pos为最新数据的指标
-        let mut vec_cmd_pos = manifest.sort_by_last_vec_mut();
+        let (mut vec_cmd_pos, io_handler_index) = manifest.sort_by_last_vec_mut();
 
         // 获取最后一位数据进行可容载数据的范围
         if let Some(last_cmd_pos) = vec_cmd_pos.last() {
@@ -126,11 +118,18 @@ impl HashStore {
             // 抛弃超过文件大小且数据写入时间最久的数据
             for (i, cmd_pos) in vec_cmd_pos.iter_mut().enumerate() {
                 if i >= skip_index {
-                    if let Some(cmd_data) =
-                    CommandPackage::form_pos_with_gen_unpack(&compact_handler, cmd_pos.gen, cmd_pos.pos, cmd_pos.len).await? {
-                        let (pos, len) = CommandPackage::write(&compact_handler, &cmd_data).await?;
-                        write_len += len;
-                        cmd_pos.change(compact_gen, pos, len);
+                    match io_handler_index.get(&cmd_pos.gen) {
+                        Some(io_handler) => {
+                            if let Some(cmd_data) =
+                            CommandPackage::form_pos_unpack(&io_handler, cmd_pos.pos, cmd_pos.len).await? {
+                                let (pos, len) = CommandPackage::write(&compact_handler, &cmd_data).await?;
+                                write_len += len;
+                                cmd_pos.change(compact_gen, pos, len);
+                            }
+                        }
+                        None => {
+                            error!("[HashStore][compact][Index data not found!!]")
+                        }
                     }
                 }
             }
@@ -166,7 +165,7 @@ impl KVStore for HashStore {
     }
 
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
-        HashStore::open_with_compaction_threshold(path, DEFAULT_COMPACTION_THRESHOLD, DEFAULT_READER_SIZE, DEFAULT_THREAD_SIZE).await
+        HashStore::open_with_compaction_threshold(path, DEFAULT_COMPACTION_THRESHOLD).await
     }
 
     async fn flush(&self) -> Result<()> {
@@ -350,8 +349,8 @@ impl Manifest {
         self.un_compacted > self.compaction_threshold
     }
     /// 将Index中的CommandPos以最新为基准进行排序，由旧往新
-    fn sort_by_last_vec_mut(&mut self) -> Vec<&mut CommandPos> {
-        self.index.values_mut()
+    fn sort_by_last_vec_mut(&mut self) -> (Vec<&mut CommandPos>, &BTreeMap<u64, IOHandler>) {
+        let vec_values = self.index.values_mut()
             .sorted_unstable_by(|a, b| {
                 match a.gen.cmp(&b.gen) {
                     Ordering::Less => Ordering::Less,
@@ -359,7 +358,8 @@ impl Manifest {
                     Ordering::Greater => Ordering::Greater,
                 }
             })
-            .collect_vec()
+            .collect_vec();
+        (vec_values, &self.io_handler_index)
     }
     /// 压缩前gen自增
     /// 用于数据压缩前将最新写入位置偏移至新位置
