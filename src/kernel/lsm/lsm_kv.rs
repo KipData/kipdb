@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc};
-use chrono::Local;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tracing::{error, warn};
@@ -9,10 +8,11 @@ use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::lsm::{Manifest, MemTable};
-use crate::kernel::lsm::ss_table::{LEVEL_0, SsTable};
+use crate::kernel::lsm::compactor::Compactor;
+use crate::kernel::lsm::ss_table::SsTable;
 use crate::kernel::Result;
 
-pub(crate) type LevelVec = Vec<Vec<u64>>;
+pub(crate) type LevelSlice = [Vec<u64>; 7];
 
 pub(crate) type SsTableMap = BTreeMap<u64, SsTable>;
 
@@ -25,9 +25,9 @@ pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
-    manifest: RwLock<Manifest>,
-    config: Config,
-    io_handler_factory: IOHandlerFactory,
+    manifest: Arc<RwLock<Manifest>>,
+    config: Arc<Config>,
+    io_handler_factory: Arc<IOHandlerFactory>,
     /// WAL存储器
     ///
     /// SSTable持久化前会将gen写入
@@ -83,11 +83,11 @@ impl KVStore for LsmStore {
     }
 
     async fn shut_down(&self) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+        let manifest = self.manifest.read().await;
 
         self.wal.flush().await?;
         if !manifest.mem_table_is_empty() {
-            self.store_to_ss_table(&mut manifest).await?;
+            self.store_to_ss_table().await?;
         }
 
         Ok(())
@@ -102,11 +102,11 @@ impl LsmStore {
 
         // Wal与MemTable双写
         let key = cmd.get_key();
-        self.wal_put(key.clone(), CommandPackage::encode(&cmd)?);
+        wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
         manifest.insert_data(key.clone(), cmd);
 
         if manifest.is_threshold_exceeded() {
-            self.store_to_ss_table(&mut manifest).await?;
+            self.store_to_ss_table().await?;
         }
 
         Ok(())
@@ -126,7 +126,7 @@ impl LsmStore {
 
         // 初始化wal日志
         let wal = Arc::new(HashStore::open_with_compaction_threshold(&wal_path, wal_compaction_threshold).await?);
-        let io_handler_factory = IOHandlerFactory::new(path.clone());
+        let io_handler_factory = Arc::new(IOHandlerFactory::new(path.clone()));
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
         for gen in sorted_gen_list(&path).await?.iter().rev() {
@@ -142,7 +142,7 @@ impl LsmStore {
                     //是否删除可能还是得根据用户选择
                     // io_handler_factory.clean(*gen)?;
                     // 从wal将有问题的ss_table恢复到mem_table中
-                    Self::reload_for_wal(&mut mem_table, &wal, &gen).await?;
+                    Self::reload_for_wal(&mut mem_table, &wal, *gen).await?;
                 }
             }
         }
@@ -152,8 +152,8 @@ impl LsmStore {
         manifest.load(mem_table);
 
         Ok(LsmStore {
-            manifest: RwLock::new(manifest),
-            config,
+            manifest: Arc::new(RwLock::new(manifest)),
+            config: Arc::new(config),
             io_handler_factory,
             wal,
         })
@@ -161,11 +161,11 @@ impl LsmStore {
 
     /// 从Wal恢复SSTable数据
     /// 初始化失败时遍历wal的key并检测key是否为gen
-    async fn reload_for_wal(mem_table: &mut MemTable, wal: &HashStore, gen: &u64) -> Result<()>{
+    async fn reload_for_wal(mem_table: &mut MemTable, wal: &HashStore, gen: u64) -> Result<()>{
         // 将SSTable持久化失败前预存入的指令键集合从wal中获取
         // 随后将每一条指令键对应的指令恢复到mem_table中
         warn!("[SsTable: {}][reload_from_wal]", gen);
-        let key_gen = CommandCodec::encode_str_key(gen.to_string())?;
+        let key_gen = CommandCodec::encode_gen(gen)?;
         if let Some(key_cmd_u8) = wal.get(&key_gen).await? {
             for key in CommandCodec::decode_keys(&key_cmd_u8)? {
                 if let Some(cmd_data_u8) = wal.get(&key).await? {
@@ -184,26 +184,14 @@ impl LsmStore {
 
     /// 持久化immutable_table为SSTable
     /// 此处manifest参数需要传入是因为Rust的锁不可重入所以需要从外部将锁对象传入
-    pub(crate) async fn store_to_ss_table(&self, manifest: &mut Manifest) -> Result<()> {
-        // 切换mem_table并准备持久化
-        let (vec_keys, vec_values) = manifest.table_swap();
+    pub(crate) async fn store_to_ss_table(&self) -> Result<()> {
+        let compactor = Compactor::from_lsm_kv(self);
 
-        // 获取当前时间戳当gen
-        let time_stamp = Local::now().timestamp_millis() as u64;
-        let vec_ts_u8 = CommandCodec::encode_str_key(time_stamp.to_string())?;
-
-
-        // 将这些索引的key序列化后预先存入wal中作防灾准备
-        // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
-        self.wal_put(vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?);
-
-        let handler = self.io_handler_factory.create(time_stamp)?;
-        // 从内存表中将数据持久化为ss_table
-        let ss_table = SsTable::create_for_immutable_table(&self.config
-                                                           , handler
-                                                           , &vec_values
-                                                           , LEVEL_0).await?;
-        manifest.insert_ss_table(time_stamp, ss_table);
+        tokio::spawn(async move {
+            if let Err(err) = compactor.minor_compaction().await {
+                error!("[LsmStore][store_to_ss_table][error happen]: {:?}", err);
+            }
+        });
         Ok(())
     }
 
@@ -222,27 +210,28 @@ impl LsmStore {
             Some(value) => { Ok(Some(value)) }
         }
     }
-
-    /// 以Task类似的异步写数据，避免影响数据写入性能
-    /// 当然，LevelDB的话虽然wal写入会提供是否同步的选项，此处先简化优先使用异步
-    fn wal_put(&self, key: Vec<u8>, value: Vec<u8>) {
-        let wal = Arc::clone(&self.wal);
-        tokio::spawn(async move {
-            if let Err(err) = wal.set(&key, value).await {
-                error!("[LsmStore][wal_put][error happen]: {:?}", err);
-            }
-        });
+    pub(crate) fn manifest(&self) -> &Arc<RwLock<Manifest>> {
+        &self.manifest
+    }
+    pub(crate) fn config(&self) -> &Arc<Config> {
+        &self.config
+    }
+    pub(crate) fn io_handler_factory(&self) -> &Arc<IOHandlerFactory> {
+        &self.io_handler_factory
+    }
+    pub(crate) fn wal(&self) -> &Arc<HashStore> {
+        &self.wal
     }
 }
 
 pub(crate) struct CommandCodec;
 
 impl CommandCodec {
-    pub(crate) fn encode_str_key(key: String) -> Result<Vec<u8>> {
-        Ok(bincode::serialize(&key)?)
+    pub(crate) fn encode_gen(gen: u64) -> Result<Vec<u8>> {
+        Ok(bincode::serialize(&gen)?)
     }
 
-    pub(crate) fn decode_str_key(key: &Vec<u8>) -> Result<String> {
+    pub(crate) fn decode_gen(key: &Vec<u8>) -> Result<u64> {
         Ok(bincode::deserialize(key)?)
     }
 
@@ -296,4 +285,15 @@ impl Config {
             part_size: DEFAULT_PART_SIZE,
         }
     }
+}
+
+/// 以Task类似的异步写数据，避免影响数据写入性能
+/// 当然，LevelDB的话虽然wal写入会提供是否同步的选项，此处先简化优先使用异步
+pub(crate) fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>) {
+    let wal = Arc::clone(wal);
+    tokio::spawn(async move {
+        if let Err(err) = wal.set(&key, value).await {
+            error!("[LsmStore][wal_put][error happen]: {:?}", err);
+        }
+    });
 }

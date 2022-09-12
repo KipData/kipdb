@@ -14,7 +14,6 @@ pub mod hash_kv;
 pub mod sled_kv;
 pub mod lsm;
 pub mod io_handler;
-pub mod thread_pool;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 
@@ -125,15 +124,15 @@ impl CommandPackage {
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command
-    pub async fn form_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandPackage>> {
-        if let Some(cmd_data) =  Self::form_pos_unpack(io_handler, start, len).await? {
+    pub async fn from_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandPackage>> {
+        if let Some(cmd_data) =  Self::from_pos_unpack(io_handler, start, len).await? {
             Ok(Some(CommandPackage::new(cmd_data, start, len)))
         } else {
             Ok(None)
         }
     }
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
-    pub async fn form_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
+    pub async fn from_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos(start, len).await?;
         Ok(match rmp_serde::decode::from_slice(cmd_u8.as_slice()) {
             Ok(cmd) => {
@@ -146,7 +145,7 @@ impl CommandPackage {
     }
 
     /// 获取zone之中所有的Command
-    pub async fn form_zone_to_vec(zone: &[u8]) -> Result<Vec<CommandPackage>> {
+    pub async fn from_zone_to_vec(zone: &[u8]) -> Result<Vec<CommandPackage>> {
         let mut vec: Vec<CommandPackage> = Vec::new();
         let vec_u8 = Self::get_vec_bytes(zone).await;
         let mut pos = 4;
@@ -177,10 +176,10 @@ impl CommandPackage {
     }
 
     /// 获取reader之中所有的Command
-    pub async fn form_read_to_vec(io_handler: &IOHandler) -> Result<Vec<CommandPackage>> {
+    pub async fn from_read_to_vec(io_handler: &IOHandler) -> Result<Vec<CommandPackage>> {
         let len = io_handler.file_size().await? as usize;
         let zone = io_handler.read_with_pos(0, len).await?;
-        Self::form_zone_to_vec(zone.as_slice()).await
+        Self::from_zone_to_vec(zone.as_slice()).await
     }
 
     /// 获取此reader的所有命令对应的字节数组段落

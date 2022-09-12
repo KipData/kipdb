@@ -15,8 +15,6 @@ type ExpiredGenVec = Vec<u64>;
 
 pub(crate) const LEVEL_0: u64 = 0;
 
-pub(crate) const LEVEL_1: u64 = 1;
-
 /// SSTable
 pub(crate) struct SsTable {
     // 表索引信息
@@ -43,7 +41,7 @@ impl SsTable {
         let index_pos = meta_info.data_len;
         let index_len = meta_info.index_len as usize;
 
-        if let Some(data) = CommandPackage::form_pos_unpack(&io_handler, index_pos, index_len).await? {
+        if let Some(data) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
             let sparse_index = rmp_serde::from_slice(&data.get_key())?;
             Ok(SsTable {
                 meta_info,
@@ -69,10 +67,10 @@ impl SsTable {
             part_len += len;
         }
 
-        info!("[write_data_part][data_zone]: {} to {}", start_pos, part_len);
+        info!("[SSTable][write_data_part][data_zone]: {} to {}", start_pos, part_len);
         // 获取该段首位数据
         if let Some(cmd) = vec_cmd_data.first() {
-            info!("[write_data_part][sparse_index]: index of the part: {:?}", cmd.get_key());
+            info!("[SSTable][write_data_part][sparse_index]: index of the part: {:?}", cmd.get_key());
             sparse_index.insert(cmd.get_key_clone(), Position { start: start_pos, len: part_len });
         }
 
@@ -124,7 +122,7 @@ impl SsTable {
                 }
 
                 // 构建Level1的SSTable
-                let level_1_ss_table = Self::create_for_immutable_table(&config, io_handler, &vec_cmd_data, LEVEL_1).await?;
+                let level_1_ss_table = Self::create_for_immutable_table(&config, io_handler, &vec_cmd_data, 1).await?;
 
                 Ok(Some((level_1_ss_table, vec_shot_snap_gen)))
             }
@@ -180,7 +178,7 @@ impl SsTable {
 
         let all_data_u8 = self.io_handler.read_with_pos(0, data_len as usize).await?;
         let vec_cmd_data =
-                    CommandPackage::form_zone_to_vec(all_data_u8.as_slice()).await?
+                    CommandPackage::from_zone_to_vec(all_data_u8.as_slice()).await?
             .into_iter()
             .map(|cmd_package| cmd_package.cmd)
             .collect_vec();

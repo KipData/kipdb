@@ -6,16 +6,17 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::lsm_kv::{LevelVec, SsTableMap};
+use crate::kernel::lsm::lsm_kv::{LevelSlice, SsTableMap};
 use crate::kernel::lsm::ss_table::SsTable;
 
 pub(crate) mod ss_table;
 pub mod lsm_kv;
+mod compactor;
 
 pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
 
-/// META_INFO序列化长度定长
-/// 注意MetaInfo序列化时，需要使用类似Bincode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
+/// MetaInfo序列化长度定长
+/// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
 const TABLE_META_INFO_SIZE: usize = 40;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -36,7 +37,7 @@ pub(crate) struct Manifest {
     ss_tables_map: SsTableMap,
     // Level层级Vec
     // 以索引0为level-0这样的递推，存储文件的gen值
-    level_vec: LevelVec,
+    level_slice: LevelSlice,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -48,8 +49,7 @@ struct Position {
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
     async fn write_to_file(&self, io_handler: &IOHandler) -> Result<()> {
-        let vec_u8 = bincode::serialize(&self)?;
-        io_handler.write(vec_u8).await?;
+        io_handler.write(bincode::serialize(&self)?).await?;
         Ok(())
     }
 
@@ -66,25 +66,24 @@ impl Manifest {
     pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>, threshold_size: u64) -> Self {
         // 获取ss_table分级Vec
         let level_vec = Self::level_layered(&mut ss_tables_map);
-        Self { threshold_size, mem_table_slice: [MemTable::new(), MemTable::new()], _path: path, ss_tables_map, level_vec }
+        Self { threshold_size, mem_table_slice: [MemTable::new(), MemTable::new()], _path: path, ss_tables_map, level_slice: level_vec }
     }
 
     /// 使用ss_tables返回LevelVec
     /// 由于ss_tables是有序的，level_vec的内容应当是从L0->LN，旧->新
-    fn level_layered(ss_tables: &mut SsTableMap) -> LevelVec {
-        let mut level_vec = Vec::new();
+    fn level_layered(ss_tables: &mut SsTableMap) -> LevelSlice {
+        let mut level_slice = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for ss_table in ss_tables.values() {
             let level = ss_table.get_level();
-
-            leve_vec_insert(&mut level_vec, level, ss_table.get_gen())
+            level_slice[level as usize].push(ss_table.get_gen());
         }
-        level_vec
+        level_slice
     }
 
     pub(crate) fn insert_ss_table(&mut self, gen: u64, ss_table: SsTable) {
         let level = ss_table.get_level();
         self.ss_tables_map.insert(gen, ss_table);
-        leve_vec_insert(&mut self.level_vec, level, gen);
+        self.level_slice[level as usize].push(gen);
     }
 
     pub(crate) fn insert_data(&mut self, key: Vec<u8>, value: CommandData) {
@@ -101,7 +100,7 @@ impl Manifest {
         // 将需要删除的Vec转换为HashSet方便使用retain方法
         let set_expired_gen: HashSet<&u64> = vec_expired_gen.iter().collect();
         // 将存储的Level表中含有该gen的SSTable一并删除
-        for vec_level in &mut self.level_vec {
+        for vec_level in &mut self.level_slice {
             vec_level.retain(|gen| set_expired_gen.contains(gen));
         }
 
@@ -109,7 +108,7 @@ impl Manifest {
     }
 
     pub(crate) fn get_level_vec(&self, level: usize) -> Option<&Vec<u64>> {
-        self.level_vec.get(level)
+        self.level_slice.get(level)
     }
 
     pub(crate) fn get_ss_table(&self, gen: &u64) -> Option<&SsTable> {
@@ -158,19 +157,6 @@ impl Manifest {
 impl Position {
     pub fn new(start: u64, len: usize) -> Self {
         Self { start, len }
-    }
-}
-
-// 对LevelVec插入的封装方法
-fn leve_vec_insert(level_vec: &mut LevelVec, level: u64, gen: u64) {
-    let option: Option<&mut Vec<u64>> = level_vec.get_mut(level as usize);
-    match option {
-        Some(vec) => {
-            vec.push(gen)
-        }
-        None => {
-            level_vec.push(vec![gen])
-        }
     }
 }
 

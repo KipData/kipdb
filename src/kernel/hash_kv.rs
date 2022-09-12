@@ -43,7 +43,7 @@ impl HashStore {
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = manifest.get_pos_with_key(key) {
             let io_handler = manifest.current_io_handler();
-            Ok(CommandPackage::form_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await?)
+            Ok(CommandPackage::from_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await?)
         } else {
             Ok(None)
         }
@@ -121,7 +121,7 @@ impl HashStore {
                     match io_handler_index.get(&cmd_pos.gen) {
                         Some(io_handler) => {
                             if let Some(cmd_data) =
-                            CommandPackage::form_pos_unpack(&io_handler, cmd_pos.pos, cmd_pos.len).await? {
+                            CommandPackage::from_pos_unpack(&io_handler, cmd_pos.pos, cmd_pos.len).await? {
                                 let (pos, len) = CommandPackage::write(&compact_handler, &cmd_data).await?;
                                 write_len += len;
                                 cmd_pos.change(compact_gen, pos, len);
@@ -212,7 +212,7 @@ impl KVStore for HashStore {
             // 获取这段内容
             let io_handler = manifest.get_io_handler(&cmd_pos.gen).unwrap();
 
-            if let Some(cmd) = CommandPackage::form_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await? {
+            if let Some(cmd) = CommandPackage::from_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await? {
                 // 将命令进行转换
                 return if let CommandData::Set { value, .. } = cmd {
                     //返回匹配成功的数据
@@ -252,7 +252,7 @@ async fn load(io_handler: &IOHandler, index: &mut HashMap<Vec<u8>, CommandPos>) 
     let gen = io_handler.get_gen();
 
     // 流式读取将数据序列化为Command
-    let vec_package = CommandPackage::form_read_to_vec(io_handler).await?;
+    let vec_package = CommandPackage::from_read_to_vec(io_handler).await?;
     // 初始化空间占用为0
     let mut un_compacted = 0;
     // 迭代数据
