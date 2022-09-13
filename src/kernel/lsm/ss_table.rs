@@ -4,6 +4,7 @@ use std::sync::{Arc};
 use itertools::Itertools;
 use tokio::sync::RwLock;
 use tracing::{info};
+use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::{Manifest, MetaInfo, Position};
@@ -24,7 +25,38 @@ pub(crate) struct SsTable {
     // 文件IO操作器
     io_handler: IOHandler,
     // 文件路径
-    gen: u64
+    gen: u64,
+    score: Score
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct Score {
+    start: Vec<u8>,
+    end: Vec<u8>
+}
+
+impl Score {
+    fn fusion(vec_score :Vec<&Score>) -> Result<Self> {
+        if vec_score.len() > 0 {
+            let start = vec_score.iter()
+                .map(|score| score.start.clone())
+                .sorted()
+                .min().unwrap();
+            let end = vec_score.iter()
+                .map(|score| score.end.clone())
+                .sorted()
+                .max().unwrap();
+
+            Ok(Score { start, end })
+        } else {
+            Err(KvsError::DataEmpty)
+        }
+    }
+
+    fn meet(source: &Score, target: &Score) -> bool {
+        (source.start.le(&target.start) && source.end.gt(&target.start)) ||
+            (source.start.lt(&target.end) && source.end.ge(&target.end))
+    }
 }
 
 impl SsTable {
@@ -42,13 +74,20 @@ impl SsTable {
         let index_len = meta_info.index_len as usize;
 
         if let Some(data) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
-            let sparse_index = rmp_serde::from_slice(&data.get_key())?;
-            Ok(SsTable {
-                meta_info,
-                sparse_index,
-                gen,
-                io_handler
-            })
+            match data {
+                CommandData::Set { key, value } => {
+                    let sparse_index = rmp_serde::from_slice(&key)?;
+                    let score = rmp_serde::from_slice(&value)?;
+                    Ok(SsTable {
+                        meta_info,
+                        sparse_index,
+                        gen,
+                        io_handler,
+                        score
+                    })
+                }
+                _ => Err(KvsError::NotMatchCmd)
+            }
         } else {
             Err(KvsError::KeyNotFound)
         }
@@ -189,50 +228,60 @@ impl SsTable {
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
     pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: u64) -> Result<Self> {
-        // 获取地址
-        let part_size = config.part_size;
-        let gen = io_handler.get_gen();
-        let mut vec_cmd = Vec::new();
-        let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
+        if vec_mem_data.len() > 0 {
+            // 获取地址
+            let part_size = config.part_size;
+            let gen = io_handler.get_gen();
+            let mut vec_cmd = Vec::new();
+            let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
 
-        // 将数据按part_size一组分段存入
-        for cmd_data in vec_mem_data {
-            vec_cmd.push(cmd_data);
-            if vec_cmd.len() >= part_size as usize {
+            // 将数据按part_size一组分段存入
+            for cmd_data in vec_mem_data {
+                vec_cmd.push(cmd_data);
+                if vec_cmd.len() >= part_size as usize {
+                    Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
+                }
+            }
+            // 将剩余的指令当作一组持久化
+            if !vec_cmd.is_empty() {
                 Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
             }
+
+            let score = Score {
+                start: vec_mem_data.first().unwrap().get_key_clone(),
+                end: vec_mem_data.last().unwrap().get_key_clone()
+            };
+
+            // 开始对稀疏索引进行伪装并断点处理
+            // 获取指令数据段的数据长度
+            // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
+            let cmd_sparse_index = CommandData::Set { key: rmp_serde::to_vec(&sparse_index)?, value: rmp_serde::to_vec(&score)?};
+            // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
+            let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
+
+
+            // 将以上持久化信息封装为MetaInfo
+            let meta_info = MetaInfo{
+                level,
+                version: 0,
+                data_len: data_part_len as u64,
+                index_len: sparse_index_len as u64,
+                part_size
+            };
+            meta_info.write_to_file(&io_handler).await?;
+
+            io_handler.flush().await?;
+
+            info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
+            Ok(SsTable {
+                meta_info,
+                sparse_index,
+                io_handler,
+                gen,
+                score
+            })
+        } else {
+            Err(KvsError::DataEmpty)
         }
-        // 将剩余的指令当作一组持久化
-        if !vec_cmd.is_empty() {
-            Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
-        }
-
-        // 开始对稀疏索引进行伪装并断点处理
-        // 获取指令数据段的数据长度
-        // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
-        let cmd_sparse_index = CommandData::Get { key: rmp_serde::to_vec(&sparse_index)?};
-        // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
-        let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
-
-
-        // 将以上持久化信息封装为MetaInfo
-        let meta_info = MetaInfo{
-            level,
-            version: 0,
-            data_len: data_part_len as u64,
-            index_len: sparse_index_len as u64,
-            part_size
-        };
-        meta_info.write_to_file(&io_handler).await?;
-
-        io_handler.flush().await?;
-
-        info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
-        Ok(SsTable {
-            meta_info,
-            sparse_index,
-            io_handler,
-            gen
-        })
     }
 }

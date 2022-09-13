@@ -20,6 +20,10 @@ pub enum KvsError {
     /// Remove no-existent key error
     #[fail(display = "Key not found")]
     KeyNotFound,
+    #[fail(display = "Data is empty")]
+    DataEmpty,
+    #[fail(display = "Not the correct type of Cmd")]
+    NotMatchCmd,
     #[fail(display = "{}", _0)]
     Sled(#[cause] sled::Error),
 
