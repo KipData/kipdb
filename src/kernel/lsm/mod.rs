@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::lsm_kv::{LevelSlice, SsTableMap};
-use crate::kernel::lsm::ss_table::SsTable;
+use crate::kernel::lsm::ss_table::{Score, SsTable};
 
 pub(crate) mod ss_table;
 pub mod lsm_kv;
@@ -80,7 +80,8 @@ impl Manifest {
         level_slice
     }
 
-    pub(crate) fn insert_ss_table(&mut self, gen: u64, ss_table: SsTable) {
+    pub(crate) fn insert_ss_table(&mut self, ss_table: SsTable) {
+        let gen = ss_table.get_gen();
         let level = ss_table.get_level();
         self.ss_tables_map.insert(gen, ss_table);
         self.level_slice[level as usize].push(gen);
@@ -152,6 +153,13 @@ impl Manifest {
         let vec_keys = immut_table.keys().collect_vec();
         let vec_values = immut_table.values().collect_vec();
         (vec_keys, vec_values)
+    }
+
+    pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score)-> Vec<&SsTable> {
+        self.get_level_vec(level + 1).iter()
+            .map(|gen| self.get_ss_table(gen).unwrap())
+            .filter(|ss_table| ss_table.get_score().meet(score))
+            .collect_vec()
     }
 }
 

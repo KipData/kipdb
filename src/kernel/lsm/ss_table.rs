@@ -12,8 +12,6 @@ use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 use crate::KvsError;
 
-type ExpiredGenVec = Vec<u64>;
-
 pub(crate) const LEVEL_0: u64 = 0;
 
 /// SSTable
@@ -135,16 +133,6 @@ impl SsTable {
         }
 
         vec_cmd_data.clear();
-        Ok(())
-    }
-
-    /// 仅为Level 0 SSTable
-    /// 将升级SSTable为1且清除原有Level0的Table
-    pub(crate) async fn level_up_for_level_0(level_1_ss_table: SsTable, manifest: Arc<RwLock<Manifest>>, vec_level_0_gen: &ExpiredGenVec) -> Result<()> {
-        let mut manifest = manifest.write().await;
-
-        manifest.insert_ss_table(level_1_ss_table.gen, level_1_ss_table);
-        manifest.retain_with_vec_gen_and_level(vec_level_0_gen)?;
         Ok(())
     }
 
