@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use chrono::Local;
 use itertools::Itertools;
+use rand::Rng;
 use tokio::sync::RwLock;
 use crate::HashStore;
 use crate::kernel::io_handler::IOHandlerFactory;
-use crate::kernel::Result;
+use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
 use crate::kernel::lsm::Manifest;
 use crate::kernel::lsm::ss_table::{LEVEL_0, Score, SsTable};
@@ -69,15 +70,6 @@ impl Compactor {
             // vec_ss_table_l.iter().for_each(|ss_table| vec_cmd_data.extend(ss_table.get_all_data().await?));
             // vec_ss_table_l_1.iter().for_each(|ss_table| vec_cmd_data.extend(ss_table.get_all_data().await?));
             // vec_cmd_data.sort_by(|cmd_a, cmd_b| cmd_a.get_key().cmp(cmd_b.get_key()));
-            //
-            // match vec_ss_table_l_1.pop() {
-            //     Some(ss_table) => {
-            //
-            //     }
-            //     None => {
-            //
-            //     }
-            // }
 
             // match {
             //     // 注意! vec_ss_table_gen是由旧到新的
@@ -112,6 +104,35 @@ impl Compactor {
         } else { None }
     }
 
+    /// CommandData数据分片，尽可能将数据按给定的分片数量：vec_size均匀切片
+    /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
+    /// 注意，最后一片分片大多数情况下会比其他分片更大那么一点点，最极端的情况下不会小于最小的分片超过所有数据中最大的值
+    fn data_sharding(mut vec_data: Vec<CommandData>, vec_size: usize) -> Vec<Vec<CommandData>> {
+        let part_size = vec_data.iter()
+            .map(|cmd| cmd.get_data_len())
+            .sum::<usize>() / vec_size;
+        let mut vec_sharding = vec![Vec::new(); vec_size];
+        let slice = vec_sharding.as_mut_slice();
+        for i in 0 .. vec_size {
+            let mut data_len :usize = slice[i].iter()
+                .map(|cmd: &CommandData| cmd.get_data_len())
+                .sum::<usize>();
+            while !vec_data.is_empty() {
+                if let Some(cmd_data) = vec_data.pop() {
+                    let cmd_len = cmd_data.get_data_len();
+                    if data_len + cmd_len <= part_size || i >= vec_size - 1 {
+                        data_len += cmd_len;
+                        slice[i].push(cmd_data);
+                    } else {
+                        slice[i + 1].push(cmd_data);
+                        break
+                    }
+                } else { break }
+            }
+        }
+        vec_sharding
+    }
+
     pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
         let manifest = Arc::clone(&lsm_kv.manifest());
         let config = Arc::clone(&lsm_kv.config());
@@ -120,6 +141,43 @@ impl Compactor {
 
         Compactor::new(manifest, config, io_handler_factory, wal)
     }
+
+}
+
+#[test]
+fn test_sharding() -> Result<()> {
+    let mut vec_data_1 = Vec::new();
+    for _ in 0..100 {
+        vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
+    }
+
+    let vec_sharding_1 = Compactor::data_sharding(vec_data_1, 4);
+    for sharding in vec_sharding_1 {
+        assert_eq!(sharding.len(), 25);
+    }
+
+    let mut rng = rand::thread_rng();
+    let mut vec_data_2 = Vec::new();
+    let mut data_len = 0;
+    while data_len % 154 != 0 || data_len == 0 {
+        let cmd = CommandData::Set { key: rmp_serde::to_vec(&rng.gen::<f64>())?, value: rmp_serde::to_vec(&rng.gen::<f64>())? };
+        data_len += cmd.get_data_len();
+        vec_data_2.push(cmd);
+    }
+    let max_len = vec_data_2.iter().map(|cmd| rmp_serde::to_vec(cmd).unwrap().len()).max().unwrap();
+    
+    let vec_sharding_2 = Compactor::data_sharding(vec_data_2, 4);
+    let vec_sharding_2_slice = vec_sharding_2.as_slice();
+    let i_0 = rmp_serde::to_vec(&vec_sharding_2_slice[0])?.len();
+    let i_1 = rmp_serde::to_vec(&vec_sharding_2_slice[1])?.len();
+    let i_2 = rmp_serde::to_vec(&vec_sharding_2_slice[2])?.len();
+    let i_3 = rmp_serde::to_vec(&vec_sharding_2_slice[3])?.len();
+
+    assert!(i_3 - i_0 <= max_len);
+    assert!(i_3 - i_1 <= max_len);
+    assert!(i_3 - i_2 <= max_len);
+
+    Ok(())
 }
 
 impl Clone for Compactor {

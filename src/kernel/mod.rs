@@ -259,6 +259,13 @@ impl CommandData {
         }
     }
 
+    pub fn get_data_len(&self) -> usize {
+        self.get_key().len() + match self.get_value() {
+            None => 0,
+            Some(value) => {value.len()}
+        }
+    }
+
     /// 命令消费
     ///
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
