@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use chrono::Local;
 use itertools::Itertools;
-use rand::Rng;
 use tokio::sync::RwLock;
 use crate::HashStore;
 use crate::kernel::io_handler::IOHandlerFactory;
@@ -146,6 +145,8 @@ impl Compactor {
 
 #[test]
 fn test_sharding() -> Result<()> {
+    use rand::Rng;
+
     let mut vec_data_1 = Vec::new();
     for _ in 0..100 {
         vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })

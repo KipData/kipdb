@@ -36,6 +36,13 @@ pub(crate) struct Score {
 }
 
 impl Score {
+    pub(crate) fn from_cmd_data(first: &CommandData, last: &CommandData) -> Self {
+        Score {
+            start: first.get_key_clone(),
+            end: last.get_key_clone()
+        }
+    }
+
     pub(crate) fn fusion(vec_score :Vec<&Score>) -> Result<Self> {
         if vec_score.len() > 0 {
             let start = vec_score.iter()
@@ -56,6 +63,20 @@ impl Score {
     pub(crate) fn meet(&self, target: &Score) -> bool {
         (self.start.le(&target.start) && self.end.gt(&target.start)) ||
             (self.start.lt(&target.end) && self.end.ge(&target.end))
+    }
+
+    pub(crate) fn from_vec_cmd_data(vec_mem_data: &Vec<&CommandData>) -> Result<Self> {
+        match vec_mem_data.as_slice() {
+            [first, .., last] => {
+                Ok(Self::from_cmd_data(first, last))
+            },
+            [one] => {
+                Ok(Self::from_cmd_data(one, one))
+            },
+            _ => {
+                Err(KvsError::DataEmpty)
+            },
+        }
     }
 }
 
@@ -206,60 +227,54 @@ impl SsTable {
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
     pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<&CommandData>, level: u64) -> Result<Self> {
-        if vec_mem_data.len() > 0 {
-            // 获取地址
-            let part_size = config.part_size;
-            let gen = io_handler.get_gen();
-            let mut vec_cmd = Vec::new();
-            let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
+        // 获取数据的Key涵盖范围
+        let score = Score::from_vec_cmd_data(vec_mem_data)?;
+        // 获取地址
+        let part_size = config.part_size;
+        let gen = io_handler.get_gen();
+        let mut vec_cmd = Vec::new();
+        let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
 
-            // 将数据按part_size一组分段存入
-            for cmd_data in vec_mem_data {
-                vec_cmd.push(*cmd_data);
-                if vec_cmd.len() >= part_size as usize {
-                    Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
-                }
-            }
-            // 将剩余的指令当作一组持久化
-            if !vec_cmd.is_empty() {
+        // 将数据按part_size一组分段存入
+        for cmd_data in vec_mem_data {
+            vec_cmd.push(*cmd_data);
+            if vec_cmd.len() >= part_size as usize {
                 Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
             }
-
-            let score = Score {
-                start: vec_mem_data.first().unwrap().get_key_clone(),
-                end: vec_mem_data.last().unwrap().get_key_clone()
-            };
-
-            // 开始对稀疏索引进行伪装并断点处理
-            // 获取指令数据段的数据长度
-            // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
-            let cmd_sparse_index = CommandData::Set { key: rmp_serde::to_vec(&sparse_index)?, value: rmp_serde::to_vec(&score)?};
-            // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
-            let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
-
-
-            // 将以上持久化信息封装为MetaInfo
-            let meta_info = MetaInfo{
-                level,
-                version: 0,
-                data_len: data_part_len as u64,
-                index_len: sparse_index_len as u64,
-                part_size
-            };
-            meta_info.write_to_file(&io_handler).await?;
-
-            io_handler.flush().await?;
-
-            info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
-            Ok(SsTable {
-                meta_info,
-                sparse_index,
-                io_handler,
-                gen,
-                score
-            })
-        } else {
-            Err(KvsError::DataEmpty)
         }
+        // 将剩余的指令当作一组持久化
+        if !vec_cmd.is_empty() {
+            Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
+        }
+
+        // 开始对稀疏索引进行伪装并断点处理
+        // 获取指令数据段的数据长度
+        // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
+        let cmd_sparse_index = CommandData::Set { key: rmp_serde::to_vec(&sparse_index)?, value: rmp_serde::to_vec(&score)?};
+        // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
+        let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
+
+
+        // 将以上持久化信息封装为MetaInfo
+        let meta_info = MetaInfo{
+            level,
+            version: 0,
+            data_len: data_part_len as u64,
+            index_len: sparse_index_len as u64,
+            part_size
+        };
+        meta_info.write_to_file(&io_handler).await?;
+
+        io_handler.flush().await?;
+
+        info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
+        Ok(SsTable {
+            meta_info,
+            sparse_index,
+            io_handler,
+            gen,
+            score
+        })
+
     }
 }
