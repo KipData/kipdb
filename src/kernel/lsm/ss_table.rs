@@ -36,7 +36,7 @@ pub(crate) struct Score {
 }
 
 impl Score {
-    fn fusion(vec_score :Vec<&Score>) -> Result<Self> {
+    pub(crate) fn fusion(vec_score :Vec<&Score>) -> Result<Self> {
         if vec_score.len() > 0 {
             let start = vec_score.iter()
                 .map(|score| score.start.clone())
@@ -53,9 +53,9 @@ impl Score {
         }
     }
 
-    fn meet(source: &Score, target: &Score) -> bool {
-        (source.start.le(&target.start) && source.end.gt(&target.start)) ||
-            (source.start.lt(&target.end) && source.end.ge(&target.end))
+    pub(crate) fn meet(&self, target: &Score) -> bool {
+        (self.start.le(&target.start) && self.end.gt(&target.start)) ||
+            (self.start.lt(&target.end) && self.end.ge(&target.end))
     }
 }
 
@@ -143,30 +143,8 @@ impl SsTable {
         self.gen
     }
 
-    /// Level0的SSTable归并读取生成新的Level1SSTable
-    pub(crate) async fn level_0_up_ss_table(config: &Config, manifest: &Manifest, io_handler: IOHandler) -> Result<Option<(SsTable, ExpiredGenVec)>> {
-        match manifest.get_level_vec(LEVEL_0 as usize).cloned() {
-            // 注意! vec_ss_table_gen是由旧到新的
-            // 这样归并出来的数据才能保证数据是有效的
-            Some(vec_shot_snap_gen) => {
-
-                let mut vec_cmd_data = Vec::new();
-                // 将所有Level0的SSTable读取各自所有的key做归并
-                for gen in vec_shot_snap_gen.iter() {
-                    if let Some(ss_table) = manifest.get_ss_table(gen) {
-                        vec_cmd_data.extend(ss_table.get_all_data().await?);
-                    } else {
-                        return Err(KvsError::SSTableLostError);
-                    }
-                }
-
-                // 构建Level1的SSTable
-                let level_1_ss_table = Self::create_for_immutable_table(&config, io_handler, &vec_cmd_data, 1).await?;
-
-                Ok(Some((level_1_ss_table, vec_shot_snap_gen)))
-            }
-            None => Ok(None)
-        }
+    pub(crate) fn get_score(&self) -> &Score {
+        &self.score
     }
 
     /// 从该sstable中获取指定key对应的CommandData
@@ -227,7 +205,7 @@ impl SsTable {
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: u64) -> Result<Self> {
+    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<&CommandData>, level: u64) -> Result<Self> {
         if vec_mem_data.len() > 0 {
             // 获取地址
             let part_size = config.part_size;
@@ -237,7 +215,7 @@ impl SsTable {
 
             // 将数据按part_size一组分段存入
             for cmd_data in vec_mem_data {
-                vec_cmd.push(cmd_data);
+                vec_cmd.push(*cmd_data);
                 if vec_cmd.len() >= part_size as usize {
                     Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
                 }

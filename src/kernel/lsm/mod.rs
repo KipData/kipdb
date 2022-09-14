@@ -107,8 +107,8 @@ impl Manifest {
         Ok(())
     }
 
-    pub(crate) fn get_level_vec(&self, level: usize) -> Option<&Vec<u64>> {
-        self.level_slice.get(level)
+    pub(crate) fn get_level_vec(&self, level: usize) -> &Vec<u64> {
+        &self.level_slice[level]
     }
 
     pub(crate) fn get_ss_table(&self, gen: &u64) -> Option<&SsTable> {
@@ -143,13 +143,14 @@ impl Manifest {
         self.mem_table_slice[0].len() > self.threshold_size as usize
     }
 
-    fn table_swap(&mut self) -> (Vec<Vec<u8>>, Vec<CommandData>){
+    /// MemTable交换并分解
+    fn table_swap(&mut self) -> (Vec<&Vec<u8>>, Vec<&CommandData>){
         self.mem_table_slice.swap(0, 1);
-        let mem_table = &mut self.mem_table_slice[1];
-        let vec_keys = mem_table.keys().cloned().collect_vec();
-        let vec_values = mem_table.values().cloned().collect_vec();
-        *mem_table = MemTable::new();
+        self.mem_table_slice[0] = MemTable::new();
 
+        let immut_table = &self.mem_table_slice[1];
+        let vec_keys = immut_table.keys().collect_vec();
+        let vec_values = immut_table.values().collect_vec();
         (vec_keys, vec_values)
     }
 }

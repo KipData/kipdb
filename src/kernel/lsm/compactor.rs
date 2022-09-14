@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use chrono::Local;
+use itertools::Itertools;
 use tokio::sync::RwLock;
 use crate::HashStore;
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
 use crate::kernel::lsm::Manifest;
-use crate::kernel::lsm::ss_table::{LEVEL_0, SsTable};
+use crate::kernel::lsm::ss_table::{LEVEL_0, Score, SsTable};
 
 pub(crate) struct Compactor {
     manifest: Arc<RwLock<Manifest>>,
@@ -45,6 +46,72 @@ impl Compactor {
         Ok(())
     }
 
+    pub(crate) async fn major_compaction(&self, level: usize) -> Result<()> {
+        let manifest = self.manifest.read().await;
+
+        if let Some(slice) = Self::get_first_3_slice(&manifest, level) {
+            let vec_score = slice.map(|gen| manifest.get_ss_table(&gen).unwrap().get_score())
+                .to_vec();
+            let first_score = Score::fusion(vec_score)?;
+            let mut vec_ss_table_l_1 = manifest.get_level_vec(level + 1).iter()
+                .map(|gen| manifest.get_ss_table(gen).unwrap())
+                .filter(|ss_table| ss_table.get_score().meet(&first_score))
+                .collect_vec();
+            let final_score = Score::fusion(vec_ss_table_l_1.iter()
+                .map(|ss_table| ss_table.get_score())
+                .collect_vec())?;
+            let vec_ss_table_l = manifest.get_level_vec(level).iter()
+                .map(|gen| manifest.get_ss_table(gen).unwrap())
+                .filter(|ss_table| ss_table.get_score().meet(&final_score))
+                .collect_vec();
+
+            // let mut vec_cmd_data = Vec::new();
+            // vec_ss_table_l.iter().for_each(|ss_table| vec_cmd_data.extend(ss_table.get_all_data().await?));
+            // vec_ss_table_l_1.iter().for_each(|ss_table| vec_cmd_data.extend(ss_table.get_all_data().await?));
+            // vec_cmd_data.sort_by(|cmd_a, cmd_b| cmd_a.get_key().cmp(cmd_b.get_key()));
+            //
+            // match vec_ss_table_l_1.pop() {
+            //     Some(ss_table) => {
+            //
+            //     }
+            //     None => {
+            //
+            //     }
+            // }
+
+            // match {
+            //     // 注意! vec_ss_table_gen是由旧到新的
+            //     // 这样归并出来的数据才能保证数据是有效的
+            //     Some(vec_shot_snap_gen) => {
+            //
+            //         let mut vec_cmd_data = Vec::new();
+            //         // 将所有Level0的SSTable读取各自所有的key做归并
+            //         for gen in vec_shot_snap_gen.iter() {
+            //             if let Some(ss_table) = manifest.get_ss_table(gen) {
+            //                 vec_cmd_data.extend(ss_table.get_all_data().await?);
+            //             } else {
+            //                 return Err(KvsError::SSTableLostError);
+            //             }
+            //         }
+            //
+            //         // 构建Level1的SSTable
+            //         let level_1_ss_table = Self::create_for_immutable_table(&config, io_handler, &vec_cmd_data, 1).await?;
+            //
+            //         Ok(Some((level_1_ss_table, vec_shot_snap_gen)))
+            //     }
+            //     None => Ok(None)
+            // }
+        };
+        Ok(())
+    }
+
+    fn get_first_3_slice(manifest: &Manifest, level: usize) -> Option<[u64;3]> {
+        let level_slice = manifest.get_level_vec(level).as_slice();
+        if level_slice.len() > 3 {
+            Some([level_slice[1], level_slice[2], level_slice[3]])
+        } else { None }
+    }
+
     pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
         let manifest = Arc::clone(&lsm_kv.manifest());
         let config = Arc::clone(&lsm_kv.config());
@@ -52,5 +119,16 @@ impl Compactor {
         let io_handler_factory = Arc::clone(&lsm_kv.io_handler_factory());
 
         Compactor::new(manifest, config, io_handler_factory, wal)
+    }
+}
+
+impl Clone for Compactor {
+    fn clone(&self) -> Self {
+        Compactor {
+            manifest: Arc::clone(&self.manifest),
+            config: Arc::clone(&self.config),
+            io_handler_factory: Arc::clone(&self.io_handler_factory),
+            wal: Arc::clone(&self.wal)
+        }
     }
 }

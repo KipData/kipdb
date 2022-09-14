@@ -22,6 +22,8 @@ pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
+pub(crate) const DEFAULT_SST_SIZE: u64 = 2 * 1024 * 1024;
+
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
@@ -83,11 +85,11 @@ impl KVStore for LsmStore {
     }
 
     async fn shut_down(&self) -> Result<()> {
-        let manifest = self.manifest.read().await;
-
         self.wal.flush().await?;
-        if !manifest.mem_table_is_empty() {
-            self.store_to_ss_table().await?;
+        // 注意此处不使用let保存读锁
+        // Compactor进行minor_compaction时需要使用到写锁
+        if !self.manifest.read().await.mem_table_is_empty() {
+            self.store_to_ss_table_sync().await?;
         }
 
         Ok(())
@@ -182,8 +184,7 @@ impl LsmStore {
         Ok(())
     }
 
-    /// 持久化immutable_table为SSTable
-    /// 此处manifest参数需要传入是因为Rust的锁不可重入所以需要从外部将锁对象传入
+    /// 异步持久化immutable_table为SSTable
     pub(crate) async fn store_to_ss_table(&self) -> Result<()> {
         let compactor = Compactor::from_lsm_kv(self);
 
@@ -193,6 +194,11 @@ impl LsmStore {
             }
         });
         Ok(())
+    }
+
+    /// 同步持久化immutable_table为SSTable
+    pub(crate) async fn store_to_ss_table_sync(&self) -> Result<()> {
+        Ok(Compactor::from_lsm_kv(self).minor_compaction().await?)
     }
 
     /// 通过CommandData的引用解包并克隆出value值
@@ -235,7 +241,7 @@ impl CommandCodec {
         Ok(bincode::deserialize(key)?)
     }
 
-    pub(crate) fn encode_keys(value: &Vec<Vec<u8>>) -> Result<Vec<u8>> {
+    pub(crate) fn encode_keys(value: &Vec<&Vec<u8>>) -> Result<Vec<u8>> {
         Ok(bincode::serialize(value)?)
     }
 
@@ -253,6 +259,8 @@ pub struct Config {
     pub(crate) wal_compaction_threshold: u64,
     // 数据分块大小
     pub(crate) part_size: u64,
+    // SSTable文件大小
+    pub(crate) sst_size: u64,
 }
 
 impl Config {
@@ -277,12 +285,18 @@ impl Config {
         self
     }
 
+    pub fn sst_size(mut self, sst_size: u64) -> Self {
+        self.sst_size = sst_size;
+        self
+    }
+
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
             threshold_size: DEFAULT_THRESHOLD_SIZE,
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
             part_size: DEFAULT_PART_SIZE,
+            sst_size: DEFAULT_SST_SIZE
         }
     }
 }
