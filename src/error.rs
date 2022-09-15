@@ -22,6 +22,8 @@ pub enum KvsError {
     KeyNotFound,
     #[fail(display = "Data is empty")]
     DataEmpty,
+    #[fail(display = "Max Level is 7")]
+    LevelOver,
     #[fail(display = "Not the correct type of Cmd")]
     NotMatchCmd,
     #[fail(display = "{}", _0)]

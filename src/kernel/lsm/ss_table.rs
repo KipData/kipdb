@@ -27,7 +27,7 @@ pub(crate) struct SsTable {
     score: Score
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub(crate) struct Score {
     start: Vec<u8>,
     end: Vec<u8>
@@ -75,6 +75,12 @@ impl Score {
                 Err(KvsError::DataEmpty)
             },
         }
+    }
+    pub fn start(&self) -> &Vec<u8> {
+        &self.start
+    }
+    pub fn end(&self) -> &Vec<u8> {
+        &self.end
     }
 }
 
@@ -140,8 +146,8 @@ impl SsTable {
         self.meta_info.level = level;
     }
 
-    pub(crate) fn get_level(&self) -> u64 {
-        self.meta_info.level
+    pub(crate) fn get_level(&self) -> usize {
+        self.meta_info.level as usize
     }
 
     pub(crate) fn get_version(&self) -> u64 {

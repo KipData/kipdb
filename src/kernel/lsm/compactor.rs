@@ -2,7 +2,7 @@ use std::sync::Arc;
 use chrono::Local;
 use itertools::Itertools;
 use tokio::sync::RwLock;
-use crate::HashStore;
+use crate::{HashStore, KvsError};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
@@ -28,7 +28,7 @@ impl Compactor {
         let mut manifest = self.manifest.write().await;
 
         // 获取当前时间戳当gen
-        let time_stamp = Local::now().timestamp_millis() as u64;
+        let time_stamp = Local::now().timestamp_nanos() as u64;
         let io_handler = self.io_handler_factory.create(time_stamp)?;
         // 切换mem_table并准备持久化
         let (vec_keys, vec_values) = manifest.table_swap();
@@ -42,21 +42,41 @@ impl Compactor {
                                                            , io_handler
                                                            , &vec_values
                                                            , LEVEL_0).await?;
-        manifest.insert_ss_table(ss_table);
+        manifest.insert_ss_table_with_index(ss_table, 0);
         Ok(())
     }
 
     pub(crate) async fn major_compaction(&self, level: usize) -> Result<()> {
+        if level > 6 {
+            return Err(KvsError::LevelOver);
+        }
+
         let manifest = self.manifest.read().await;
 
         if let Some(slice) = Self::get_first_3_slice(&manifest, level) {
-            let vec_score = slice.map(|gen| manifest.get_ss_table(&gen).unwrap().get_score())
+            let next_level = level + 1;
+            let vec_ss_table = slice.map(|gen| manifest.get_ss_table(&gen).unwrap())
                 .to_vec();
-            let mut vec_ss_table_l_1 = manifest.get_meet_score_ss_tables(level + 1, &Score::fusion(vec_score)?);
+            let vec_score_l = vec_ss_table.iter().map(|ss_table| ss_table.get_score())
+                .collect_vec();
+            let mut vec_ss_table_l_1 = manifest.get_meet_score_ss_tables(next_level, &Score::fusion(vec_score_l)?);
+
+            let index = match vec_ss_table_l_1.first() {
+                None => 0,
+                Some(first_ss_table) => {
+                    manifest.get_index(next_level, first_ss_table.get_gen())
+                        .unwrap_or(0)
+                }
+            };
+
             let final_vec_score = vec_ss_table_l_1.iter()
                 .map(|ss_table| ss_table.get_score())
                 .collect_vec();
-            let vec_ss_table_l = manifest.get_meet_score_ss_tables(level, &Score::fusion(final_vec_score)?);
+
+            let vec_ss_table_l = match Score::fusion(final_vec_score) {
+                Ok(score) => manifest.get_meet_score_ss_tables(level, &score),
+                Err(_) => vec_ss_table
+            };
 
             let mut vec_cmd_data = Vec::new();
             vec_ss_table_l_1.extend(vec_ss_table_l);
@@ -76,16 +96,19 @@ impl Compactor {
             let mut manifest = self.manifest.write().await;
 
             for sharding in vec_sharding {
-                let io_handler = self.io_handler_factory.create(Local::now().timestamp_millis() as u64)?;
-                let new_ss_table = SsTable::create_for_immutable_table(&self.config, io_handler, &sharding.iter().collect_vec(), 1).await?;
-                manifest.insert_ss_table(new_ss_table);
+                let io_handler = self.io_handler_factory.create(Local::now().timestamp_nanos() as u64)?;
+                let new_ss_table = SsTable::create_for_immutable_table(&self.config,
+                                                                       io_handler,
+                                                                       &sharding.iter().collect_vec(),
+                                                                       next_level as u64).await?;
+                manifest.insert_ss_table_with_index(new_ss_table, index);
             }
             manifest.retain_with_vec_gen_and_level(&vec_expire_gen)?;
         };
         Ok(())
     }
 
-    fn get_first_3_slice(manifest: &Manifest, level: usize) -> Option<[u64;3]> {
+    pub(crate) fn get_first_3_slice(manifest: &Manifest, level: usize) -> Option<[u64;3]> {
         let level_slice = manifest.get_level_vec(level).as_slice();
         if level_slice.len() > 3 {
             Some([level_slice[1], level_slice[2], level_slice[3]])

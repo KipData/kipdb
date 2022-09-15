@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc};
 use async_trait::async_trait;
+use itertools::Itertools;
 use tokio::sync::RwLock;
 use tracing::{error, warn};
 use crate::{HashStore, KvsError};
@@ -9,7 +10,7 @@ use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::lsm::{Manifest, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
-use crate::kernel::lsm::ss_table::SsTable;
+use crate::kernel::lsm::ss_table::{Score, SsTable};
 use crate::kernel::Result;
 
 pub(crate) type LevelSlice = [Vec<u64>; 7];
@@ -89,7 +90,7 @@ impl KVStore for LsmStore {
         // 注意此处不使用let保存读锁
         // Compactor进行minor_compaction时需要使用到写锁
         if !self.manifest.read().await.mem_table_is_empty() {
-            self.store_to_ss_table_sync().await?;
+            self.minor_compaction_sync().await?;
         }
 
         Ok(())
@@ -108,7 +109,7 @@ impl LsmStore {
         manifest.insert_data(key.clone(), cmd);
 
         if manifest.is_threshold_exceeded() {
-            self.store_to_ss_table().await?;
+            self.minor_compaction().await?;
         }
 
         Ok(())
@@ -185,7 +186,7 @@ impl LsmStore {
     }
 
     /// 异步持久化immutable_table为SSTable
-    pub(crate) async fn store_to_ss_table(&self) -> Result<()> {
+    pub async fn minor_compaction(&self) -> Result<()> {
         let compactor = Compactor::from_lsm_kv(self);
 
         tokio::spawn(async move {
@@ -197,8 +198,13 @@ impl LsmStore {
     }
 
     /// 同步持久化immutable_table为SSTable
-    pub(crate) async fn store_to_ss_table_sync(&self) -> Result<()> {
+    pub async fn minor_compaction_sync(&self) -> Result<()> {
         Ok(Compactor::from_lsm_kv(self).minor_compaction().await?)
+    }
+
+    /// 同步进行SSTable基于Level的层级压缩
+    pub async fn major_compaction_sync(&self, level: usize) -> Result<()> {
+        Ok(Compactor::from_lsm_kv(self).major_compaction(level).await?)
     }
 
     /// 通过CommandData的引用解包并克隆出value值
@@ -310,4 +316,74 @@ pub(crate) fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>) {
             error!("[LsmStore][wal_put][error happen]: {:?}", err);
         }
     });
+}
+
+#[test]
+fn test_lsm_major_compactor() -> Result<()> {
+    use tempfile::TempDir;
+    use rand::Rng;
+
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
+                            abcdefghijklmnopqrstuvwxyz
+                            0123456789)(*&^%$#@!~";
+
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+    tokio_test::block_on(async move {
+        let mut rng = rand::thread_rng();
+        let kv_store = LsmStore::open(temp_dir.path()).await?;
+
+        for _ in 0..4 {
+            for _ in 0..10 {
+                let password: String = (0..rng.gen::<u16>())
+                    .map(|_| {
+                        let idx = rng.gen_range(0..CHARSET.len());
+                        CHARSET[idx] as char
+                    })
+                    .collect();
+                let vec_u8 = rmp_serde::to_vec(&password).unwrap();
+                kv_store.set(&vec_u8, vec_u8.clone()).await?;
+            }
+            kv_store.flush().await?;
+            kv_store.minor_compaction_sync().await?;
+        }
+
+        let manifest = kv_store.manifest.read().await;
+
+        drop(manifest);
+
+        kv_store.major_compaction_sync(0).await?;
+
+        let manifest = kv_store.manifest.read().await;
+        assert!(manifest.level_slice[0].len() <= 1);
+        assert!(manifest.level_slice[1].len() >= 3);
+
+        let vec_score_level_1 = manifest.level_slice[1].iter()
+            .map(|gen| manifest.get_ss_table(gen).unwrap().get_score())
+            .cloned()
+            .collect_vec();
+
+        let vec_score_sorted_with_start = vec_score_level_1.iter()
+            .cloned()
+            .sorted_by(|score_a, score_b| score_a.start().cmp(&score_b.start()))
+            .collect_vec();
+
+        let vec_score_sorted_with_end = vec_score_level_1.iter()
+            .cloned()
+            .sorted_by(|score_a, score_b| score_a.end().cmp(&score_b.end()))
+            .collect_vec();
+
+        assert_eq!(rmp_serde::to_vec(&vec_score_level_1)?, rmp_serde::to_vec(&vec_score_sorted_with_start)?);
+        assert_eq!(rmp_serde::to_vec(&vec_score_level_1)?, rmp_serde::to_vec(&vec_score_sorted_with_end)?);
+
+        let mut level_1_data_size = 0;
+        for gen in manifest.level_slice[1].iter() {
+            level_1_data_size += manifest.get_ss_table(gen).unwrap().get_all_data().await.unwrap().len();
+        }
+
+        // 因为Level 1 在major压缩前没有数据，所以数据一定是3个Level 0 SSTable之和
+        assert_eq!(level_1_data_size, 15);
+
+        Ok(())
+    })
 }

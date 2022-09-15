@@ -75,16 +75,22 @@ impl Manifest {
         let mut level_slice = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for ss_table in ss_tables.values() {
             let level = ss_table.get_level();
-            level_slice[level as usize].push(ss_table.get_gen());
+            level_slice[level].push(ss_table.get_gen());
         }
         level_slice
     }
 
-    pub(crate) fn insert_ss_table(&mut self, ss_table: SsTable) {
+    pub(crate) fn insert_ss_table_with_index(&mut self, ss_table: SsTable, index: usize) {
         let gen = ss_table.get_gen();
         let level = ss_table.get_level();
         self.ss_tables_map.insert(gen, ss_table);
-        self.level_slice[level as usize].push(gen);
+        self.level_slice[level].insert(index, gen);
+    }
+
+    pub(crate) fn insert_ss_table_with_existed_table(&mut self, ss_table: SsTable, existed_table: &SsTable) -> usize {
+        let index = self.get_index(existed_table.get_level(), existed_table.get_gen()).unwrap_or(0);
+        self.insert_ss_table_with_index(ss_table, index);
+        index
     }
 
     pub(crate) fn insert_data(&mut self, key: Vec<u8>, value: CommandData) {
@@ -102,7 +108,7 @@ impl Manifest {
         let set_expired_gen: HashSet<&u64> = vec_expired_gen.iter().collect();
         // 将存储的Level表中含有该gen的SSTable一并删除
         for vec_level in &mut self.level_slice {
-            vec_level.retain(|gen| set_expired_gen.contains(gen));
+            vec_level.retain(|gen| !set_expired_gen.contains(gen));
         }
 
         Ok(())
@@ -155,11 +161,20 @@ impl Manifest {
         (vec_keys, vec_values)
     }
 
-    pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score)-> Vec<&SsTable> {
+    pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score) -> Vec<&SsTable> {
         self.get_level_vec(level + 1).iter()
             .map(|gen| self.get_ss_table(gen).unwrap())
             .filter(|ss_table| ss_table.get_score().meet(score))
             .collect_vec()
+    }
+
+    pub(crate) fn get_index(&self, level: usize, source_gen: u64) -> Option<usize> {
+        match self.level_slice[level].iter()
+            .enumerate()
+            .find(|(index, gen)| source_gen.eq(*gen)) {
+            Some((index, _)) => {Some(index)}
+            None => None
+        }
     }
 }
 
