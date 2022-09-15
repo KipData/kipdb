@@ -146,8 +146,12 @@ impl Manifest {
         }
     }
 
-    fn is_threshold_exceeded(&self) -> bool {
+    fn is_threshold_exceeded_minor(&self) -> bool {
         self.mem_table_slice[0].len() > self.threshold_size as usize
+    }
+
+    fn is_threshold_exceeded_major(&self, sst_size: usize) -> bool {
+        self.level_slice[0].len() > sst_size
     }
 
     /// MemTable交换并分解

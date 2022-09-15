@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use chrono::Local;
 use itertools::Itertools;
@@ -5,7 +6,7 @@ use tokio::sync::RwLock;
 use crate::{HashStore, KvsError};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
+use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, DEFAULT_SST_SIZE, LsmStore, wal_put};
 use crate::kernel::lsm::Manifest;
 use crate::kernel::lsm::ss_table::{LEVEL_0, Score, SsTable};
 
@@ -43,6 +44,11 @@ impl Compactor {
                                                            , &vec_values
                                                            , LEVEL_0).await?;
         manifest.insert_ss_table_with_index(ss_table, 0);
+
+        if manifest.is_threshold_exceeded_major(self.config.sst_threshold) {
+            drop(manifest);
+            self.major_compaction(1);
+        }
         Ok(())
     }
 
@@ -78,16 +84,18 @@ impl Compactor {
                 Err(_) => vec_ss_table
             };
 
-            let mut vec_cmd_data = Vec::new();
+            let mut set_cmd_data = HashSet::new();
             vec_ss_table_l_1.extend(vec_ss_table_l);
             for ss_table in &vec_ss_table_l_1 {
-                vec_cmd_data.extend(ss_table.get_all_data().await?);
+                set_cmd_data.extend(ss_table.get_all_data().await?);
             }
             // 提前收集需要清除的SSTable
             let vec_expire_gen = vec_ss_table_l_1.iter()
                 .map(|ss_table| ss_table.get_gen())
                 .collect_vec();
-            vec_cmd_data.sort_by(|cmd_a, cmd_b| cmd_a.get_key().cmp(cmd_b.get_key()));
+            let vec_cmd_data = set_cmd_data.into_iter()
+                .sorted_unstable_by(|cmd_a, cmd_b| cmd_a.get_key().cmp(cmd_b.get_key()))
+                .collect_vec();
 
             let vec_sharding = Self::data_sharding(vec_cmd_data, vec_ss_table_l_1.len());
 
@@ -119,20 +127,20 @@ impl Compactor {
     /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
     /// 注意，最后一片分片大多数情况下会比其他分片更大那么一点点(极端情况下大一些)
     /// 测试下来发现一个问题就是，万一其中一个数据非常大，以至于一个SSTable中只能放下一个，就会导致最后的SSTable变得很大，需要再分片
-    fn data_sharding(mut vec_data: Vec<CommandData>, vec_size: usize) -> Vec<Vec<CommandData>> {
-        let part_size = vec_data.iter()
+    fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize) -> Vec<Vec<CommandData>> {
+        let part_size = (vec_data.iter()
             .map(|cmd| cmd.get_data_len())
-            .sum::<usize>() / vec_size;
-        let mut vec_sharding = vec![Vec::new(); vec_size];
+            .sum::<usize>() + file_size - 1) / file_size;
+        let mut vec_sharding = vec![Vec::new(); part_size];
         let slice = vec_sharding.as_mut_slice();
-        for i in 0 .. vec_size {
+        for i in 0 .. part_size {
             let mut data_len :usize = slice[i].iter()
                 .map(|cmd: &CommandData| cmd.get_data_len())
                 .sum::<usize>();
             while !vec_data.is_empty() {
                 if let Some(cmd_data) = vec_data.pop() {
                     let cmd_len = cmd_data.get_data_len();
-                    if data_len + cmd_len <= part_size || i >= vec_size - 1 {
+                    if data_len + cmd_len <= file_size || i >= part_size - 1 {
                         data_len += cmd_len;
                         slice[i].push(cmd_data);
                     } else {
@@ -142,7 +150,9 @@ impl Compactor {
                 } else { break }
             }
         }
-        vec_sharding
+        vec_sharding.into_iter()
+            .filter(|vec| vec.len() > 0)
+            .collect_vec()
     }
 
     pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
@@ -158,48 +168,13 @@ impl Compactor {
 
 #[test]
 fn test_sharding() -> Result<()> {
-    use rand::Rng;
-
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-                            abcdefghijklmnopqrstuvwxyz
-                            0123456789)(*&^%$#@!~";
-
     let mut vec_data_1 = Vec::new();
     for _ in 0..100 {
         vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
     }
 
-    let vec_sharding_1 = Compactor::data_sharding(vec_data_1, 4);
-    for sharding in vec_sharding_1 {
-        assert_eq!(sharding.len(), 25);
-    }
-
-    let mut rng = rand::thread_rng();
-    let mut vec_data_2 = Vec::new();
-    let mut data_len = 0;
-    while data_len % 154 != 0 || data_len == 0 {
-        let password: String = (0..rng.gen::<u16>())
-            .map(|_| {
-                let idx = rng.gen_range(0..CHARSET.len());
-                CHARSET[idx] as char
-            })
-            .collect();
-        let cmd = CommandData::Set { key: rmp_serde::to_vec(&password)?, value: rmp_serde::to_vec(&password)? };
-        data_len += cmd.get_data_len();
-        vec_data_2.push(cmd);
-    }
-    let max_len = vec_data_2.iter().map(|cmd| rmp_serde::to_vec(cmd).unwrap().len()).max().unwrap();
-    
-    let vec_sharding_2 = Compactor::data_sharding(vec_data_2, 4);
-    let vec_sharding_2_slice = vec_sharding_2.as_slice();
-    let i_0 = rmp_serde::to_vec(&vec_sharding_2_slice[0])?.len();
-    let i_1 = rmp_serde::to_vec(&vec_sharding_2_slice[1])?.len();
-    let i_2 = rmp_serde::to_vec(&vec_sharding_2_slice[2])?.len();
-    let i_3 = rmp_serde::to_vec(&vec_sharding_2_slice[3])?.len();
-
-    // assert!(i_3 - i_0 <= max_len || i_3 < i_0);
-    // assert!(i_3 - i_1 <= max_len || i_3 < i_1);
-    // assert!(i_3 - i_2 <= max_len || i_3 < i_2);
+    let vec_sharding_1 = Compactor::data_sharding(vec_data_1, DEFAULT_SST_SIZE as usize);
+    assert_eq!(vec_sharding_1.len(), 1);
 
     Ok(())
 }

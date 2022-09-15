@@ -62,7 +62,7 @@ struct CommandPos {
     len: usize,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Hash, PartialEq, Eq)]
 pub enum CommandData {
     Set { key: Vec<u8>, value: Vec<u8> },
     Remove { key: Vec<u8> },

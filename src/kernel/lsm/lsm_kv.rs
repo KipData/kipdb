@@ -25,6 +25,8 @@ pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
 pub(crate) const DEFAULT_SST_SIZE: u64 = 2 * 1024 * 1024;
 
+pub(crate) const DEFAULT_SST_THRESHOLD: usize = 10;
+
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
@@ -108,7 +110,7 @@ impl LsmStore {
         wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
         manifest.insert_data(key.clone(), cmd);
 
-        if manifest.is_threshold_exceeded() {
+        if manifest.is_threshold_exceeded_minor() {
             self.minor_compaction().await?;
         }
 
@@ -267,6 +269,8 @@ pub struct Config {
     pub(crate) part_size: u64,
     // SSTable文件大小
     pub(crate) sst_size: u64,
+    // Major压缩触发阈值
+    pub(crate) sst_threshold: usize,
 }
 
 impl Config {
@@ -296,13 +300,19 @@ impl Config {
         self
     }
 
+    pub fn sst_threshold(mut self, sst_threshold: usize) -> Self {
+        self.sst_threshold = sst_threshold;
+        self
+    }
+
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
             threshold_size: DEFAULT_THRESHOLD_SIZE,
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
             part_size: DEFAULT_PART_SIZE,
-            sst_size: DEFAULT_SST_SIZE
+            sst_size: DEFAULT_SST_SIZE,
+            sst_threshold: DEFAULT_SST_THRESHOLD
         }
     }
 }
@@ -348,10 +358,6 @@ fn test_lsm_major_compactor() -> Result<()> {
             kv_store.minor_compaction_sync().await?;
         }
 
-        let manifest = kv_store.manifest.read().await;
-
-        drop(manifest);
-
         kv_store.major_compaction_sync(0).await?;
 
         let manifest = kv_store.manifest.read().await;
@@ -382,7 +388,20 @@ fn test_lsm_major_compactor() -> Result<()> {
         }
 
         // 因为Level 1 在major压缩前没有数据，所以数据一定是3个Level 0 SSTable之和
-        assert_eq!(level_1_data_size, 15);
+        assert_eq!(level_1_data_size, 30);
+
+        drop(manifest);
+
+        for _ in 0..4 {
+            for _ in 0..10 {
+                let vec_u8 = rmp_serde::to_vec(&vec![b'1']).unwrap();
+                kv_store.set(&vec_u8, vec_u8.clone()).await?;
+            }
+            kv_store.flush().await?;
+            kv_store.minor_compaction_sync().await?;
+        }
+
+        kv_store.major_compaction_sync(0).await?;
 
         Ok(())
     })
