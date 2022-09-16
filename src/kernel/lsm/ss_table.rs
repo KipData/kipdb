@@ -1,13 +1,11 @@
 use std::cmp::Ordering;
 use std::collections::btree_map::BTreeMap;
-use std::sync::{Arc};
 use itertools::Itertools;
-use tokio::sync::RwLock;
 use tracing::{info};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::{Manifest, MetaInfo, Position};
+use crate::kernel::lsm::{MetaInfo, Position};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 use crate::KvsError;
@@ -44,13 +42,15 @@ impl Score {
     pub(crate) fn fusion(vec_score :Vec<&Score>) -> Result<Self> {
         if vec_score.len() > 0 {
             let start = vec_score.iter()
-                .map(|score| score.start.clone())
+                .map(|score| &score.start)
                 .sorted()
-                .min().unwrap();
+                .next().unwrap()
+                .clone();
             let end = vec_score.iter()
-                .map(|score| score.end.clone())
+                .map(|score| &score.end)
                 .sorted()
-                .max().unwrap();
+                .last().unwrap()
+                .clone();
 
             Ok(Score { start, end })
         } else {
@@ -76,6 +76,17 @@ impl Score {
             },
         }
     }
+
+    pub(crate) fn get_vec_score<'a>(vec_ss_table :&'a Vec<&SsTable>) -> Vec<&'a Score> {
+        vec_ss_table.iter()
+            .map(|ss_table| ss_table.get_score())
+            .collect_vec()
+    }
+
+    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&Vec<&SsTable>) -> Result<Self> {
+        Self::fusion(Self::get_vec_score(vec_ss_table))
+    }
+
     pub fn start(&self) -> &Vec<u8> {
         &self.start
     }

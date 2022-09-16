@@ -130,6 +130,12 @@ impl Manifest {
         &self.ss_tables_map
     }
 
+    pub(crate) fn get_ss_table_batch(&self, vec_gen: &Vec<u64>) -> Option<Vec<&SsTable>> {
+        vec_gen.iter()
+            .map(|gen| self.get_ss_table(gen))
+            .collect::<Option<Vec<&SsTable>>>()
+    }
+
     fn load(&mut self, mem_table: MemTable) {
         self.mem_table_slice[0] = mem_table;
     }

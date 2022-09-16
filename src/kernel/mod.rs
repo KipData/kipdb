@@ -1,4 +1,5 @@
 use std::{path::PathBuf, fs};
+use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
@@ -75,6 +76,18 @@ impl CommandPos {
         self.gen = gen;
         self.pos = pos;
         self.len = len;
+    }
+}
+
+impl PartialOrd<Self> for CommandData {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Option::from(self.get_key().cmp(other.get_key()))
+    }
+}
+
+impl Ord for CommandData {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.get_key().cmp(other.get_key())
     }
 }
 

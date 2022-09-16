@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use crate::{HashStore, KvsError};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, DEFAULT_SST_SIZE, LsmStore, wal_put};
+use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
 use crate::kernel::lsm::Manifest;
 use crate::kernel::lsm::ss_table::{LEVEL_0, Score, SsTable};
 
@@ -57,15 +57,14 @@ impl Compactor {
             return Err(KvsError::LevelOver);
         }
 
+        let file_size = self.config.sst_size;
+
         let manifest = self.manifest.read().await;
 
-        if let Some(slice) = Self::get_first_3_slice(&manifest, level) {
+        if let Some(vec_ss_table) = Self::get_first_3_vec_ss_table(&manifest, level) {
             let next_level = level + 1;
-            let vec_ss_table = slice.map(|gen| manifest.get_ss_table(&gen).unwrap())
-                .to_vec();
-            let vec_score_l = vec_ss_table.iter().map(|ss_table| ss_table.get_score())
-                .collect_vec();
-            let mut vec_ss_table_l_1 = manifest.get_meet_score_ss_tables(next_level, &Score::fusion(vec_score_l)?);
+            let mut vec_ss_table_l_1 =
+                manifest.get_meet_score_ss_tables(next_level, &Score::fusion_from_vec_ss_table(&vec_ss_table)?);
 
             let index = match vec_ss_table_l_1.first() {
                 None => 0,
@@ -75,11 +74,7 @@ impl Compactor {
                 }
             };
 
-            let final_vec_score = vec_ss_table_l_1.iter()
-                .map(|ss_table| ss_table.get_score())
-                .collect_vec();
-
-            let vec_ss_table_l = match Score::fusion(final_vec_score) {
+            let vec_ss_table_l = match Score::fusion_from_vec_ss_table(&vec_ss_table_l_1) {
                 Ok(score) => manifest.get_meet_score_ss_tables(level, &score),
                 Err(_) => vec_ss_table
             };
@@ -94,10 +89,10 @@ impl Compactor {
                 .map(|ss_table| ss_table.get_gen())
                 .collect_vec();
             let vec_cmd_data = set_cmd_data.into_iter()
-                .sorted_unstable_by(|cmd_a, cmd_b| cmd_a.get_key().cmp(cmd_b.get_key()))
+                .sorted_unstable()
                 .collect_vec();
 
-            let vec_sharding = Self::data_sharding(vec_cmd_data, vec_ss_table_l_1.len());
+            let vec_sharding = Self::data_sharding(vec_cmd_data, file_size);
 
             drop(manifest);
 
@@ -116,43 +111,38 @@ impl Compactor {
         Ok(())
     }
 
-    pub(crate) fn get_first_3_slice(manifest: &Manifest, level: usize) -> Option<[u64;3]> {
-        let level_slice = manifest.get_level_vec(level).as_slice();
-        if level_slice.len() > 3 {
-            Some([level_slice[1], level_slice[2], level_slice[3]])
-        } else { None }
+    pub(crate) fn get_first_3_vec_ss_table(manifest: &Manifest, level: usize) -> Option<Vec<&SsTable>> {
+        let level_vec = manifest.get_level_vec(level).iter()
+            .take(3)
+            .cloned()
+            .collect_vec();
+        manifest.get_ss_table_batch(&level_vec.to_vec())
     }
 
-    /// CommandData数据分片，尽可能将数据按给定的分片数量：vec_size均匀切片
+    /// CommandData数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
     /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
-    /// 注意，最后一片分片大多数情况下会比其他分片更大那么一点点(极端情况下大一些)
-    /// 测试下来发现一个问题就是，万一其中一个数据非常大，以至于一个SSTable中只能放下一个，就会导致最后的SSTable变得很大，需要再分片
     fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize) -> Vec<Vec<CommandData>> {
+        // 向上取整计算STable数量
         let part_size = (vec_data.iter()
             .map(|cmd| cmd.get_data_len())
             .sum::<usize>() + file_size - 1) / file_size;
         let mut vec_sharding = vec![Vec::new(); part_size];
         let slice = vec_sharding.as_mut_slice();
         for i in 0 .. part_size {
-            let mut data_len :usize = slice[i].iter()
-                .map(|cmd: &CommandData| cmd.get_data_len())
-                .sum::<usize>();
+            let mut data_len = 0;
             while !vec_data.is_empty() {
                 if let Some(cmd_data) = vec_data.pop() {
-                    let cmd_len = cmd_data.get_data_len();
-                    if data_len + cmd_len <= file_size || i >= part_size - 1 {
-                        data_len += cmd_len;
-                        slice[i].push(cmd_data);
-                    } else {
-                        slice[i + 1].push(cmd_data);
+                    data_len += cmd_data.get_data_len();
+                    slice[i].push(cmd_data);
+                    if data_len >= file_size {
                         break
                     }
                 } else { break }
             }
         }
-        vec_sharding.into_iter()
-            .filter(|vec| vec.len() > 0)
-            .collect_vec()
+        // 过滤掉没有数据的切片
+        vec_sharding.retain(|vec| vec.len() > 0);
+        vec_sharding
     }
 
     pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
@@ -169,12 +159,12 @@ impl Compactor {
 #[test]
 fn test_sharding() -> Result<()> {
     let mut vec_data_1 = Vec::new();
-    for _ in 0..100 {
+    for _ in 0..101 {
         vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
     }
 
-    let vec_sharding_1 = Compactor::data_sharding(vec_data_1, DEFAULT_SST_SIZE as usize);
-    assert_eq!(vec_sharding_1.len(), 1);
+    let vec_sharding_1 = Compactor::data_sharding(vec_data_1, 10);
+    assert_eq!(vec_sharding_1.len(), 21);
 
     Ok(())
 }
