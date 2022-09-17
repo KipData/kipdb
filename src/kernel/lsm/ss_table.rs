@@ -25,10 +25,22 @@ pub(crate) struct SsTable {
     score: Score
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Score {
     start: Vec<u8>,
     end: Vec<u8>
+}
+
+impl PartialEq<Self> for SsTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.meta_info.eq(&other.meta_info)
+    }
+}
+
+impl PartialOrd<Self> for SsTable {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Option::from(self.get_gen().cmp(&other.get_gen()))
+    }
 }
 
 impl Score {
@@ -85,13 +97,6 @@ impl Score {
 
     pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&Vec<&SsTable>) -> Result<Self> {
         Self::fusion(Self::get_vec_score(vec_ss_table))
-    }
-
-    pub fn start(&self) -> &Vec<u8> {
-        &self.start
-    }
-    pub fn end(&self) -> &Vec<u8> {
-        &self.end
     }
 }
 

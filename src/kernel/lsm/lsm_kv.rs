@@ -192,7 +192,7 @@ impl LsmStore {
 
         tokio::spawn(async move {
             if let Err(err) = compactor.minor_compaction().await {
-                error!("[LsmStore][store_to_ss_table][error happen]: {:?}", err);
+                error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
             }
         });
         Ok(())

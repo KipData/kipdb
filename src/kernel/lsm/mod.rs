@@ -19,7 +19,7 @@ pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
 const TABLE_META_INFO_SIZE: usize = 40;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct MetaInfo {
     level: u64,
     version: u64,
@@ -161,14 +161,13 @@ impl Manifest {
     }
 
     /// MemTable交换并分解
+    /// TODO: 优化分解
     fn table_swap(&mut self) -> (Vec<&Vec<u8>>, Vec<&CommandData>){
         self.mem_table_slice.swap(0, 1);
         self.mem_table_slice[0] = MemTable::new();
 
-        let immut_table = &self.mem_table_slice[1];
-        let vec_keys = immut_table.keys().collect_vec();
-        let vec_values = immut_table.values().collect_vec();
-        (vec_keys, vec_values)
+        self.mem_table_slice[1].iter()
+            .unzip()
     }
 
     pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score) -> Vec<&SsTable> {
@@ -179,12 +178,10 @@ impl Manifest {
     }
 
     pub(crate) fn get_index(&self, level: usize, source_gen: u64) -> Option<usize> {
-        match self.level_slice[level].iter()
+        self.level_slice[level].iter()
             .enumerate()
-            .find(|(index, gen)| source_gen.eq(*gen)) {
-            Some((index, _)) => {Some(index)}
-            None => None
-        }
+            .find(|(_ , gen)| source_gen.eq(*gen))
+            .map(|(index, _)| index)
     }
 }
 
