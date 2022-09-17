@@ -144,11 +144,7 @@ impl Manifest {
         if let Some(data) = self.mem_table_slice[0].get(key) {
             Some(data)
         } else {
-            if let Some(data) = self.mem_table_slice[1].get(key) {
-                Some(data)
-            } else {
-                None
-            }
+            self.mem_table_slice[1].get(key)
         }
     }
 
@@ -161,11 +157,9 @@ impl Manifest {
     }
 
     /// MemTable交换并分解
-    /// TODO: 优化分解
     fn table_swap(&mut self) -> (Vec<&Vec<u8>>, Vec<&CommandData>){
         self.mem_table_slice.swap(0, 1);
         self.mem_table_slice[0] = MemTable::new();
-
         self.mem_table_slice[1].iter()
             .unzip()
     }
@@ -173,7 +167,8 @@ impl Manifest {
     pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score) -> Vec<&SsTable> {
         self.get_level_vec(level + 1).iter()
             .map(|gen| self.get_ss_table(gen).unwrap())
-            .filter(|ss_table| ss_table.get_score().meet(score))
+            .filter(|ss_table| ss_table.get_score()
+                .meet(score))
             .collect_vec()
     }
 

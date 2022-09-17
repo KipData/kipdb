@@ -110,7 +110,8 @@ impl LsmStore {
         manifest.insert_data(key.clone(), cmd);
 
         if manifest.is_threshold_exceeded_minor() {
-            self.minor_compaction().await?;
+            drop(manifest);
+            self.minor_compaction_sync().await?;
         }
 
         Ok(())
@@ -339,69 +340,25 @@ fn test_lsm_major_compactor() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
+        let config = Config::new().dir_path(temp_dir.path().into())
+            .sst_threshold(1)
+            .sst_size(10)
+            .threshold_size(5);
+
         let mut rng = rand::thread_rng();
-        let kv_store = LsmStore::open(temp_dir.path()).await?;
+        let kv_store = LsmStore::open_with_config(config).await?;
 
-        for _ in 0..2 {
-            for _ in 0..10 {
-                let password: String = (0..rng.gen::<u16>())
-                    .map(|_| {
-                        let idx = rng.gen_range(0..CHARSET.len());
-                        CHARSET[idx] as char
-                    })
-                    .collect();
-                let vec_u8 = rmp_serde::to_vec(&password).unwrap();
-                kv_store.set(&vec_u8, vec_u8.clone()).await?;
-            }
-            kv_store.flush().await?;
-            kv_store.minor_compaction_sync().await?;
+        for _ in 0..100 {
+            let password: String = (0..rng.gen::<u16>())
+                .map(|_| {
+                    let idx = rng.gen_range(0..CHARSET.len());
+                    CHARSET[idx] as char
+                })
+                .collect();
+            let vec_u8 = rmp_serde::to_vec(&password).unwrap();
+            kv_store.set(&vec_u8, vec_u8.clone()).await?;
         }
-
-        kv_store.major_compaction_sync(0).await?;
-
-        // let manifest = kv_store.manifest.read().await;
-        // assert!(manifest.level_slice[0].len() <= 1);
-        // assert!(manifest.level_slice[1].len() >= 3);
-        //
-        // let vec_score_level_1 = manifest.level_slice[1].iter()
-        //     .map(|gen| manifest.get_ss_table(gen).unwrap().get_score())
-        //     .cloned()
-        //     .collect_vec();
-        //
-        // let vec_score_sorted_with_start = vec_score_level_1.iter()
-        //     .cloned()
-        //     .sorted_by(|score_a, score_b| score_a.start().cmp(&score_b.start()))
-        //     .collect_vec();
-        //
-        // let vec_score_sorted_with_end = vec_score_level_1.iter()
-        //     .cloned()
-        //     .sorted_by(|score_a, score_b| score_a.end().cmp(&score_b.end()))
-        //     .collect_vec();
-        //
-        // assert_eq!(rmp_serde::to_vec(&vec_score_level_1)?, rmp_serde::to_vec(&vec_score_sorted_with_start)?);
-        // assert_eq!(rmp_serde::to_vec(&vec_score_level_1)?, rmp_serde::to_vec(&vec_score_sorted_with_end)?);
-        //
-        // let mut level_1_data_size = 0;
-        // for gen in manifest.level_slice[1].iter() {
-        //     level_1_data_size += manifest.get_ss_table(gen).unwrap().get_all_data().await.unwrap().len();
-        // }
-        //
-        // // 因为Level 1 在major压缩前没有数据，所以数据一定是3个Level 0 SSTable之和
-        // assert_eq!(level_1_data_size, 30);
-        //
-        // drop(manifest);
-        //
-        // for _ in 0..4 {
-        //     for _ in 0..10 {
-        //         let vec_u8 = rmp_serde::to_vec(&vec![b'1']).unwrap();
-        //         kv_store.set(&vec_u8, vec_u8.clone()).await?;
-        //     }
-        //     kv_store.flush().await?;
-        //     kv_store.minor_compaction_sync().await?;
-        // }
-        //
-        // kv_store.major_compaction_sync(0).await?;
-        //
+        kv_store.flush().await?;
         Ok(())
     })
 }

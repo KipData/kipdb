@@ -51,12 +51,15 @@ impl Compactor {
         manifest.insert_ss_table_with_index(ss_table, 0);
 
         if manifest.is_threshold_exceeded_major(self.config.sst_threshold) {
-            let compactor = self.clone();
-            tokio::spawn(async move {
-                if let Err(err) = compactor.major_compaction(1).await {
-                    error!("[LsmStore][major_compaction][error happen]: {:?}", err);
-                }
-            });
+            drop(manifest);
+            // TODO:使压缩异步化，解决存活问题
+            self.major_compaction(0).await?;
+            // let compactor = self.clone();
+            // tokio::spawn(async move {
+            //     if let Err(err) = compactor.major_compaction(1).await {
+            //         error!("[LsmStore][major_compaction][error happen]: {:?}", err);
+            //     }
+            // });
         }
         Ok(())
     }
@@ -189,15 +192,17 @@ impl Compactor {
 
 #[test]
 fn test_sharding() -> Result<()> {
-    let mut vec_data_1 = Vec::new();
-    for _ in 0..101 {
-        vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
-    }
+    tokio_test::block_on(async move {
+        let mut vec_data_1 = Vec::new();
+        for _ in 0..101 {
+            vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
+        }
 
-    let vec_sharding_1 = Compactor::data_sharding(vec_data_1, 10);
-    assert_eq!(vec_sharding_1.len(), 21);
+        let vec_sharding_1 = Compactor::data_sharding(vec_data_1, 10).await;
+        assert_eq!(vec_sharding_1.len(), 21);
 
-    Ok(())
+        Ok(())
+    })
 }
 
 impl Clone for Compactor {
