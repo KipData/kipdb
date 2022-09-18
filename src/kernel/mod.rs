@@ -101,6 +101,10 @@ impl CommandPackage {
         Ok(rmp_serde::from_slice(vec)?)
     }
 
+    pub fn unpack(self) -> CommandData {
+        self.cmd
+    }
+
     /// 快进四位
     ///
     /// 用于写入除CommandData时，分隔数据使前端CommandData能够被连续识别
@@ -178,12 +182,24 @@ impl CommandPackage {
         let mut pos = 4;
         for &cmd_u8 in vec_u8.iter() {
             let len = cmd_u8.len();
-            let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
+            let cmd: CommandData = rmp_serde::from_slice(cmd_u8)?;
             if cmd.get_key().eq(key) {
                 return Ok(Some(CommandPackage::new(cmd, pos, len)));
             }
             // 对pos进行长度自增并对占位符进行跳过
             pos += len as u64 + 4;
+        }
+        Ok(None)
+    }
+
+    /// 从该数据区间中找到对应Key的CommandData
+    pub async fn find_key_with_zone_unpack(zone: &[u8], key: &Vec<u8>) -> Result<Option<CommandData>> {
+        let vec_u8 = Self::get_vec_bytes(zone).await;
+        for &cmd_u8 in vec_u8.iter() {
+            let cmd: CommandData = rmp_serde::from_slice(cmd_u8)?;
+            if cmd.get_key().eq(key) {
+                return Ok(Some(cmd));
+            }
         }
         Ok(None)
     }
@@ -261,6 +277,13 @@ impl CommandData {
     pub fn get_value(&self) -> Option<&Vec<u8>> {
         match self {
             CommandData::Set { value, .. } => { Some(value) }
+            _ => { None }
+        }
+    }
+
+    pub fn get_value_clone(&self) -> Option<Vec<u8>> {
+        match self {
+            CommandData::Set { value, .. } => { Some(value.clone()) }
             _ => { None }
         }
     }

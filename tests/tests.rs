@@ -47,7 +47,7 @@ fn get_stored_value_with_kv_store<T: KVStore>() -> Result<()> {
 fn overwrite_value() -> Result<()> {
     overwrite_value_with_kv_store::<HashStore>()?;
     overwrite_value_with_kv_store::<SledStore>()?;
-    // overwrite_value_with_kv_store::<LsmStore>()?;
+    overwrite_value_with_kv_store::<LsmStore>()?;
 
     Ok(())
 }
@@ -87,7 +87,7 @@ fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
 fn get_non_existent_value() -> Result<()> {
     get_non_existent_value_with_kv_store::<HashStore>()?;
     get_non_existent_value_with_kv_store::<SledStore>()?;
-    // get_non_existent_value_with_kv_store::<LsmStore>()?;
+    get_non_existent_value_with_kv_store::<LsmStore>()?;
 
     Ok(())
 }
@@ -118,7 +118,7 @@ fn get_non_existent_value_with_kv_store<T: KVStore>() -> Result<()> {
 fn remove_non_existent_key() -> Result<()> {
     remove_non_existent_key_with_kv_store::<HashStore>()?;
     remove_non_existent_key_with_kv_store::<SledStore>()?;
-    // remove_non_existent_key_with_kv_store::<LsmStore>()?;
+    remove_non_existent_key_with_kv_store::<LsmStore>()?;
 
     Ok(())
 }
@@ -138,7 +138,7 @@ fn remove_non_existent_key_with_kv_store<T: KVStore>() -> Result<()> {
 fn remove_key() -> Result<()> {
     remove_key_with_kv_store::<HashStore>()?;
     remove_key_with_kv_store::<SledStore>()?;
-    // remove_key_with_kv_store::<LsmStore>()?;
+    remove_key_with_kv_store::<LsmStore>()?;
 
     Ok(())
 }
@@ -149,7 +149,7 @@ fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
         let value1: Vec<u8> = encode_key("value1")?;
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-        let mut kv_store = T::open(temp_dir.path()).await?;
+        let kv_store = T::open(temp_dir.path()).await?;
         kv_store.set(&key1, value1).await?;
         assert!(kv_store.remove(&key1).await.is_ok());
         assert_eq!(kv_store.get(&key1).await?, None);
@@ -164,7 +164,7 @@ fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
 fn compaction() -> Result<()> {
     compaction_with_kv_store::<HashStore>()?;
     compaction_with_kv_store::<SledStore>()?;
-    // compaction_with_kv_store::<LsmStore>()?;
+    compaction_with_kv_store::<LsmStore>()?;
 
     Ok(())
 }
@@ -241,5 +241,5 @@ fn test_io() -> Result<()> {
 }
 
 fn encode_key(key: &str) -> Result<Vec<u8>>{
-    Ok(rmp_serde::encode::to_vec(key)?)
+    Ok(rmp_serde::to_vec(key)?)
 }

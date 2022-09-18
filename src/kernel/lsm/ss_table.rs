@@ -5,7 +5,7 @@ use tracing::{info};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::{MetaInfo, Position};
+use crate::kernel::lsm::{Manifest, MetaInfo, Position};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 use crate::KvsError;
@@ -44,6 +44,8 @@ impl PartialOrd<Self> for SsTable {
 }
 
 impl Score {
+
+    /// 由CommandData组成的Key构成Score
     pub(crate) fn from_cmd_data(first: &CommandData, last: &CommandData) -> Self {
         Score {
             start: first.get_key_clone(),
@@ -51,6 +53,7 @@ impl Score {
         }
     }
 
+    /// 将多个Score重组融合成一个Score
     pub(crate) fn fusion(vec_score :Vec<&Score>) -> Result<Self> {
         if vec_score.len() > 0 {
             let start = vec_score.iter()
@@ -70,11 +73,13 @@ impl Score {
         }
     }
 
+    /// 判断Score之间是否相交
     pub(crate) fn meet(&self, target: &Score) -> bool {
         (self.start.le(&target.start) && self.end.gt(&target.start)) ||
             (self.start.lt(&target.end) && self.end.ge(&target.end))
     }
 
+    /// 由一组Command组成一个Score
     pub(crate) fn from_vec_cmd_data(vec_mem_data: &Vec<&CommandData>) -> Result<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => {
@@ -89,12 +94,14 @@ impl Score {
         }
     }
 
+    /// 由一组SSTable组成一组Score
     pub(crate) fn get_vec_score<'a>(vec_ss_table :&'a Vec<&SsTable>) -> Vec<&'a Score> {
         vec_ss_table.iter()
             .map(|ss_table| ss_table.get_score())
             .collect_vec()
     }
 
+    /// 由一组SSTable融合成一个Score
     pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&Vec<&SsTable>) -> Result<Self> {
         Self::fusion(Self::get_vec_score(vec_ss_table))
     }
@@ -180,43 +187,16 @@ impl SsTable {
 
     /// 从该sstable中获取指定key对应的CommandData
     pub(crate) async fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
-        let empty_position = &Position::new(0, 0);
-        // 第一位是第一个大于的，第二位是最后一个小于的
-        let mut position_arr = (empty_position, empty_position);
-        for (key_item, value_item) in self.sparse_index.iter() {
-            if let Ordering::Greater = key.cmp(key_item) {
-                // 找到确定位置后可以提前推出，减少数据读取占用的IO
-                position_arr.0 = value_item;
-                break;
-            } else {
-                position_arr.1 = value_item;
-            }
-        }
+        if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
+            info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
+            // 获取该区间段的数据
+            let zone = self.io_handler.read_with_pos(position.start, position.len).await?;
 
-        let mut _len = 0;
-        let first_big = position_arr.0;
-        let last_small = position_arr.1;
-
-        // 找出数据可能存在的区间
-        let start_pos = first_big.start;
-        if first_big != empty_position {
-            _len = first_big.len;
-        } else if last_small != empty_position {
-            _len = last_small.len + (last_small.start - start_pos) as usize;
+            // 返回该区间段对应的数据结果
+            Ok(CommandPackage::find_key_with_zone_unpack(zone.as_slice(), &key).await?)
         } else {
-            return Ok(None);
+            Ok(None)
         }
-        info!("[SsTable: {}][query][data_zone]: {} to {}", self.gen, start_pos, _len);
-        // 获取该区间段的数据
-        let zone = self.io_handler.read_with_pos(start_pos, _len).await?;
-
-        // 返回该区间段对应的数据结果
-        Ok(if let Some(cmd_p) =
-                CommandPackage::find_key_with_zone(zone.as_slice(), &key).await? {
-            Some(cmd_p.cmd)
-        } else {
-            None
-        })
     }
 
     /// 获取SsTable内所有的正常数据
@@ -228,9 +208,27 @@ impl SsTable {
         let vec_cmd_data =
                     CommandPackage::from_zone_to_vec(all_data_u8.as_slice()).await?
             .into_iter()
-            .map(|cmd_package| cmd_package.cmd)
+            .map(CommandPackage::unpack)
             .collect_vec();
         Ok(vec_cmd_data)
+    }
+
+    /// 通过一组SSTable收集对应的Gen
+    pub(crate) fn collect_gen(vec_ss_table: Vec<&SsTable>) -> Result<Vec<u64>> {
+        Ok(vec_ss_table.into_iter()
+            .map(SsTable::get_gen)
+            .collect())
+    }
+
+    /// 获取一组SSTable中第一个SSTable的索引位置
+    pub(crate) fn first_index_with_level(vec_ss_table: &Vec<&SsTable>, manifest: &Manifest, level: usize) -> usize {
+        match vec_ss_table.first() {
+            None => 0,
+            Some(first_ss_table) => {
+                manifest.get_index(level, first_ss_table.get_gen())
+                    .unwrap_or(0)
+            }
+        }
     }
 
     /// 通过内存表构建持久化并构建SSTable

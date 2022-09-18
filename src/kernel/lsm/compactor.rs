@@ -3,7 +3,6 @@ use chrono::Local;
 use futures::future;
 use itertools::Itertools;
 use tokio::sync::RwLock;
-use tracing::error;
 use crate::{HashStore, KvsError};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
@@ -71,7 +70,7 @@ impl Compactor {
 
         let file_size = self.config.sst_size;
         if let Some((index, vec_expire_gen, vec_sharding))
-                                            = self.data_concurrently_read(level, file_size).await? {
+                                            = self.data_loading_with_level(level, file_size).await? {
 
             let mut manifest = self.manifest.write().await;
 
@@ -89,21 +88,16 @@ impl Compactor {
         Ok(())
     }
 
-    async fn data_concurrently_read(&self, level: usize, file_size: usize) -> Result<Option<(usize, ExpiredGenVec, MergeShardingVec)>> {
+    /// 通过Level进行归并数据加载
+    async fn data_loading_with_level(&self, level: usize, file_size: usize) -> Result<Option<(usize, ExpiredGenVec, MergeShardingVec)>> {
         let manifest = self.manifest.read().await;
         let next_level = level + 1;
 
-        if let Some(vec_ss_table) = Self::get_first_3_vec_ss_table(&manifest, level) {
+        if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, 3) {
             let mut vec_ss_table_l_1 =
                 manifest.get_meet_score_ss_tables(next_level, &Score::fusion_from_vec_ss_table(&vec_ss_table)?);
 
-            let index = match vec_ss_table_l_1.first() {
-                None => 0,
-                Some(first_ss_table) => {
-                    manifest.get_index(next_level, first_ss_table.get_gen())
-                        .unwrap_or(0)
-                }
-            };
+            let index = SsTable::first_index_with_level(&vec_ss_table_l_1, &manifest, next_level);
 
             let vec_ss_table_l = match Score::fusion_from_vec_ss_table(&vec_ss_table_l_1) {
                 Ok(score) => manifest.get_meet_score_ss_tables(level, &score),
@@ -111,13 +105,12 @@ impl Compactor {
             };
             vec_ss_table_l_1.extend(vec_ss_table_l);
 
+            // 数据合并并切片
             let vec_merge_sharding =
                 Self::data_merge_and_sharding(&vec_ss_table_l_1, file_size).await?;
 
-            // 提前收集需要清除的SSTable
-            let vec_expire_gen = vec_ss_table_l_1.into_iter()
-                .map(SsTable::get_gen)
-                .collect_vec();
+            // 收集需要清除的SSTable
+            let vec_expire_gen = SsTable::collect_gen(vec_ss_table_l_1)?;
 
             Ok(Some((index, vec_expire_gen, vec_merge_sharding)))
         } else {
@@ -145,9 +138,10 @@ impl Compactor {
     }
 
     /// 获取对应Level的前三个SSTable
-    pub(crate) fn get_first_3_vec_ss_table(manifest: &Manifest, level: usize) -> Option<Vec<&SsTable>> {
+    /// TODO: 改成可以通过Config进行配置
+    pub(crate) fn get_first_vec_ss_table(manifest: &Manifest, level: usize, size: usize) -> Option<Vec<&SsTable>> {
         let level_vec = manifest.get_level_vec(level).iter()
-            .take(3)
+            .take(size)
             .cloned()
             .collect_vec();
         manifest.get_ss_table_batch(&level_vec.to_vec())

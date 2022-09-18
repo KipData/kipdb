@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -183,6 +184,14 @@ impl Manifest {
 impl Position {
     pub fn new(start: u64, len: usize) -> Self {
         Self { start, len }
+    }
+
+    /// 通过稀疏索引与指定Key进行获取对应Position
+    pub(crate) fn from_sparse_index_with_key<'a>(sparse_index: &'a BTreeMap<Vec<u8>, Position>, key: &'a Vec<u8>) -> Option<&'a Self> {
+        sparse_index.into_iter()
+            .rev()
+            .find(|(key_item, _)| !key.cmp(key_item).eq(&Ordering::Less))
+            .map(|(_, value_item)| value_item)
     }
 }
 

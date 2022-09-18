@@ -68,11 +68,11 @@ impl KVStore for LsmStore {
         let manifest = self.manifest.read().await;
 
         if let Some(cmd_data) = manifest.get_cmd_data(key) {
-            return LsmStore::cmd_unpack(cmd_data);
+            return Ok(LsmStore::value_unpack(cmd_data));
         }
         for (_, ss_table) in manifest.get_ss_table_map() {
             if let Some(cmd_data) = ss_table.query(key).await? {
-                return LsmStore::cmd_unpack_with_owner(cmd_data);
+                return Ok(LsmStore::value_unpack_with_owner(cmd_data));
             }
         }
 
@@ -210,19 +210,13 @@ impl LsmStore {
     }
 
     /// 通过CommandData的引用解包并克隆出value值
-    fn cmd_unpack(cmd_data: &CommandData) -> Result<Option<Vec<u8>>> {
-        match cmd_data.get_value() {
-            None => { Ok(None) }
-            Some(value) => { Ok(Some(value.clone())) }
-        }
+    fn value_unpack(cmd_data: &CommandData) -> Option<Vec<u8>> {
+        cmd_data.get_value_clone()
     }
 
     /// 通过CommandData的所有权直接返回value值的所有权
-    fn cmd_unpack_with_owner(cmd_data: CommandData) -> Result<Option<Vec<u8>>> {
-        match cmd_data.get_value_owner() {
-            None => { Ok(None) }
-            Some(value) => { Ok(Some(value)) }
-        }
+    fn value_unpack_with_owner(cmd_data: CommandData) -> Option<Vec<u8>> {
+        cmd_data.get_value_owner()
     }
     pub(crate) fn manifest(&self) -> &Arc<RwLock<Manifest>> {
         &self.manifest
