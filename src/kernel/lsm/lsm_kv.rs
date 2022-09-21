@@ -7,7 +7,7 @@ use tracing::{error, warn};
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
-use crate::kernel::lsm::{Manifest, MemTable};
+use crate::kernel::lsm::{Manifest, MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
 use crate::kernel::lsm::ss_table::SsTable;
 use crate::kernel::Result;
@@ -29,6 +29,7 @@ pub(crate) const DEFAULT_SST_THRESHOLD: usize = 10;
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
+    mem_table: MemTable,
     manifest: Arc<RwLock<Manifest>>,
     config: Arc<Config>,
     io_handler_factory: Arc<IOHandlerFactory>,
@@ -67,8 +68,8 @@ impl KVStore for LsmStore {
     async fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
         let manifest = self.manifest.read().await;
 
-        if let Some(cmd_data) = manifest.get_cmd_data(key) {
-            return Ok(LsmStore::value_unpack(cmd_data));
+        if let Some(cmd_data) = self.mem_table.get_cmd_data(key).await {
+            return Ok(LsmStore::value_unpack_with_owner(cmd_data));
         }
         for (_, ss_table) in manifest.get_ss_table_map() {
             if let Some(cmd_data) = ss_table.query(key).await? {
@@ -90,7 +91,7 @@ impl KVStore for LsmStore {
         self.wal.flush().await?;
         // 注意此处不使用let保存读锁
         // Compactor进行minor_compaction时需要使用到写锁
-        if !self.manifest.read().await.mem_table_is_empty() {
+        if !self.mem_table.mem_table_is_empty().await {
             self.minor_compaction_sync().await?;
         }
 
@@ -102,15 +103,15 @@ impl LsmStore {
 
     /// 追加数据
     async fn append_cmd_data(&self, cmd: CommandData) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+        let mem_table = &self.mem_table;
+        let threshold_size = self.config.threshold_size as usize;
 
         // Wal与MemTable双写
         let key = cmd.get_key();
         wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
-        manifest.insert_data(key.clone(), cmd);
+        mem_table.insert_data(key.clone(), cmd).await;
 
-        if manifest.is_threshold_exceeded_minor() {
-            drop(manifest);
+        if mem_table.is_threshold_exceeded_minor(threshold_size).await {
             self.minor_compaction_sync().await?;
         }
 
@@ -121,9 +122,8 @@ impl LsmStore {
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
         let path = config.dir_path.clone();
         let wal_compaction_threshold = config.wal_compaction_threshold;
-        let threshold_size = config.threshold_size;
 
-        let mut mem_table = MemTable::new();
+        let mut mem_map = MemMap::new();
         let mut ss_tables = BTreeMap::new();
 
         let mut wal_path = path.clone();
@@ -147,16 +147,15 @@ impl LsmStore {
                     //是否删除可能还是得根据用户选择
                     // io_handler_factory.clean(*gen)?;
                     // 从wal将有问题的ss_table恢复到mem_table中
-                    Self::reload_for_wal(&mut mem_table, &wal, *gen).await?;
+                    Self::reload_for_wal(&mut mem_map, &wal, *gen).await?;
                 }
             }
         }
-
         // 构建SSTable信息集
-        let mut manifest = Manifest::new(ss_tables, Arc::new(path.clone()), threshold_size);
-        manifest.load(mem_table);
+        let manifest = Manifest::new(ss_tables, Arc::new(path.clone()));
 
         Ok(LsmStore {
+            mem_table: MemTable::new(mem_map),
             manifest: Arc::new(RwLock::new(manifest)),
             config: Arc::new(config),
             io_handler_factory,
@@ -166,7 +165,7 @@ impl LsmStore {
 
     /// 从Wal恢复SSTable数据
     /// 初始化失败时遍历wal的key并检测key是否为gen
-    async fn reload_for_wal(mem_table: &mut MemTable, wal: &HashStore, gen: u64) -> Result<()>{
+    async fn reload_for_wal(mem_table: &mut MemMap, wal: &HashStore, gen: u64) -> Result<()>{
         // 将SSTable持久化失败前预存入的指令键集合从wal中获取
         // 随后将每一条指令键对应的指令恢复到mem_table中
         warn!("[SsTable: {}][reload_from_wal]", gen);
@@ -189,10 +188,11 @@ impl LsmStore {
 
     /// 异步持久化immutable_table为SSTable
     pub async fn minor_compaction(&self) -> Result<()> {
+        let (keys, values) = self.mem_table.table_swap().await;
         let compactor = Compactor::from_lsm_kv(self);
 
         tokio::spawn(async move {
-            if let Err(err) = compactor.minor_compaction().await {
+            if let Err(err) = compactor.minor_compaction(keys, values).await {
                 error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
             }
         });
@@ -201,7 +201,8 @@ impl LsmStore {
 
     /// 同步持久化immutable_table为SSTable
     pub async fn minor_compaction_sync(&self) -> Result<()> {
-        Ok(Compactor::from_lsm_kv(self).minor_compaction().await?)
+        let (keys, values) = self.mem_table.table_swap().await;
+        Ok(Compactor::from_lsm_kv(self).minor_compaction(keys, values).await?)
     }
 
     /// 同步进行SSTable基于Level的层级压缩
@@ -243,7 +244,7 @@ impl CommandCodec {
         Ok(bincode::deserialize(key)?)
     }
 
-    pub(crate) fn encode_keys(value: &Vec<&Vec<u8>>) -> Result<Vec<u8>> {
+    pub(crate) fn encode_keys(value: &Vec<Vec<u8>>) -> Result<Vec<u8>> {
         Ok(bincode::serialize(value)?)
     }
 

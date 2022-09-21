@@ -80,7 +80,7 @@ impl Score {
     }
 
     /// 由一组Command组成一个Score
-    pub(crate) fn from_vec_cmd_data(vec_mem_data: &Vec<&CommandData>) -> Result<Self> {
+    pub(crate) fn from_vec_cmd_data(vec_mem_data: &Vec<CommandData>) -> Result<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => {
                 Ok(Self::from_cmd_data(first, last))
@@ -234,7 +234,7 @@ impl SsTable {
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<&CommandData>, level: u64) -> Result<Self> {
+    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: u64) -> Result<Self> {
         // 获取数据的Key涵盖范围
         let score = Score::from_vec_cmd_data(vec_mem_data)?;
         // 获取地址
@@ -245,7 +245,7 @@ impl SsTable {
 
         // 将数据按part_size一组分段存入
         for cmd_data in vec_mem_data {
-            vec_cmd.push(*cmd_data);
+            vec_cmd.push(cmd_data);
             if vec_cmd.len() >= part_size as usize {
                 Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
             }

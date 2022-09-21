@@ -142,23 +142,13 @@ impl CommandPackage {
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command
     pub async fn from_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandPackage>> {
-        if let Some(cmd_data) =  Self::from_pos_unpack(io_handler, start, len).await? {
-            Ok(Some(CommandPackage::new(cmd_data, start, len)))
-        } else {
-            Ok(None)
-        }
+        Ok(Self::from_pos_unpack(io_handler, start, len).await?
+            .map(|cmd| CommandPackage::new(cmd_data, start, len)))
     }
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub async fn from_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos(start, len).await?;
-        Ok(match rmp_serde::decode::from_slice(cmd_u8.as_slice()) {
-            Ok(cmd) => {
-                Some(cmd)
-            }
-            Err(_) => {
-                None
-            }
-        })
+        Ok(rmp_serde::decode::from_slice(cmd_u8.as_slice()).ok())
     }
 
     /// 获取zone之中所有的Command

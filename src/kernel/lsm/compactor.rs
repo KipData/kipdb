@@ -28,15 +28,12 @@ impl Compactor {
     }
 
     /// 持久化immutable_table为SSTable
-    /// 此处manifest参数需要传入是因为Rust的锁不可重入所以需要从外部将锁对象传入
-    pub(crate) async fn minor_compaction(&self) -> Result<()> {
+    pub(crate) async fn minor_compaction(&self,vec_keys: Vec<Vec<u8>>, vec_values: Vec<CommandData>) -> Result<()> {
         let mut manifest = self.manifest.write().await;
 
         // 获取当前时间戳当gen
         let time_stamp = Local::now().timestamp_nanos() as u64;
         let io_handler = self.io_handler_factory.create(time_stamp)?;
-        // 切换mem_table并准备持久化
-        let (vec_keys, vec_values) = manifest.table_swap();
         let vec_ts_u8 = CommandCodec::encode_gen(time_stamp)?;
 
         // 将这些索引的key序列化后预先存入wal中作防灾准备
@@ -79,7 +76,7 @@ impl Compactor {
                 // TODO: 这里的SsTable最好还是使用并行创建比较高效
                 let new_ss_table = SsTable::create_for_immutable_table(&self.config,
                                                                        io_handler,
-                                                                       &sharding.iter().collect_vec(),
+                                                                       &sharding,
                                                                        level as u64 + 1).await?;
                 manifest.insert_ss_table_with_index(new_ss_table, index);
             }

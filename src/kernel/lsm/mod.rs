@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use crate::kernel::{CommandData, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::lsm_kv::{LevelSlice, SsTableMap};
@@ -14,7 +15,7 @@ pub(crate) mod ss_table;
 pub mod lsm_kv;
 mod compactor;
 
-pub(crate) type MemTable = BTreeMap<Vec<u8>, CommandData>;
+pub(crate) type MemMap = BTreeMap<Vec<u8>, CommandData>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
@@ -29,10 +30,12 @@ struct MetaInfo {
     part_size: u64
 }
 
-pub(crate) struct Manifest {
-    threshold_size: u64,
+struct MemTable {
     // MemTable切片，管理MemTable和ImmutableMemTable
-    mem_table_slice: [MemTable; 2],
+    mem_table_slice: RwLock<[MemMap; 2]>
+}
+
+pub(crate) struct Manifest {
     _path: Arc<PathBuf>,
     // SSTable有序存储集合
     ss_tables_map: SsTableMap,
@@ -45,6 +48,51 @@ pub(crate) struct Manifest {
 struct Position {
     start: u64,
     len: usize
+}
+
+impl MemTable {
+    pub(crate) fn new(mem_map: MemMap) -> Self {
+        MemTable { mem_table_slice: RwLock::new([mem_map, MemMap::new()]) }
+    }
+
+    pub(crate) async fn insert_data(&self, key: Vec<u8>, value: CommandData) {
+        let mut mem_table_slice = self.mem_table_slice.write().await;
+
+        mem_table_slice[0].insert(key, value);
+    }
+
+    pub(crate) async fn mem_table_is_empty(&self) -> bool {
+        let mem_table_slice = self.mem_table_slice.read().await;
+
+        mem_table_slice[0].len() < 1 && mem_table_slice[1].len() < 1
+    }
+
+    async fn is_threshold_exceeded_minor(&self, threshold_size: usize) -> bool {
+        let mem_table_slice = self.mem_table_slice.read().await;
+
+        mem_table_slice[0].len() > threshold_size
+    }
+
+    /// MemTable交换并分解
+    async fn table_swap(&self) -> (Vec<Vec<u8>>, Vec<CommandData>){
+        let mut mem_table_slice = self.mem_table_slice.write().await;
+
+        mem_table_slice.swap(0, 1);
+        mem_table_slice[0] = MemMap::new();
+        mem_table_slice[1].clone()
+            .into_iter()
+            .unzip()
+    }
+
+    async fn get_cmd_data(&self, key: &Vec<u8>) -> Option<CommandData> {
+        let mem_table_slice = self.mem_table_slice.read().await;
+
+        if let Some(data) = mem_table_slice[0].get(key) {
+            Some(data.clone())
+        } else {
+            mem_table_slice[1].get(key).map(|cmd| cmd.clone())
+        }
+    }
 }
 
 impl MetaInfo {
@@ -64,10 +112,10 @@ impl MetaInfo {
 }
 
 impl Manifest {
-    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>, threshold_size: u64) -> Self {
+    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>) -> Self {
         // 获取ss_table分级Vec
         let level_vec = Self::level_layered(&mut ss_tables_map);
-        Self { threshold_size, mem_table_slice: [MemTable::new(), MemTable::new()], _path: path, ss_tables_map, level_slice: level_vec }
+        Self { _path: path, ss_tables_map, level_slice: level_vec }
     }
 
     /// 使用ss_tables返回LevelVec
@@ -92,10 +140,6 @@ impl Manifest {
         let index = self.get_index(existed_table.get_level(), existed_table.get_gen()).unwrap_or(0);
         self.insert_ss_table_with_index(ss_table, index);
         index
-    }
-
-    pub(crate) fn insert_data(&mut self, key: Vec<u8>, value: CommandData) {
-        self.mem_table_slice[0].insert(key, value);
     }
 
     /// 删除指定的过期gen
@@ -123,8 +167,10 @@ impl Manifest {
         self.ss_tables_map.get(&gen)
     }
 
-    pub(crate) fn mem_table_is_empty(&self) -> bool {
-        self.mem_table_slice[0].len() < 1 && self.mem_table_slice[1].len() < 1
+
+
+    fn is_threshold_exceeded_major(&self, sst_size: usize) -> bool {
+        self.level_slice[0].len() > sst_size
     }
 
     pub(crate) fn get_ss_table_map(&self) -> &SsTableMap {
@@ -135,34 +181,6 @@ impl Manifest {
         vec_gen.iter()
             .map(|gen| self.get_ss_table(gen))
             .collect::<Option<Vec<&SsTable>>>()
-    }
-
-    fn load(&mut self, mem_table: MemTable) {
-        self.mem_table_slice[0] = mem_table;
-    }
-
-    fn get_cmd_data(&self, key: &Vec<u8>) -> Option<&CommandData> {
-        if let Some(data) = self.mem_table_slice[0].get(key) {
-            Some(data)
-        } else {
-            self.mem_table_slice[1].get(key)
-        }
-    }
-
-    fn is_threshold_exceeded_minor(&self) -> bool {
-        self.mem_table_slice[0].len() > self.threshold_size as usize
-    }
-
-    fn is_threshold_exceeded_major(&self, sst_size: usize) -> bool {
-        self.level_slice[0].len() > sst_size
-    }
-
-    /// MemTable交换并分解
-    fn table_swap(&mut self) -> (Vec<&Vec<u8>>, Vec<&CommandData>){
-        self.mem_table_slice.swap(0, 1);
-        self.mem_table_slice[0] = MemTable::new();
-        self.mem_table_slice[1].iter()
-            .unzip()
     }
 
     pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score) -> Vec<&SsTable> {
@@ -182,10 +200,6 @@ impl Manifest {
 }
 
 impl Position {
-    pub fn new(start: u64, len: usize) -> Self {
-        Self { start, len }
-    }
-
     /// 通过稀疏索引与指定Key进行获取对应Position
     pub(crate) fn from_sparse_index_with_key<'a>(sparse_index: &'a BTreeMap<Vec<u8>, Position>, key: &'a Vec<u8>) -> Option<&'a Self> {
         sparse_index.into_iter()
