@@ -117,15 +117,14 @@ impl IOHandler {
     }
 
     pub async fn write_pos(&self) -> Result<u64> {
-        let writer = self.writer.read().await;
-
-        Ok(writer.pos)
+        Ok(self.writer.read().await.pos)
     }
 
     pub async fn flush(&self) -> Result<()> {
-        let mut writer = self.writer.write().await;
-
-        Ok(writer.flush()?)
+        self.writer.write()
+            .await
+            .flush()?;
+        Ok(())
     }
 }
 

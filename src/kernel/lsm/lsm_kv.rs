@@ -18,13 +18,13 @@ pub(crate) type SsTableMap = BTreeMap<u64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_THRESHOLD_SIZE: u64 = 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE: u64 = 1024;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
-pub(crate) const DEFAULT_SST_SIZE: usize = 2 * 1024 * 1024;
+pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
-pub(crate) const DEFAULT_SST_THRESHOLD: usize = 10;
+pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
@@ -104,7 +104,7 @@ impl LsmStore {
     /// 追加数据
     async fn append_cmd_data(&self, cmd: CommandData) -> Result<()> {
         let mem_table = &self.mem_table;
-        let threshold_size = self.config.threshold_size as usize;
+        let threshold_size = self.config.minor_threshold_with_data_size as usize;
 
         // Wal与MemTable双写
         let key = cmd.get_key();
@@ -256,16 +256,16 @@ impl CommandCodec {
 pub struct Config {
     // 数据目录地址
     pub(crate) dir_path: PathBuf,
-    // 持久化阈值
-    pub(crate) threshold_size: u64,
     // WAL持久化阈值
     pub(crate) wal_compaction_threshold: u64,
     // 数据分块大小
     pub(crate) part_size: u64,
     // SSTable文件大小
-    pub(crate) sst_size: usize,
+    pub(crate) sst_file_size: usize,
+    // 持久化阈值
+    pub(crate) minor_threshold_with_data_size: u64,
     // Major压缩触发阈值
-    pub(crate) sst_threshold: usize,
+    pub(crate) major_threshold_with_sst_size: usize,
 }
 
 impl Config {
@@ -275,8 +275,8 @@ impl Config {
         self
     }
 
-    pub fn threshold_size(mut self, threshold_size: u64) -> Self {
-        self.threshold_size = threshold_size;
+    pub fn minor_threshold_with_data_size(mut self, minor_threshold_with_data_size: u64) -> Self {
+        self.minor_threshold_with_data_size = minor_threshold_with_data_size;
         self
     }
 
@@ -290,24 +290,24 @@ impl Config {
         self
     }
 
-    pub fn sst_size(mut self, sst_size: usize) -> Self {
-        self.sst_size = sst_size;
+    pub fn sst_file_size(mut self, sst_file_size: usize) -> Self {
+        self.sst_file_size = sst_file_size;
         self
     }
 
-    pub fn sst_threshold(mut self, sst_threshold: usize) -> Self {
-        self.sst_threshold = sst_threshold;
+    pub fn major_threshold_with_sst_size(mut self, major_threshold_with_sst_size: usize) -> Self {
+        self.major_threshold_with_sst_size = major_threshold_with_sst_size;
         self
     }
 
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
-            threshold_size: DEFAULT_THRESHOLD_SIZE,
+            minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE,
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
             part_size: DEFAULT_PART_SIZE,
-            sst_size: DEFAULT_SST_SIZE,
-            sst_threshold: DEFAULT_SST_THRESHOLD
+            sst_file_size: DEFAULT_SST_FILE_SIZE,
+            major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE
         }
     }
 }
@@ -336,14 +336,15 @@ fn test_lsm_major_compactor() -> Result<()> {
 
     tokio_test::block_on(async move {
         let config = Config::new().dir_path(temp_dir.path().into())
-            .sst_threshold(1)
-            .sst_size(10)
-            .threshold_size(5);
+            .major_threshold_with_sst_size(5)
+            .sst_file_size(10)
+            .minor_threshold_with_data_size(5);
 
         let mut rng = rand::thread_rng();
         let kv_store = LsmStore::open_with_config(config).await?;
+        let mut vec_key = Vec::new();
 
-        for _ in 0..100 {
+        for _ in 0..25 {
             let password: String = (0..rng.gen::<u16>())
                 .map(|_| {
                     let idx = rng.gen_range(0..CHARSET.len());
@@ -352,8 +353,13 @@ fn test_lsm_major_compactor() -> Result<()> {
                 .collect();
             let vec_u8 = rmp_serde::to_vec(&password).unwrap();
             kv_store.set(&vec_u8, vec_u8.clone()).await?;
+            vec_key.push(password);
         }
         kv_store.flush().await?;
+        for key in vec_key {
+            let vec_u8 = rmp_serde::to_vec(&key).unwrap();
+            assert_eq!(kv_store.get(&vec_u8).await?.unwrap(), vec_u8);
+        }
         Ok(())
     })
 }

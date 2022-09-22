@@ -106,7 +106,6 @@ impl CommandPackage {
     }
 
     /// 快进四位
-    ///
     /// 用于写入除CommandData时，分隔数据使前端CommandData能够被连续识别
     pub async fn end_tag(io_handler: &IOHandler) -> Result<()> {
         io_handler.write(vec![b'\0',4]).await?;
@@ -119,7 +118,6 @@ impl CommandPackage {
     }
 
     /// 写入一个Command
-    ///
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
     pub async fn write(io_handler: &IOHandler, cmd: &CommandData) -> Result<(u64, usize)> {
         let (start, len) = Self::write_back_real_pos(io_handler, cmd).await?;
@@ -127,7 +125,6 @@ impl CommandPackage {
     }
 
     /// 写入一个Command
-    ///
     /// 写入完成后该cmd的真实写入起始位置与长度
     pub async fn write_back_real_pos(io_handler: &IOHandler, cmd: &CommandData) -> Result<(u64, usize)> {
         let vec = rmp_serde::encode::to_vec(cmd)?;
@@ -142,8 +139,9 @@ impl CommandPackage {
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command
     pub async fn from_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandPackage>> {
-        Ok(Self::from_pos_unpack(io_handler, start, len).await?
-            .map(|cmd| CommandPackage::new(cmd_data, start, len)))
+        let option = Self::from_pos_unpack(io_handler, start, len).await?
+            .map(|cmd_data| CommandPackage::new(cmd_data, start, len));
+        Ok(option)
     }
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub async fn from_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
@@ -183,6 +181,7 @@ impl CommandPackage {
     }
 
     /// 从该数据区间中找到对应Key的CommandData
+    /// TODO: 优化成Iter的形式
     pub async fn find_key_with_zone_unpack(zone: &[u8], key: &Vec<u8>) -> Result<Option<CommandData>> {
         let vec_u8 = Self::get_vec_bytes(zone).await;
         for &cmd_u8 in vec_u8.iter() {
@@ -300,25 +299,13 @@ impl CommandData {
     pub async fn apply<K: KVStore>(self, kv_store: &Arc<K>) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                match kv_store.set(&key, value).await {
-                    Ok(_) => Ok(CommandOption::None),
-                    Err(e) => Err(e)
-                }
+                kv_store.set(&key, value).await.map(|_| CommandOption::None)
             }
             CommandData::Remove { key } => {
-
-                match kv_store.remove(&key).await {
-                    Ok(_) => Ok(CommandOption::None),
-                    Err(e) => Err(e)
-                }
+                kv_store.remove(&key).await.map(|_| CommandOption::None)
             }
             CommandData::Get { key } => {
-                match kv_store.get(&key).await {
-                    Ok(option) => {
-                        Ok(CommandOption::from(option))
-                    }
-                    Err(e) => Err(e)
-                }
+                kv_store.get(&key).await.map(CommandOption::from)
             }
         }
     }

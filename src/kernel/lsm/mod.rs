@@ -68,9 +68,9 @@ impl MemTable {
     }
 
     async fn is_threshold_exceeded_minor(&self, threshold_size: usize) -> bool {
-        let mem_table_slice = self.mem_table_slice.read().await;
-
-        mem_table_slice[0].len() > threshold_size
+        self.mem_table_slice.read()
+            .await[0]
+            .len() > threshold_size
     }
 
     /// MemTable交换并分解

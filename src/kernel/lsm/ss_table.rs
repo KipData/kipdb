@@ -22,9 +22,13 @@ pub(crate) struct SsTable {
     io_handler: IOHandler,
     // 文件路径
     gen: u64,
+    // 数据范围索引
     score: Score
 }
 
+/// 数据范围索引
+/// 用于缓存SSTable中所有数据的第一个和最后一个数据的Key
+/// 标明数据的范围以做到快速区域定位
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Score {
     start: Vec<u8>,

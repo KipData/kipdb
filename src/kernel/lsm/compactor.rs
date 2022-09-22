@@ -46,7 +46,7 @@ impl Compactor {
                                                            , LEVEL_0).await?;
         manifest.insert_ss_table_with_index(ss_table, 0);
 
-        if manifest.is_threshold_exceeded_major(self.config.sst_threshold) {
+        if manifest.is_threshold_exceeded_major(self.config.major_threshold_with_sst_size) {
             drop(manifest);
             // TODO:使压缩异步化，解决存活问题
             self.major_compaction(0).await?;
@@ -65,7 +65,7 @@ impl Compactor {
             return Err(KvsError::LevelOver);
         }
 
-        let file_size = self.config.sst_size;
+        let file_size = self.config.sst_file_size;
         if let Some((index, vec_expire_gen, vec_sharding))
                                             = self.data_loading_with_level(level, file_size).await? {
 
@@ -116,7 +116,7 @@ impl Compactor {
     }
 
     /// 以SSTables的数据归并再排序后切片，获取以Command的Key值由小到大的切片排序
-    /// 收集所有SSTable的get_all_data的future，并发执行并对数据进行去重以及排序
+    /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
     /// 真他妈完美
     async fn data_merge_and_sharding(vec_ss_table: &Vec<&SsTable>, file_size: usize) -> Result<MergeShardingVec>{
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
