@@ -27,6 +27,8 @@ pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
+pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
+
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
@@ -283,18 +285,23 @@ impl CommandCodec {
 }
 
 pub struct Config {
-    // 数据目录地址
+    /// 数据目录地址
     pub(crate) dir_path: PathBuf,
-    // WAL持久化阈值
+    /// WAL持久化阈值
     pub(crate) wal_compaction_threshold: u64,
-    // 数据分块大小
+    /// 数据分块大小
     pub(crate) part_size: u64,
-    // SSTable文件大小
+    /// SSTable文件大小
     pub(crate) sst_file_size: usize,
-    // 持久化阈值
+    /// 持久化阈值
     pub(crate) minor_threshold_with_data_size: u64,
-    // Major压缩触发阈值
+    /// Major压缩触发阈值
     pub(crate) major_threshold_with_sst_size: usize,
+    /// Major压缩选定文件数
+    /// Major压缩时通过选定个别SSTable(即该配置项)进行下一级的SSTable选定，
+    /// 并将确定范围的下一级SSTable再次对当前等级的SSTable进行范围判定，
+    /// 找到最合理的上下级数据范围并压缩
+    pub(crate) major_select_file_size: usize,
 }
 
 impl Config {
@@ -329,6 +336,11 @@ impl Config {
         self
     }
 
+    pub fn major_select_file_size(mut self, major_select_file_size: usize) -> Self {
+        self.major_select_file_size = major_select_file_size;
+        self
+    }
+
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
@@ -336,7 +348,8 @@ impl Config {
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
             part_size: DEFAULT_PART_SIZE,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
-            major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE
+            major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
+            major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE
         }
     }
 }
@@ -364,6 +377,8 @@ fn test_lsm_major_compactor() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
+        // 给一个非常低的触发阈值
+        // 开始疯狂触发压缩
         let config = Config::new().dir_path(temp_dir.path().into())
             .major_threshold_with_sst_size(5)
             .sst_file_size(10)

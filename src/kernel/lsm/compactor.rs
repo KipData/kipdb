@@ -88,8 +88,9 @@ impl Compactor {
     async fn data_loading_with_level(&self, level: usize, file_size: usize) -> Result<Option<(usize, ExpiredGenVec, MergeShardingVec)>> {
         let manifest = self.manifest.read().await;
         let next_level = level + 1;
+        let major_select_file_size = self.config.major_select_file_size;
 
-        if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, 3) {
+        if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
             let mut vec_ss_table_l_1 =
                 manifest.get_meet_score_ss_tables(next_level, &Score::fusion_from_vec_ss_table(&vec_ss_table)?);
 
@@ -133,8 +134,7 @@ impl Compactor {
         Ok(Self::data_sharding(vec_cmd_data, file_size).await)
     }
 
-    /// 获取对应Level的前三个SSTable
-    /// TODO: 改成可以通过Config进行配置
+    /// 获取对应Level的开头指定数量的SSTable
     pub(crate) fn get_first_vec_ss_table(manifest: &Manifest, level: usize, size: usize) -> Option<Vec<&SsTable>> {
         let level_vec = manifest.get_level_vec(level).iter()
             .take(size)
