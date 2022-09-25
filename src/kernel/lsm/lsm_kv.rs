@@ -373,7 +373,7 @@ fn test_lsm_major_compactor() -> Result<()> {
         let kv_store = LsmStore::open_with_config(config).await?;
         let mut vec_key = Vec::new();
 
-        for _ in 0..25 {
+        for _ in 0..50 {
             let password: String = (0..rng.gen::<u16>())
                 .map(|_| {
                     let idx = rng.gen_range(0..CHARSET.len());
@@ -389,6 +389,7 @@ fn test_lsm_major_compactor() -> Result<()> {
             let vec_u8 = rmp_serde::to_vec(&key).unwrap();
             assert_eq!(kv_store.get(&vec_u8).await?.unwrap(), vec_u8);
         }
+        kv_store.shut_down().await?;
         Ok(())
     })
 }

@@ -67,15 +67,18 @@ impl Compactor {
 
             let mut manifest = self.manifest.write().await;
 
-            for sharding in vec_sharding {
-                let io_handler = self.io_handler_factory.create(Local::now().timestamp_nanos() as u64)?;
-                // TODO: 这里的SsTable最好还是使用并行创建比较高效
-                let new_ss_table = SsTable::create_for_immutable_table(&self.config,
-                                                                       io_handler,
-                                                                       &sharding,
-                                                                       level as u64 + 1).await?;
-                manifest.insert_ss_table_with_index(new_ss_table, index);
-            }
+            // 并行创建SSTable
+            let ss_table_futures = vec_sharding.iter()
+                .map(|sharding| {
+                    let io_handler = self.io_handler_factory.create(Local::now().timestamp_nanos() as u64).unwrap();
+                    SsTable::create_for_immutable_table(&self.config,
+                                                        io_handler,
+                                                        sharding,
+                                                        level as u64 + 1)
+                });
+            let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
+
+            manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index);
             manifest.retain_with_vec_gen_and_level(&vec_expire_gen)?;
         }
         Ok(())

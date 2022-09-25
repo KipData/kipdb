@@ -136,6 +136,14 @@ impl Manifest {
         self.level_slice[level].insert(index, gen);
     }
 
+    pub(crate) fn insert_ss_table_with_index_batch(&mut self, ss_tables: Vec<SsTable>, index: usize) {
+        ss_tables.into_iter()
+            .rev()
+            .for_each(|ss_table| {
+                self.insert_ss_table_with_index(ss_table, index);
+            });
+    }
+
     pub(crate) fn insert_ss_table_with_existed_table(&mut self, ss_table: SsTable, existed_table: &SsTable) -> usize {
         let index = self.get_index(existed_table.get_level(), existed_table.get_gen()).unwrap_or(0);
         self.insert_ss_table_with_index(ss_table, index);
