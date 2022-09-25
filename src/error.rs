@@ -1,5 +1,6 @@
 use std::io;
 use failure::Fail;
+use tokio::sync::oneshot::error::RecvError;
 
 /// Error type for kvs
 #[derive(Fail, Debug)]
@@ -7,10 +8,10 @@ pub enum KvsError {
     /// IO error
     #[fail(display = "{}", _0)]
     Io(#[cause] io::Error),
+    #[fail(display = "{}", _0)]
+    Recv(#[cause] RecvError),
 
     /// Serialization or deserialization error
-    #[fail(display = "{}", _0)]
-    SerdeJson(#[cause] serde_json::Error),
     #[fail(display = "{}", _0)]
     SerdeMPEncode(#[cause] rmp_serde::encode::Error),
     #[fail(display = "{}", _0)]
@@ -74,9 +75,9 @@ impl From<io::Error> for KvsError {
     }
 }
 
-impl From<serde_json::Error> for KvsError {
-    fn from(err: serde_json::Error) -> Self {
-        KvsError::SerdeJson(err)
+impl From<RecvError> for KvsError {
+    fn from(err: RecvError) -> Self {
+        KvsError::Recv(err)
     }
 }
 

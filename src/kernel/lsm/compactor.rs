@@ -3,6 +3,7 @@ use chrono::Local;
 use futures::future;
 use itertools::Itertools;
 use tokio::sync::RwLock;
+use tracing::error;
 use crate::{HashStore, KvsError};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
@@ -48,14 +49,9 @@ impl Compactor {
 
         if manifest.is_threshold_exceeded_major(self.config.major_threshold_with_sst_size) {
             drop(manifest);
-            // TODO:使压缩异步化，解决存活问题
-            self.major_compaction(0).await?;
-            // let compactor = self.clone();
-            // tokio::spawn(async move {
-            //     if let Err(err) = compactor.major_compaction(1).await {
-            //         error!("[LsmStore][major_compaction][error happen]: {:?}", err);
-            //     }
-            // });
+            if let Err(err) = self.major_compaction(0).await {
+                error!("[LsmStore][major_compaction][error happen]: {:?}", err);
+            }
         }
         Ok(())
     }

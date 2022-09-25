@@ -173,8 +173,15 @@ impl Manifest {
         self.level_slice[0].len() > sst_size
     }
 
-    pub(crate) fn get_ss_table_map(&self) -> &SsTableMap {
-        &self.ss_tables_map
+    /// 使用Key从现有SSTables中获取对应的数据
+    pub(crate) async fn get_data_for_ss_tables(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
+        for (_, ss_table) in &self.ss_tables_map {
+            if let Some(cmd_data) = ss_table.query(key).await? {
+                return Ok(cmd_data.get_value_owner());
+            }
+        }
+
+        Ok(None)
     }
 
     pub(crate) fn get_ss_table_batch(&self, vec_gen: &Vec<u64>) -> Option<Vec<&SsTable>> {

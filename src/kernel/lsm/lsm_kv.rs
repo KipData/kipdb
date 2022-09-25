@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap};
 use std::path::PathBuf;
-use std::sync::{Arc};
+use std::sync::Arc;
 use async_trait::async_trait;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, oneshot, RwLock};
+use tokio::sync::oneshot::Sender;
 use tracing::{error, warn};
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
@@ -43,6 +44,7 @@ pub struct LsmStore {
     /// 2、作Key-Value分离的准备，当作vLog
     /// 3、HashStore会丢弃超出大小的数据，保证最新数据不会丢失
     wal: Arc<HashStore>,
+    vec_rev: Mutex<Vec<oneshot::Receiver<()>>>
 }
 
 #[async_trait]
@@ -66,18 +68,17 @@ impl KVStore for LsmStore {
     }
 
     async fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let manifest = self.manifest.read().await;
-
         if let Some(cmd_data) = self.mem_table.get_cmd_data(key).await {
             return Ok(LsmStore::value_unpack_with_owner(cmd_data));
         }
-        for (_, ss_table) in manifest.get_ss_table_map() {
-            if let Some(cmd_data) = ss_table.query(key).await? {
-                return Ok(LsmStore::value_unpack_with_owner(cmd_data));
-            }
-        }
+        // 读取前等待压缩完毕
+        // 相对来说，消耗较小
+        // 当压缩时长高时，说明数据量非常大
+        // 此时直接去获取的话可能会既获取不到数据，也花费大量时间
+        self.wait_for_compression_down().await?;
 
-        Ok(None)
+        Ok(self.manifest.read().await
+            .get_data_for_ss_tables(key).await?)
     }
 
     async fn remove(&self, key: &Vec<u8>) -> Result<()> {
@@ -92,8 +93,9 @@ impl KVStore for LsmStore {
         // 注意此处不使用let保存读锁
         // Compactor进行minor_compaction时需要使用到写锁
         if !self.mem_table.mem_table_is_empty().await {
-            self.minor_compaction_sync().await?;
+            self.minor_compaction().await?;
         }
+        self.wait_for_compression_down().await?;
 
         Ok(())
     }
@@ -112,7 +114,7 @@ impl LsmStore {
         mem_table.insert_data(key.clone(), cmd).await;
 
         if mem_table.is_threshold_exceeded_minor(threshold_size).await {
-            self.minor_compaction_sync().await?;
+            self.minor_compaction().await?;
         }
 
         Ok(())
@@ -160,6 +162,7 @@ impl LsmStore {
             config: Arc::new(config),
             io_handler_factory,
             wal,
+            vec_rev: Mutex::new(Vec::new())
         })
     }
 
@@ -190,11 +193,14 @@ impl LsmStore {
     pub async fn minor_compaction(&self) -> Result<()> {
         let (keys, values) = self.mem_table.table_swap().await;
         let compactor = Compactor::from_lsm_kv(self);
+        let sender = self.live_tag().await;
 
         tokio::spawn(async move {
+            // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
             if let Err(err) = compactor.minor_compaction(keys, values).await {
                 error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
             }
+            sender.send(()).unwrap();
         });
         Ok(())
     }
@@ -230,6 +236,29 @@ impl LsmStore {
     }
     pub(crate) fn wal(&self) -> &Arc<HashStore> {
         &self.wal
+    }
+
+    /// 存活标记
+    /// 返回一个Sender用于存活结束通知
+    pub(crate) async fn live_tag(&self) -> Sender<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.vec_rev.lock()
+            .await
+            .push(receiver);
+
+        sender
+    }
+
+    /// 等待所有压缩结束
+    async fn wait_for_compression_down(&self) -> Result<()> {
+        // 监听异步任务是否执行完毕
+        let mut vec_rev = self.vec_rev.lock().await;
+        for rev in vec_rev.pop() {
+            rev.await?
+        }
+
+        Ok(())
     }
 }
 
