@@ -2,10 +2,11 @@ use std::{path::PathBuf, fs};
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::path::Path;
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use crate::kernel::io_handler::IOHandler;
 use async_trait::async_trait;
+use futures::future;
+use itertools::Itertools;
 
 use crate::KvsError;
 use crate::net::CommandOption;
@@ -41,6 +42,28 @@ pub trait KVStore: Send + 'static + Sized {
 
     /// 将内核关闭
     async fn shut_down(&self) -> Result<()>;
+
+    /// 顺序批量执行
+    async fn batch_order(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut vec_result = Vec::new();
+        for cmd in vec_cmd {
+            vec_result.push(cmd.apply(self).await?.into())
+        }
+
+        Ok(vec_result)
+    }
+
+    /// 并行批量执行
+    async fn batch_parallel(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
+        let map_cmd = vec_cmd.into_iter()
+            .map(|cmd| cmd.apply(self));
+        Ok(future::try_join_all(map_cmd)
+            .await?
+            .into_iter()
+            .map(CommandOption::into)
+            .collect_vec())
+    }
+
 }
 
 /// 用于包装Command交予持久化核心实现使用的操作类
@@ -296,7 +319,7 @@ impl CommandData {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 参数Arc<RwLock<KvStore>>为持久化内核
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
-    pub async fn apply<K: KVStore>(self, kv_store: &Arc<K>) -> Result<CommandOption>{
+    pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
                 kv_store.set(&key, value).await.map(|_| CommandOption::None)

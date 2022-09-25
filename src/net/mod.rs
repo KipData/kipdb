@@ -17,3 +17,12 @@ pub enum CommandOption {
     Value(Vec<u8>),
     None
 }
+
+impl Into<Option<Vec<u8>>> for CommandOption {
+    fn into(self) -> Option<Vec<u8>> {
+        match self {
+            CommandOption::Value(value) => { Some(value) }
+            _ => { None }
+        }
+    }
+}

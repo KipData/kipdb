@@ -140,7 +140,7 @@ impl Handler {
                 CommandOption::Cmd(cmd) => {
                     debug!(?cmd);
 
-                    let option = match cmd.apply(&mut self.kv_store).await {
+                    let option = match cmd.apply(&*self.kv_store).await {
                         Ok(option) => option,
                         Err(err) => {
                             match err {
