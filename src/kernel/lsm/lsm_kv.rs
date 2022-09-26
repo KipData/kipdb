@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use async_trait::async_trait;
 use snowflake::SnowflakeIdBucket;
 use tokio::sync::{Mutex, oneshot, RwLock};
@@ -32,8 +32,6 @@ pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
 
 pub(crate) const DEFAULT_MACHINE_ID: i32 = 1;
-
-pub(crate) const DEFAULT_NODE_ID: i32 = 1;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
@@ -308,13 +306,11 @@ pub struct Config {
     /// 并将确定范围的下一级SSTable再次对当前等级的SSTable进行范围判定，
     /// 找到最合理的上下级数据范围并压缩
     pub(crate) major_select_file_size: usize,
-    /// 雪花算法中的数据中心ID
-    pub(crate) machine_id: i32,
-    /// 雪花算法中的应用节点ID
+    /// 节点Id
     pub(crate) node_id: i32,
     /// 用于ID生成的原子缓冲
     /// 避免极端情况下，SSTable创建重复问题并保持时间有序性
-    pub(crate) buffer_u8: AtomicU8
+    pub(crate) buffer_i32: AtomicI32
 }
 
 impl Config {
@@ -354,19 +350,14 @@ impl Config {
         self
     }
 
-    pub fn machine_id(mut self, machine_id: i32) -> Self {
-        self.machine_id = machine_id;
-        self
-    }
-
     pub fn node_id(mut self, node_id: i32) -> Self {
         self.node_id = node_id;
         self
     }
 
     pub fn create_gen(&self) -> i64 {
-        SnowflakeIdBucket::new(self.machine_id, self.node_id).get_id() +
-            self.buffer_u8.fetch_add(1, Ordering::SeqCst) as i64
+        SnowflakeIdBucket::new(self.node_id, self.buffer_i32.fetch_add(1, Ordering::SeqCst))
+            .get_id()
     }
 
     pub fn new() -> Self {
@@ -378,9 +369,8 @@ impl Config {
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
-            machine_id: DEFAULT_MACHINE_ID,
-            node_id: DEFAULT_NODE_ID,
-            buffer_u8: AtomicU8::new(0)
+            node_id: DEFAULT_MACHINE_ID,
+            buffer_i32: AtomicI32::new(0)
         }
     }
 }
