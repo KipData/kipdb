@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use async_trait::async_trait;
 use snowflake::SnowflakeIdBucket;
 use tokio::sync::{Mutex, oneshot, RwLock};
@@ -307,8 +308,13 @@ pub struct Config {
     /// 并将确定范围的下一级SSTable再次对当前等级的SSTable进行范围判定，
     /// 找到最合理的上下级数据范围并压缩
     pub(crate) major_select_file_size: usize,
+    /// 雪花算法中的数据中心ID
     pub(crate) machine_id: i32,
+    /// 雪花算法中的应用节点ID
     pub(crate) node_id: i32,
+    /// 用于ID生成的原子缓冲
+    /// 避免极端情况下，SSTable创建重复问题并保持时间有序性
+    pub(crate) buffer_u8: AtomicU8
 }
 
 impl Config {
@@ -359,7 +365,8 @@ impl Config {
     }
 
     pub fn create_gen(&self) -> i64 {
-        SnowflakeIdBucket::new(self.machine_id, self.node_id).get_id()
+        SnowflakeIdBucket::new(self.machine_id, self.node_id).get_id() +
+            self.buffer_u8.fetch_add(1, Ordering::SeqCst) as i64
     }
 
     pub fn new() -> Self {
@@ -372,7 +379,8 @@ impl Config {
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
             machine_id: DEFAULT_MACHINE_ID,
-            node_id: DEFAULT_NODE_ID
+            node_id: DEFAULT_NODE_ID,
+            buffer_u8: AtomicU8::new(0)
         }
     }
 }
