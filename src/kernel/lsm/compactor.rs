@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use chrono::Local;
 use futures::future;
 use itertools::Itertools;
 use tokio::sync::RwLock;
@@ -13,7 +12,7 @@ use crate::kernel::lsm::ss_table::{LEVEL_0, Score, SsTable};
 
 pub(crate) type MergeShardingVec = Vec<Vec<CommandData>>;
 
-pub(crate) type ExpiredGenVec = Vec<u64>;
+pub(crate) type ExpiredGenVec = Vec<i64>;
 
 pub(crate) struct Compactor {
     manifest: Arc<RwLock<Manifest>>,
@@ -31,15 +30,13 @@ impl Compactor {
     /// 持久化immutable_table为SSTable
     pub(crate) async fn minor_compaction(&self,vec_keys: Vec<Vec<u8>>, vec_values: Vec<CommandData>) -> Result<()> {
         let mut manifest = self.manifest.write().await;
+        let gen = self.config.create_gen();
 
-        // 获取当前时间戳当gen
-        let time_stamp = Local::now().timestamp_nanos() as u64;
-        let io_handler = self.io_handler_factory.create(time_stamp)?;
-        let vec_ts_u8 = CommandCodec::encode_gen(time_stamp)?;
+        let io_handler = self.io_handler_factory.create(gen)?;
 
         // 将这些索引的key序列化后预先存入wal中作防灾准备
         // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
-        wal_put(&self.wal, vec_ts_u8, CommandCodec::encode_keys(&vec_keys)?);
+        wal_put(&self.wal, CommandCodec::encode_gen(gen)?, CommandCodec::encode_keys(&vec_keys)?);
         // 从内存表中将数据持久化为ss_table
         let ss_table = SsTable::create_for_immutable_table(&self.config
                                                            , io_handler
@@ -70,7 +67,8 @@ impl Compactor {
             // 并行创建SSTable
             let ss_table_futures = vec_sharding.iter()
                 .map(|sharding| {
-                    let io_handler = self.io_handler_factory.create(Local::now().timestamp_nanos() as u64).unwrap();
+                    let gen = self.config.create_gen();
+                    let io_handler = self.io_handler_factory.create(gen).unwrap();
                     SsTable::create_for_immutable_table(&self.config,
                                                         io_handler,
                                                         sharding,
@@ -120,7 +118,7 @@ impl Compactor {
     /// 真他妈完美
     async fn data_merge_and_sharding(vec_ss_table: &Vec<&SsTable>, file_size: usize) -> Result<MergeShardingVec>{
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
-        // TODO: 对SSTable做新鲜度的优化，以Gen为新鲜度依据在并发时容易产生问题
+        // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
         let map_futures = vec_ss_table.into_iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
             .map(|ss_table| ss_table.get_all_data());

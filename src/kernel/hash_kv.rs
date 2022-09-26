@@ -21,10 +21,10 @@ pub struct HashStore {
 /// 用于状态方面的管理
 pub(crate) struct Manifest {
     index: HashMap<Vec<u8>, CommandPos>,
-    current_gen: u64,
+    current_gen: i64,
     un_compacted: u64,
     compaction_threshold: u64,
-    io_handler_index: BTreeMap<u64, IOHandler>
+    io_handler_index: BTreeMap<i64, IOHandler>
 }
 
 impl HashStore {
@@ -286,11 +286,11 @@ impl Manifest {
         self.io_handler_index.get(&self.current_gen).unwrap()
     }
     /// 通过Gen获取指定的IOHandler
-    fn get_io_handler(&self, gen: &u64) -> Option<&IOHandler> {
+    fn get_io_handler(&self, gen: &i64) -> Option<&IOHandler> {
         self.io_handler_index.get(&gen)
     }
     /// 通过Gen获取指定的可变IOHandler
-    fn get_mut_io_handler(&mut self, gen: &u64) -> Option<&mut IOHandler> {
+    fn get_mut_io_handler(&mut self, gen: &i64) -> Option<&mut IOHandler> {
         self.io_handler_index.get_mut(&gen)
     }
     /// 判断Index中是否存在对应的Key
@@ -308,7 +308,7 @@ impl Manifest {
             .collect_vec()
     }
     /// 提升最新Gen位置
-    fn gen_add(&mut self, num: u64) {
+    fn gen_add(&mut self, num: i64) {
         self.current_gen += num;
     }
     /// 插入新的CommandPos
@@ -320,9 +320,9 @@ impl Manifest {
         self.io_handler_index.insert(io_handler.get_gen(), io_handler);
     }
     /// 保留压缩Gen及以上的IOHandler与文件，其余清除
-    fn retain(&mut self, expired_gen: u64, io_handler_factory: &IOHandlerFactory) -> Result<()> {
+    fn retain(&mut self, expired_gen: i64, io_handler_factory: &IOHandlerFactory) -> Result<()> {
         // 遍历过滤出小于压缩文件序号的文件号名收集为过期Vec
-        let stale_gens: HashSet<u64> = self.io_handler_index.keys()
+        let stale_gens: HashSet<i64> = self.io_handler_index.keys()
             .filter(|&&stale_gen| stale_gen < expired_gen)
             .cloned()
             .collect();
@@ -349,7 +349,7 @@ impl Manifest {
         self.un_compacted > self.compaction_threshold
     }
     /// 将Index中的CommandPos以最新为基准进行排序，由旧往新
-    fn sort_by_last_vec_mut(&mut self) -> (Vec<&mut CommandPos>, &BTreeMap<u64, IOHandler>) {
+    fn sort_by_last_vec_mut(&mut self) -> (Vec<&mut CommandPos>, &BTreeMap<i64, IOHandler>) {
         let vec_values = self.index.values_mut()
             .sorted_unstable_by(|a, b| {
                 match a.gen.cmp(&b.gen) {
@@ -363,7 +363,7 @@ impl Manifest {
     }
     /// 压缩前gen自增
     /// 用于数据压缩前将最新写入位置偏移至新位置
-    pub(crate) async fn compaction_increment(&mut self, factory: &IOHandlerFactory) -> Result<(u64, IOHandler)> {
+    pub(crate) async fn compaction_increment(&mut self, factory: &IOHandlerFactory) -> Result<(i64, IOHandler)> {
         // 将数据刷入硬盘防止丢失
         self.current_io_handler()
             .flush().await?;

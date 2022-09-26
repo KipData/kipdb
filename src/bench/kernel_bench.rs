@@ -1,5 +1,6 @@
 use chrono::Local;
 use criterion::{Criterion, criterion_group, criterion_main};
+use snowflake::SnowflakeIdBucket;
 use tempfile::TempDir;
 use kip_db::kernel::{KVStore, hash_kv::HashStore};
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
@@ -48,8 +49,8 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
     c.bench_function(&store_name_with_test::<T>("set value"), |b|
         b.to_async(&rt).iter(|| {
             async {
-                let timestamp = Local::now().timestamp_nanos() as u64;
-                store.set(&bincode::serialize(&timestamp).unwrap(), value1.clone()).await
+                let id = SnowflakeIdBucket::new(1, 1).get_id();
+                store.set(&bincode::serialize(&id).unwrap(), value1.clone()).await
                     .unwrap();
             }
         }));

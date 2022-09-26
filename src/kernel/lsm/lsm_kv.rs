@@ -2,6 +2,7 @@ use std::collections::{BTreeMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use async_trait::async_trait;
+use snowflake::SnowflakeIdBucket;
 use tokio::sync::{Mutex, oneshot, RwLock};
 use tokio::sync::oneshot::Sender;
 use tracing::{error, warn};
@@ -13,9 +14,9 @@ use crate::kernel::lsm::compactor::Compactor;
 use crate::kernel::lsm::ss_table::SsTable;
 use crate::kernel::Result;
 
-pub(crate) type LevelSlice = [Vec<u64>; 7];
+pub(crate) type LevelSlice = [Vec<i64>; 7];
 
-pub(crate) type SsTableMap = BTreeMap<u64, SsTable>;
+pub(crate) type SsTableMap = BTreeMap<i64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
@@ -28,6 +29,10 @@ pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
 pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
+
+pub(crate) const DEFAULT_MACHINE_ID: i32 = 1;
+
+pub(crate) const DEFAULT_NODE_ID: i32 = 1;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
@@ -170,7 +175,7 @@ impl LsmStore {
 
     /// 从Wal恢复SSTable数据
     /// 初始化失败时遍历wal的key并检测key是否为gen
-    async fn reload_for_wal(mem_table: &mut MemMap, wal: &HashStore, gen: u64) -> Result<()>{
+    async fn reload_for_wal(mem_table: &mut MemMap, wal: &HashStore, gen: i64) -> Result<()>{
         // 将SSTable持久化失败前预存入的指令键集合从wal中获取
         // 随后将每一条指令键对应的指令恢复到mem_table中
         warn!("[SsTable: {}][reload_from_wal]", gen);
@@ -267,11 +272,11 @@ impl LsmStore {
 pub(crate) struct CommandCodec;
 
 impl CommandCodec {
-    pub(crate) fn encode_gen(gen: u64) -> Result<Vec<u8>> {
+    pub(crate) fn encode_gen(gen: i64) -> Result<Vec<u8>> {
         Ok(bincode::serialize(&gen)?)
     }
 
-    pub(crate) fn decode_gen(key: &Vec<u8>) -> Result<u64> {
+    pub(crate) fn decode_gen(key: &Vec<u8>) -> Result<i64> {
         Ok(bincode::deserialize(key)?)
     }
 
@@ -302,6 +307,8 @@ pub struct Config {
     /// 并将确定范围的下一级SSTable再次对当前等级的SSTable进行范围判定，
     /// 找到最合理的上下级数据范围并压缩
     pub(crate) major_select_file_size: usize,
+    pub(crate) machine_id: i32,
+    pub(crate) node_id: i32,
 }
 
 impl Config {
@@ -341,6 +348,20 @@ impl Config {
         self
     }
 
+    pub fn machine_id(mut self, machine_id: i32) -> Self {
+        self.machine_id = machine_id;
+        self
+    }
+
+    pub fn node_id(mut self, node_id: i32) -> Self {
+        self.node_id = node_id;
+        self
+    }
+
+    pub fn create_gen(&self) -> i64 {
+        SnowflakeIdBucket::new(self.machine_id, self.node_id).get_id()
+    }
+
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
@@ -349,7 +370,9 @@ impl Config {
             part_size: DEFAULT_PART_SIZE,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
-            major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE
+            major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
+            machine_id: DEFAULT_MACHINE_ID,
+            node_id: DEFAULT_NODE_ID
         }
     }
 }

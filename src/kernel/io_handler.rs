@@ -17,7 +17,7 @@ pub struct IOHandlerFactory {
 
 impl IOHandlerFactory {
 
-    pub fn create(&self, gen: u64) -> Result<IOHandler> {
+    pub fn create(&self, gen: i64) -> Result<IOHandler> {
         let dir_path = Arc::clone(&self.dir_path);
 
         Ok(IOHandler::new(dir_path, gen)?)
@@ -30,7 +30,7 @@ impl IOHandlerFactory {
         Self { dir_path }
     }
 
-    pub fn clean(&self, gen: u64) -> Result<()>{
+    pub fn clean(&self, gen: i64) -> Result<()>{
         fs::remove_file(log_path(&self.dir_path, gen))?;
         Ok(())
     }
@@ -44,7 +44,7 @@ impl IOHandlerFactory {
 /// Writer是私有的
 /// 每个文件的写入是阻塞的
 pub struct IOHandler {
-    gen: u64,
+    gen: i64,
     dir_path: Arc<PathBuf>,
     writer: SyncWriter,
     reader: SyncReader
@@ -52,7 +52,7 @@ pub struct IOHandler {
 
 impl IOHandler {
 
-    pub fn new(dir_path: Arc<PathBuf>, gen: u64) -> Result<Self> {
+    pub fn new(dir_path: Arc<PathBuf>, gen: i64) -> Result<Self> {
         let path = log_path(&dir_path, gen);
 
         // 通过路径构造写入器
@@ -73,7 +73,7 @@ impl IOHandler {
         })
     }
 
-    pub fn get_gen(&self) -> u64 {
+    pub fn get_gen(&self) -> i64 {
         self.gen
     }
 

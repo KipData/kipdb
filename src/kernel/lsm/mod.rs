@@ -151,14 +151,14 @@ impl Manifest {
     }
 
     /// 删除指定的过期gen
-    pub(crate) fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &Vec<u64>) -> Result<()> {
+    pub(crate) fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &Vec<i64>) -> Result<()> {
         // 遍历过期Vec对数据进行旧文件删除
         for expired_gen in vec_expired_gen.iter() {
             self.ss_tables_map.remove(expired_gen);
             fs::remove_file(log_path(&self._path, *expired_gen))?;
         }
         // 将需要删除的Vec转换为HashSet方便使用retain方法
-        let set_expired_gen: HashSet<&u64> = vec_expired_gen.iter().collect();
+        let set_expired_gen: HashSet<&i64> = vec_expired_gen.iter().collect();
         // 将存储的Level表中含有该gen的SSTable一并删除
         for vec_level in &mut self.level_slice {
             vec_level.retain(|gen| !set_expired_gen.contains(gen));
@@ -167,15 +167,13 @@ impl Manifest {
         Ok(())
     }
 
-    pub(crate) fn get_level_vec(&self, level: usize) -> &Vec<u64> {
+    pub(crate) fn get_level_vec(&self, level: usize) -> &Vec<i64> {
         &self.level_slice[level]
     }
 
-    pub(crate) fn get_ss_table(&self, gen: &u64) -> Option<&SsTable> {
+    pub(crate) fn get_ss_table(&self, gen: &i64) -> Option<&SsTable> {
         self.ss_tables_map.get(&gen)
     }
-
-
 
     fn is_threshold_exceeded_major(&self, sst_size: usize) -> bool {
         self.level_slice[0].len() > sst_size
@@ -192,7 +190,7 @@ impl Manifest {
         Ok(None)
     }
 
-    pub(crate) fn get_ss_table_batch(&self, vec_gen: &Vec<u64>) -> Option<Vec<&SsTable>> {
+    pub(crate) fn get_ss_table_batch(&self, vec_gen: &Vec<i64>) -> Option<Vec<&SsTable>> {
         vec_gen.iter()
             .map(|gen| self.get_ss_table(gen))
             .collect::<Option<Vec<&SsTable>>>()
@@ -206,7 +204,7 @@ impl Manifest {
             .collect_vec()
     }
 
-    pub(crate) fn get_index(&self, level: usize, source_gen: u64) -> Option<usize> {
+    pub(crate) fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
         self.level_slice[level].iter()
             .enumerate()
             .find(|(_ , gen)| source_gen.eq(*gen))

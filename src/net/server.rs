@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use chrono::Local;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
@@ -87,8 +88,7 @@ impl Listener {
             };
 
             tokio::spawn(async move {
-                let id = snowflake::ProcessUniqueId::new();
-                info!("[Listener][New Connection][ID: {}][Ip Addr]: {}", &id, &addr);
+                info!("[Listener][New Connection][TimeStamp: {}][Ip Addr]: {}", Local::now(), &addr);
                 let start = Instant::now();
                 if let Err(err) = handler.run().await {
                     error!(cause = ?err,"[Listener][Handler Running Error]");

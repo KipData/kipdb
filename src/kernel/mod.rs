@@ -81,7 +81,7 @@ struct CommandPackage {
 /// len 命令长度
 #[derive(Debug, Copy, Clone)]
 struct CommandPos {
-    gen: u64,
+    gen: i64,
     pos: u64,
     len: usize,
 }
@@ -95,7 +95,7 @@ pub enum CommandData {
 
 impl CommandPos {
     /// 重写自身数据
-    pub fn change(&mut self, gen: u64, pos: u64, len: usize) {
+    pub fn change(&mut self, gen: i64, pos: u64, len: usize) {
         self.gen = gen;
         self.pos = pos;
         self.len = len;
@@ -240,7 +240,7 @@ impl CommandPackage {
             }
             let len_u8 = &zone[last_pos..pos];
             let len = Self::from_4_bit_with_start(len_u8);
-            if len < 1 {
+            if len < 1 || len > zone.len() {
                 break
             }
 
@@ -358,7 +358,7 @@ impl From<Option<Vec<u8>>> for CommandOption {
 }
 
 /// 现有日志文件序号排序
-async fn sorted_gen_list(path: &Path) -> Result<Vec<u64>> {
+async fn sorted_gen_list(path: &Path) -> Result<Vec<i64>> {
     // 读取文件夹路径
     // 获取该文件夹内各个文件的地址
     // 判断是否为文件并判断拓展名是否为log
@@ -366,14 +366,14 @@ async fn sorted_gen_list(path: &Path) -> Result<Vec<u64>> {
     //  去除.log后缀
     //  将文件名转换为u64
     // 对数组进行拷贝并收集
-    let mut gen_list: Vec<u64> = fs::read_dir(path)?
+    let mut gen_list: Vec<i64> = fs::read_dir(path)?
         .flat_map(|res| -> Result<_> { Ok(res?.path()) })
         .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
         .flat_map(|path| {
             path.file_name()
                 .and_then(OsStr::to_str)
                 .map(|s| s.trim_end_matches(".log"))
-                .map(str::parse::<u64>)
+                .map(str::parse::<i64>)
         })
         .flatten().collect();
     // 对序号进行排序
@@ -383,6 +383,6 @@ async fn sorted_gen_list(path: &Path) -> Result<Vec<u64>> {
 }
 
 /// 对文件夹路径填充日志文件名
-fn log_path(dir: &Path, gen: u64) -> PathBuf {
+fn log_path(dir: &Path, gen: i64) -> PathBuf {
     dir.join(format!("{}.log", gen))
 }

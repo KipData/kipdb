@@ -21,7 +21,7 @@ pub(crate) struct SsTable {
     // 文件IO操作器
     io_handler: IOHandler,
     // 文件路径
-    gen: u64,
+    gen: i64,
     // 数据范围索引
     score: Score
 }
@@ -181,7 +181,7 @@ impl SsTable {
         self.meta_info.version
     }
 
-    pub(crate) fn get_gen(&self) -> u64 {
+    pub(crate) fn get_gen(&self) -> i64 {
         self.gen
     }
 
@@ -218,7 +218,7 @@ impl SsTable {
     }
 
     /// 通过一组SSTable收集对应的Gen
-    pub(crate) fn collect_gen(vec_ss_table: Vec<&SsTable>) -> Result<Vec<u64>> {
+    pub(crate) fn collect_gen(vec_ss_table: Vec<&SsTable>) -> Result<Vec<i64>> {
         Ok(vec_ss_table.into_iter()
             .map(SsTable::get_gen)
             .collect())
