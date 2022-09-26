@@ -61,6 +61,8 @@ pub enum ConnectionError {
     SerdeMPEncode(#[cause] rmp_serde::encode::Error),
     #[fail(display = "{}", _0)]
     SerdeMPDecode(#[cause] rmp_serde::decode::Error),
+    #[fail(display = "{}", _0)]
+    KvStoreError(#[cause] KvsError),
 }
 
 impl From<io::Error> for ConnectionError {
@@ -120,5 +122,11 @@ impl From<Box<bincode::ErrorKind>> for ConnectionError {
 impl From<sled::Error> for KvsError {
     fn from(err: sled::Error) -> Self {
         KvsError::Sled(err)
+    }
+}
+
+impl From<KvsError> for ConnectionError {
+    fn from(err: KvsError) -> Self {
+        ConnectionError::KvStoreError(err)
     }
 }

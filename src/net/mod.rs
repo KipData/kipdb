@@ -14,7 +14,9 @@ pub type Result<T> = std::result::Result<T, ConnectionError>;
 #[derive(Serialize,Deserialize)]
 pub enum CommandOption {
     Cmd(CommandData),
+    VecCmd(Vec<CommandData>),
     Value(Vec<u8>),
+    ValueVec(Vec<Option<Vec<u8>>>),
     None
 }
 

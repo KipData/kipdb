@@ -1,6 +1,8 @@
 use clap::{Parser};
+use itertools::Itertools;
 use kip_db::cmd::Command;
 use kip_db::DEFAULT_PORT;
+use kip_db::kernel::CommandData;
 use kip_db::net::{Result, client::Client};
 
 #[derive(Parser, Debug)]
@@ -44,33 +46,81 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Set { key, value } => {
-            client.set(encode_key(key)?, encode_value_one(value)?).await?;
+            client.set(encode(key), encode(value)).await?;
             print!("Done!");
         }
         Command::Remove { key } => {
-            client.remove(encode_key(key)?).await?;
+            client.remove(encode(key)).await?;
             print!("Done!");
         }
         Command::Get { key } => {
-            if let Some(value) = client.get(encode_key(key)?).await? {
-                print!("\"{}\"", decode_value_one(value)?);
+            if let Some(value) = client.get(encode(key)).await? {
+                print!("\"{}\"", decode(value));
             } else {
                 print!("(Nil)");
             }
+        }
+        Command::BatchSet { batch } => {
+            let vec_batch_set = batch.into_iter()
+                .map(|cmd_str| {
+                    let coords:Vec<&str> = cmd_str.trim_matches(|p| p == '(' || p == ')' )
+                        .split('-')
+                        .collect();
+
+                    let key = coords[0].parse::<String>().unwrap();
+                    let value = coords[1].parse::<String>().unwrap();
+                    CommandData::Set {
+                        key: encode(key),
+                        value: encode(value)
+                    }
+                }).collect_vec();
+            batch_run_and_print(&mut client, vec_batch_set, "Done!").await?;
+        }
+        Command::BatchRemove { keys } => {
+            let vec_batch_rm = keys.into_iter()
+                .map(|key|
+                    CommandData::Remove {
+                        key: encode(key)
+                    }).collect_vec();
+            batch_run_and_print(&mut client, vec_batch_rm, "Done!").await?;
+        }
+        Command::BatchGet { keys } => {
+            let vec_batch_get = keys.into_iter()
+                .map(|key|
+                    CommandData::Get {
+                        key: encode(key)
+                    }).collect_vec();
+            batch_run_and_print(&mut client, vec_batch_get, "Nil").await?;
         }
     }
 
     Ok(())
 }
 
-fn encode_key(key: String) -> Result<Vec<u8>>{
-    Ok(bincode::serialize(&key)?)
+async fn batch_run_and_print(mut client: &mut Client, vec_batch: Vec<CommandData>, default: &str) -> Result<()> {
+    let vec_result = batch_run(&mut client, vec_batch).await?
+        .into_iter()
+        .map(|option| match option {
+            None => { default.to_string() }
+            Some(value) => { value }
+        })
+        .collect_vec();
+    print!("{:?}", vec_result);
+
+    Ok(())
 }
 
-fn encode_value_one(value: String) -> Result<Vec<u8>>{
-    Ok(bincode::serialize(&value)?)
+async fn batch_run(client: &mut Client, vec_batch_get: Vec<CommandData>) -> Result<Vec<Option<String>>> {
+    Ok(client.batch(vec_batch_get).await?
+        .into_iter()
+        .map(|option_vec_u8| option_vec_u8.map(decode))
+        .collect_vec())
 }
 
-fn decode_value_one(value: Vec<u8>) -> Result<String> {
-    Ok(bincode::deserialize(&*value)?)
+fn encode(value: String) -> Vec<u8>{
+    bincode::serialize(&value).unwrap()
+}
+
+fn decode(value: Vec<u8>) -> String {
+    bincode::deserialize(&*value).unwrap()
 }

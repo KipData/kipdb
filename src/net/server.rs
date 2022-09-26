@@ -5,7 +5,7 @@ use chrono::Local;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use crate::error::ConnectionError;
 use crate::KvsError;
 use crate::kernel::KVStore;
@@ -138,8 +138,6 @@ impl Handler {
 
             return match option {
                 CommandOption::Cmd(cmd) => {
-                    debug!(?cmd);
-
                     let option = match cmd.apply(&*self.kv_store).await {
                         Ok(option) => option,
                         Err(err) => {
@@ -152,7 +150,13 @@ impl Handler {
 
                     self.connection.write(option).await?;
 
-                    return Ok(());
+                    Ok(())
+                }
+                CommandOption::VecCmd(vec_cmd) => {
+                    let option = CommandOption::ValueVec(self.kv_store.batch_order(vec_cmd).await?);
+                    self.connection.write(option).await?;
+
+                    Ok(())
                 }
                 _ => Err(ConnectionError::WrongInstruction)
             }
