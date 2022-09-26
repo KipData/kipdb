@@ -401,15 +401,15 @@ fn test_lsm_major_compactor() -> Result<()> {
         // 给一个非常低的触发阈值
         // 开始疯狂触发压缩
         let config = Config::new().dir_path(temp_dir.path().into())
-            .major_threshold_with_sst_size(5)
+            .major_threshold_with_sst_size(3)
             .sst_file_size(10)
-            .minor_threshold_with_data_size(5);
+            .minor_threshold_with_data_size(3);
 
         let mut rng = rand::thread_rng();
         let kv_store = LsmStore::open_with_config(config).await?;
         let mut vec_key = Vec::new();
 
-        for _ in 0..50 {
+        for _ in 0..20 {
             let password: String = (0..rng.gen::<u16>())
                 .map(|_| {
                     let idx = rng.gen_range(0..CHARSET.len());
