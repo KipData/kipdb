@@ -88,7 +88,7 @@ impl Listener {
             };
 
             tokio::spawn(async move {
-                info!("[Listener][New Connection][TimeStamp: {}][Ip Addr]: {}", Local::now(), &addr);
+                info!("[Listener][New Connection][Time: {}][Ip Addr]: {}", Local::now(), &addr);
                 let start = Instant::now();
                 if let Err(err) = handler.run().await {
                     error!(cause = ?err,"[Listener][Handler Running Error]");
@@ -152,8 +152,12 @@ impl Handler {
 
                     Ok(())
                 }
-                CommandOption::VecCmd(vec_cmd) => {
-                    let option = CommandOption::ValueVec(self.kv_store.batch_order(vec_cmd).await?);
+                CommandOption::VecCmd(vec_cmd, is_parallel) => {
+                    let vec_value = match is_parallel {
+                        true => { self.kv_store.batch_parallel(vec_cmd).await? }
+                        false => { self.kv_store.batch_order(vec_cmd).await? }
+                    };
+                    let option = CommandOption::ValueVec(vec_value);
                     self.connection.write(option).await?;
 
                     Ok(())

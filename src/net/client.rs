@@ -40,8 +40,8 @@ impl Client {
     }
 
     /// 批量处理
-    pub async fn batch(&mut self, batch_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>>{
-        match self.send_cmd(CommandOption::VecCmd(batch_cmd)).await? {
+    pub async fn batch(&mut self, batch_cmd: Vec<CommandData>, is_parallel: bool) -> Result<Vec<Option<Vec<u8>>>>{
+        match self.send_cmd(CommandOption::VecCmd(batch_cmd, is_parallel)).await? {
             CommandOption::ValueVec(vec) => Ok(vec),
             _ => Ok(Vec::new())
         }

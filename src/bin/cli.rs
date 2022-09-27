@@ -1,5 +1,6 @@
 use clap::{Parser};
 use itertools::Itertools;
+use tracing::{error, info};
 use kip_db::cmd::Command;
 use kip_db::DEFAULT_PORT;
 use kip_db::kernel::CommandData;
@@ -46,79 +47,102 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Set { key, value } => {
-            client.set(encode(key), encode(value)).await?;
+            client.set(encode(&key), encode(&value)).await?;
             print!("Done!");
         }
         Command::Remove { key } => {
-            client.remove(encode(key)).await?;
+            client.remove(encode(&key)).await?;
             print!("Done!");
         }
         Command::Get { key } => {
-            if let Some(value) = client.get(encode(key)).await? {
+            if let Some(value) = client.get(encode(&key)).await? {
                 print!("\"{}\"", decode(value));
             } else {
                 print!("(Nil)");
             }
         }
         Command::BatchSet { batch } => {
-            let vec_batch_set = batch.into_iter()
-                .map(|cmd_str| {
-                    let coords:Vec<&str> = cmd_str.trim_matches(|p| p == '(' || p == ')' )
-                        .split('-')
-                        .collect();
-
-                    let key = coords[0].parse::<String>().unwrap();
-                    let value = coords[1].parse::<String>().unwrap();
-                    CommandData::Set {
-                        key: encode(key),
-                        value: encode(value)
-                    }
-                }).collect_vec();
-            batch_run_and_print(&mut client, vec_batch_set, "Done!").await?;
+            batch_set(&mut client, batch, false).await
         }
         Command::BatchRemove { keys } => {
             let vec_batch_rm = keys.into_iter()
                 .map(|key|
                     CommandData::Remove {
-                        key: encode(key)
+                        key: encode(&key)
                     }).collect_vec();
-            batch_run_and_print(&mut client, vec_batch_rm, "Done!").await?;
+            batch_run_and_print(&mut client, vec_batch_rm, "Done!", false).await?;
         }
         Command::BatchGet { keys } => {
             let vec_batch_get = keys.into_iter()
                 .map(|key|
                     CommandData::Get {
-                        key: encode(key)
+                        key: encode(&key)
                     }).collect_vec();
-            batch_run_and_print(&mut client, vec_batch_get, "Nil").await?;
+            batch_run_and_print(&mut client, vec_batch_get, "Nil", false).await?;
+        }
+        Command::BatchSetParallel { batch } => {
+            batch_set(&mut client, batch, true).await
+        }
+        Command::BatchRemoveParallel { keys } => {
+            let vec_batch_rm = keys.into_iter()
+                .map(|key|
+                    CommandData::Remove {
+                        key: encode(&key)
+                    }).collect_vec();
+            batch_run_and_print(&mut client, vec_batch_rm, "Done!", true).await?;
+        }
+        Command::BatchGetParallel { keys } => {
+            let vec_batch_get = keys.into_iter()
+                .map(|key|
+                    CommandData::Get {
+                        key: encode(&key)
+                    }).collect_vec();
+            batch_run_and_print(&mut client, vec_batch_get, "Nil", true).await?;
         }
     }
 
     Ok(())
 }
 
-async fn batch_run_and_print(mut client: &mut Client, vec_batch: Vec<CommandData>, default: &str) -> Result<()> {
-    let vec_result = batch_run(&mut client, vec_batch).await?
+async fn batch_set(mut client: &mut Client, batch: Vec<String>, is_parallel: bool) {
+    if batch.len() % 2 == 0 {
+        let (keys, values) = batch.split_at(batch.len() / 2);
+        let vec_batch_set = keys.iter().zip(values)
+            .into_iter()
+            .map(|(key, value)| {
+                CommandData::Set {
+                    key: encode(key),
+                    value: encode(value)
+                }
+            }).collect_vec();
+        batch_run_and_print(&mut client, vec_batch_set, "Done!", is_parallel).await?;
+    } else {
+        error!("BatchSet len is:{}, key-value cannot be aligned", batch.len())
+    }
+}
+
+async fn batch_run_and_print(mut client: &mut Client, vec_batch: Vec<CommandData>, default_null: &str, is_parallel: bool) -> Result<()> {
+    let vec_result = batch_run(&mut client, vec_batch, is_parallel).await?
         .into_iter()
         .map(|option| match option {
-            None => { default.to_string() }
+            None => { default_null.to_string() }
             Some(value) => { value }
         })
         .collect_vec();
-    print!("{:?}", vec_result);
+    info!("{:?}", vec_result);
 
     Ok(())
 }
 
-async fn batch_run(client: &mut Client, vec_batch_get: Vec<CommandData>) -> Result<Vec<Option<String>>> {
-    Ok(client.batch(vec_batch_get).await?
+async fn batch_run(client: &mut Client, vec_batch_get: Vec<CommandData>, is_parallel: bool) -> Result<Vec<Option<String>>> {
+    Ok(client.batch(vec_batch_get, is_parallel).await?
         .into_iter()
         .map(|option_vec_u8| option_vec_u8.map(decode))
         .collect_vec())
 }
 
-fn encode(value: String) -> Vec<u8>{
-    bincode::serialize(&value).unwrap()
+fn encode(value: &String) -> Vec<u8>{
+    bincode::serialize(value).unwrap()
 }
 
 fn decode(value: Vec<u8>) -> String {
