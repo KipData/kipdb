@@ -11,7 +11,7 @@ use kip_db::net::{Result, client::Client};
 name = "KipDB-Cli",
 version,
 author,
-about = "Issue Redis commands"
+about = "Issue KipDB Commands"
 )]
 struct Cli {
     #[clap(subcommand)]
