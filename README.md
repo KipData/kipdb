@@ -1,74 +1,84 @@
-# KipDB
+# KipDB - Keep it Public DB
 
-#### 介绍
-网络异步交互、零拷贝的轻量级KV数据库
+[Kiss](https://zh.m.wikipedia.org/zh/KISS%E5%8E%9F%E5%88%99) First Data Base
+## 快速上手 🤞
+```rust
+// 指定文件夹以开启一个KvStore
+let kip_db = LsmStore::open("/tmp/learning materials").await?;
 
-基于PingCAP课程talent-plan
-课程地址:https://github.com/pingcap/talent-plan/tree/master/courses/rust
+// 插入数据
+kip_db.set(&vec![b'k'], vec![b'v']).await?;
+// 获取数据
+kip_db.get(&vec![b'k']).await?;
+// 删除数据
+kip_db.remove(&vec![b'k']).await?;
 
-##### 内置多种持久化内核
+// 强制数据刷入硬盘
+kip_db.flush().await?;
+
+// 关闭内核(关闭，但没完全关闭 仅结束前处理)
+kip_db.shut_down().await?;
+```
+
+## 内置多种持久化内核👍
+- LsmStore: 基于Lsm，使用Leveled Compaction策略(主要内核)
 - HashStore: 基于哈希
 - SledStore: 基于Sled数据库
 
-#### 架构
+### 操作示例⌨️
+``` shell
+PS D:\Workspace\kould\KipDB\target\release> ./cli --help
+KipDB-Cli 0.1.0
+Kould <2435992353@qq.com>
+Issue KipDB Commands
+
+USAGE:
+    cli.exe [OPTIONS] <SUBCOMMAND>
+OPTIONS:
+    -h, --help                   Print help information
+        --hostname <hostname>    [default: 127.0.0.1]
+        --port <PORT>            [default: 6333]
+SUBCOMMANDS:rsion                Print version information
+    batch-get                
+    batch-get-parallel       
+    batch-remove             
+    batch-remove-parallel    
+    batch-set                
+    batch-set-parallel
+    get
+    help                     Print this message or the help of the given subcommmand(s)
+    remove
+    set
+
+PS D:\Workspace\kould\KipDB\target\release> ./cli batch-set kould kipdb welcome !
+2022-09-27T09:50:11.768931Z  INFO cli: ["Done!", "Done!"]
+
+PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb          
+2022-09-27T09:50:32.753919Z  INFO cli: ["welcome", "!"]
 ```
-|- src
-    |- bench 性能基准测试
-        |- core_bench.rs 内核性能基准测试
-    |- bin 二进制
-        |- cli.rs 客户端
-        |- server.rs 服务端
-    |- cmd 指令
-        |- mod.rs 指令定义
-    |- core 内核
-        |- hash_kv.rs 基于Hash的KVStore
-        |- mod.rs KVStore Trait与读写操作封装
-    |- net 网络
-        |- client.rs 网络客户端
-        |- codec.rs 数据帧编码器
-        |- connection.rs 网络连接
-        |- mod.rs 指令网络定义
-        |- server.rs 网络监听服务端
-    |- config.rs 预留的配置文件
-    |- error.rs 错误定义
-    |- lib.rs 模块管理
-```
 
-### 使用说明
-#### 拉取代码编译
-1. 克隆该仓库
-  - https://github.com/KKould/KipDB.git
-2. 运行编译指令(需要安装rust环境)
-  - cargo build --release
-3. 进入target/release目录下获取执行文件
-  - server.exe 和 cli.exe (window平台为例)
-#### 执行操作
-  - 运行server服务端
-    - ./server 默认端口为6333
-    - ./server -help 可以查看指令详情
-  - 使用cli客户端进行指令操作
-    - ./cli set key1 value1 (示例)
-#### 操作示例
-  - ![](./static/img/test1.png)
-
-
-
-#### 参与贡献
-
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
-
-
-#### Bench测试
-
-- **执行性能基准测试**
-  - cargo bench
-- **性能评测**
-  - ##### Criterion性能图表
-    - ![](./static/img/bench_set1.png)
-    - ![](./static/img/bench1.png)
-
-
-#### 交流QQ群: 535877318
+## Features🌠
+- Marjor Compation 
+  - 多级递增循环压缩
+  - SSTable锁
+    - 避免并行压缩时数据范围重复
+- KVStore
+  - 参考Sled增加api
+    - size_of_disk
+    - clear
+    - contains_key
+    - len
+    - ...
+- SSTable
+  - 校验和
+    - 用于校验数据是否正常
+  - 布隆过滤器
+    - 加快获取键值的速度
+  - MetaBlock区
+    - 用于存储统计数据布隆过滤器的存放
+  - 数据压缩
+- Cache
+  - 加快数据读取，避免冗余硬盘读取IO
+- Manifest
+  - 多版本
+  - 持久化
