@@ -10,8 +10,6 @@ use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 use crate::KvsError;
 
-pub(crate) const LEVEL_0: u64 = 0;
-
 /// SSTable
 pub(crate) struct SsTable {
     // 表索引信息
@@ -238,7 +236,7 @@ impl SsTable {
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: u64) -> Result<Self> {
+    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: usize) -> Result<Self> {
         // 获取数据的Key涵盖范围
         let score = Score::from_vec_cmd_data(vec_mem_data)?;
         // 获取地址
@@ -269,7 +267,7 @@ impl SsTable {
 
         // 将以上持久化信息封装为MetaInfo
         let meta_info = MetaInfo{
-            level,
+            level: level as u64,
             version: 0,
             data_len: data_part_len as u64,
             index_len: sparse_index_len as u64,

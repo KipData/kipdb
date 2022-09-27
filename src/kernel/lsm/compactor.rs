@@ -8,7 +8,9 @@ use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
 use crate::kernel::lsm::Manifest;
-use crate::kernel::lsm::ss_table::{LEVEL_0, Score, SsTable};
+use crate::kernel::lsm::ss_table::{Score, SsTable};
+
+pub(crate) const LEVEL_0: usize = 0;
 
 /// 数据分片集
 /// 包含对应分片的Gen与数据
@@ -84,7 +86,7 @@ impl Compactor {
                     SsTable::create_for_immutable_table(&self.config,
                                                         io_handler,
                                                         sharding,
-                                                        level as u64 + 1)
+                                                        level + 1)
                 });
             let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
 
@@ -102,7 +104,7 @@ impl Compactor {
         let major_select_file_size = self.config.major_select_file_size;
 
         if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
-            let mut vec_ss_table_l_1 =
+            let vec_ss_table_l_1 =
                 manifest.get_meet_score_ss_tables(next_level, &Score::fusion_from_vec_ss_table(&vec_ss_table)?);
 
             let index = SsTable::first_index_with_level(&vec_ss_table_l_1, &manifest, next_level);
