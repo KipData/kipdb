@@ -55,6 +55,19 @@ impl Compactor {
         Ok(())
     }
 
+    /// Major压缩，负责将不同Level之间的数据向下层压缩转移
+    /// 目前Major压缩的大体步骤是
+    /// 1、获取manifest读锁，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
+    /// 2、vec_ss_table_l的每个SSTable中的Score属性进行融合，并以此获取下一Level与该Score相交的SSTable，命名为vec_ss_table_l_1
+    /// 3、获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
+    /// 4、vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<CommandData>
+    /// 5、释放manifest读锁
+    /// 6、并行将每个分片各自生成SSTable
+    /// 6、获取manifest写锁
+    /// 7、生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
+    /// 8、释放manifest写锁
+    /// TODO: 多级递增循环压缩
+    /// TODO: SSTable锁,避免并行压缩时数据范围重复
     pub(crate) async fn major_compaction(&self, level: usize) -> Result<()> {
         if level > 6 {
             return Err(KvsError::LevelOver);
@@ -63,8 +76,6 @@ impl Compactor {
         let file_size = self.config.sst_file_size;
         if let Some((index, vec_expire_gen, vec_sharding))
                                             = self.data_loading_with_level(level, file_size).await? {
-
-            let mut manifest = self.manifest.write().await;
 
             // 并行创建SSTable
             let ss_table_futures = vec_sharding.iter()
@@ -77,6 +88,7 @@ impl Compactor {
                 });
             let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
 
+            let mut manifest = self.manifest.write().await;
             manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index);
             manifest.retain_with_vec_gen_and_level(&vec_expire_gen)?;
         }
@@ -95,18 +107,19 @@ impl Compactor {
 
             let index = SsTable::first_index_with_level(&vec_ss_table_l_1, &manifest, next_level);
 
-            let vec_ss_table_l = match Score::fusion_from_vec_ss_table(&vec_ss_table_l_1) {
+            let vec_ss_table_final = match Score::fusion_from_vec_ss_table(&vec_ss_table_l_1) {
                 Ok(score) => manifest.get_meet_score_ss_tables(level, &score),
                 Err(_) => vec_ss_table
-            };
-            vec_ss_table_l_1.extend(vec_ss_table_l);
+            }.into_iter()
+                .chain(vec_ss_table_l_1)
+                .collect_vec();
 
             // 数据合并并切片
             let vec_merge_sharding =
-                Self::data_merge_and_sharding(&vec_ss_table_l_1, file_size, &self.config).await?;
+                Self::data_merge_and_sharding(&vec_ss_table_final, file_size, &self.config).await?;
 
             // 收集需要清除的SSTable
-            let vec_expire_gen = SsTable::collect_gen(vec_ss_table_l_1)?;
+            let vec_expire_gen = SsTable::collect_gen(vec_ss_table_final)?;
 
             Ok(Some((index, vec_expire_gen, vec_merge_sharding)))
         } else {

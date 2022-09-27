@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::BatchSet { batch } => {
-            batch_set(&mut client, batch, false).await
+            batch_set(&mut client, batch, false).await?
         }
         Command::BatchRemove { keys } => {
             let vec_batch_rm = keys.into_iter()
@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
             batch_run_and_print(&mut client, vec_batch_get, "Nil", false).await?;
         }
         Command::BatchSetParallel { batch } => {
-            batch_set(&mut client, batch, true).await
+            batch_set(&mut client, batch, true).await?
         }
         Command::BatchRemoveParallel { keys } => {
             let vec_batch_rm = keys.into_iter()
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn batch_set(mut client: &mut Client, batch: Vec<String>, is_parallel: bool) {
+async fn batch_set(mut client: &mut Client, batch: Vec<String>, is_parallel: bool) -> Result<()> {
     if batch.len() % 2 == 0 {
         let (keys, values) = batch.split_at(batch.len() / 2);
         let vec_batch_set = keys.iter().zip(values)
@@ -119,6 +119,8 @@ async fn batch_set(mut client: &mut Client, batch: Vec<String>, is_parallel: boo
     } else {
         error!("BatchSet len is:{}, key-value cannot be aligned", batch.len())
     }
+
+    Ok(())
 }
 
 async fn batch_run_and_print(mut client: &mut Client, vec_batch: Vec<CommandData>, default_null: &str, is_parallel: bool) -> Result<()> {
@@ -146,5 +148,5 @@ fn encode(value: &String) -> Vec<u8>{
 }
 
 fn decode(value: Vec<u8>) -> String {
-    bincode::deserialize(&*value).unwrap()
+    bincode::deserialize(value.as_slice()).unwrap()
 }
