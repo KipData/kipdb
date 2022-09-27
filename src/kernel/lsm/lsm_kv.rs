@@ -33,6 +33,8 @@ pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
 
 pub(crate) const DEFAULT_MACHINE_ID: i32 = 1;
 
+pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 100;
+
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
@@ -308,6 +310,8 @@ pub struct Config {
     pub(crate) major_select_file_size: usize,
     /// 节点Id
     pub(crate) node_id: i32,
+    /// 每级SSTable数量倍率
+    pub(crate) level_sst_magnification: usize,
     /// 用于ID生成的原子缓冲
     /// 避免极端情况下，SSTable创建重复问题并保持时间有序性
     pub(crate) buffer_i32: AtomicI32
@@ -355,6 +359,11 @@ impl Config {
         self
     }
 
+    pub fn level_sst_magnification(mut self, level_sst_magnification: usize) -> Self {
+        self.level_sst_magnification = level_sst_magnification;
+        self
+    }
+
     pub fn create_gen(&self) -> i64 {
         SnowflakeIdBucket::new(self.node_id, self.buffer_i32.fetch_add(1, Ordering::SeqCst))
             .get_id()
@@ -370,6 +379,7 @@ impl Config {
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
             node_id: DEFAULT_MACHINE_ID,
+            level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
             buffer_i32: AtomicI32::new(0)
         }
     }
@@ -389,11 +399,7 @@ pub(crate) fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>) {
 #[test]
 fn test_lsm_major_compactor() -> Result<()> {
     use tempfile::TempDir;
-    use rand::Rng;
-
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-                            abcdefghijklmnopqrstuvwxyz
-                            0123456789)(*&^%$#@!~";
+    use chrono::Local;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
@@ -403,22 +409,17 @@ fn test_lsm_major_compactor() -> Result<()> {
         let config = Config::new().dir_path(temp_dir.path().into())
             .major_threshold_with_sst_size(3)
             .sst_file_size(10)
+            .level_sst_magnification(10)
             .minor_threshold_with_data_size(3);
 
-        let mut rng = rand::thread_rng();
         let kv_store = LsmStore::open_with_config(config).await?;
         let mut vec_key = Vec::new();
 
-        for _ in 0..20 {
-            let password: String = (0..rng.gen::<u16>())
-                .map(|_| {
-                    let idx = rng.gen_range(0..CHARSET.len());
-                    CHARSET[idx] as char
-                })
-                .collect();
-            let vec_u8 = rmp_serde::to_vec(&password).unwrap();
+        for _ in 0..300 {
+            let timestamp = Local::now().timestamp_nanos() as u64;
+            let vec_u8 = rmp_serde::to_vec(&timestamp).unwrap();
             kv_store.set(&vec_u8, vec_u8.clone()).await?;
-            vec_key.push(password);
+            vec_key.push(timestamp);
         }
         kv_store.flush().await?;
         for key in vec_key {

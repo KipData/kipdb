@@ -175,8 +175,8 @@ impl Manifest {
         self.ss_tables_map.get(&gen)
     }
 
-    fn is_threshold_exceeded_major(&self, sst_size: usize) -> bool {
-        self.level_slice[0].len() > sst_size
+    fn is_threshold_exceeded_major(&self, sst_size: usize, level: usize, sst_magnification: usize) -> bool {
+        self.level_slice[level].len() > (sst_size * sst_magnification * (level + 1))
     }
 
     /// 使用Key从现有SSTables中获取对应的数据
@@ -197,7 +197,7 @@ impl Manifest {
     }
 
     pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score) -> Vec<&SsTable> {
-        self.get_level_vec(level + 1).iter()
+        self.get_level_vec(level).iter()
             .map(|gen| self.get_ss_table(gen).unwrap())
             .filter(|ss_table| ss_table.get_score()
                 .meet(score))

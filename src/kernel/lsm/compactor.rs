@@ -48,11 +48,9 @@ impl Compactor {
                                                            , LEVEL_0).await?;
         manifest.insert_ss_table_with_index(ss_table, 0);
 
-        if manifest.is_threshold_exceeded_major(self.config.major_threshold_with_sst_size) {
-            drop(manifest);
-            if let Err(err) = self.major_compaction(0).await {
-                error!("[LsmStore][major_compaction][error happen]: {:?}", err);
-            }
+        drop(manifest);
+        if let Err(err) = self.major_compaction(LEVEL_0).await {
+            error!("[LsmStore][major_compaction][error happen]: {:?}", err);
         }
         Ok(())
     }
@@ -68,31 +66,40 @@ impl Compactor {
     /// 6、获取manifest写锁
     /// 7、生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
     /// 8、释放manifest写锁
-    /// TODO: 多级递增循环压缩
+    ///
+    /// 经过压缩测试，Level 1的SSTable总是较多，根据原理推断：
+    /// Level0的Key基本是无序的，容易生成大量的SSTable至Level1
+    /// 而Level1-7的Key排布有序，故转移至下一层的SSTable数量较小
+    /// 因此大量数据压缩的情况下Level 1的SSTable数量会较多
     /// TODO: SSTable锁,避免并行压缩时数据范围重复
-    pub(crate) async fn major_compaction(&self, level: usize) -> Result<()> {
+    pub(crate) async fn major_compaction(&self, mut level: usize) -> Result<()> {
         if level > 6 {
             return Err(KvsError::LevelOver);
         }
+        let config = &self.config;
+        let file_size = config.sst_file_size;
 
-        let file_size = self.config.sst_file_size;
-        if let Some((index, vec_expire_gen, vec_sharding))
-                                            = self.data_loading_with_level(level, file_size).await? {
+        while level < 7 {
+            if let Some((index, vec_expire_gen, vec_sharding))
+                        = self.data_loading_with_level(level, file_size).await? {
 
-            // 并行创建SSTable
-            let ss_table_futures = vec_sharding.iter()
-                .map(|(gen, sharding)| {
-                    let io_handler = self.io_handler_factory.create(gen.clone()).unwrap();
-                    SsTable::create_for_immutable_table(&self.config,
-                                                        io_handler,
-                                                        sharding,
-                                                        level + 1)
-                });
-            let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
+                // 并行创建SSTable
+                let ss_table_futures = vec_sharding.iter()
+                    .map(|(gen, sharding)| {
+                        let io_handler = self.io_handler_factory.create(gen.clone()).unwrap();
+                        SsTable::create_for_immutable_table(&config,
+                                                            io_handler,
+                                                            sharding,
+                                                            level + 1)
+                    });
+                let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
 
-            let mut manifest = self.manifest.write().await;
-            manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index);
-            manifest.retain_with_vec_gen_and_level(&vec_expire_gen)?;
+                let mut manifest = self.manifest.write().await;
+                manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index);
+                manifest.retain_with_vec_gen_and_level(&vec_expire_gen)?;
+
+                level += 1;
+            } else { break }
         }
         Ok(())
     }
@@ -100,8 +107,16 @@ impl Compactor {
     /// 通过Level进行归并数据加载
     async fn data_loading_with_level(&self, level: usize, file_size: usize) -> Result<Option<(usize, ExpiredGenVec, MergeShardingVec)>> {
         let manifest = self.manifest.read().await;
+        let config = &self.config;
         let next_level = level + 1;
         let major_select_file_size = self.config.major_select_file_size;
+
+        // 如果该Level的SSTables数量尚未越出阈值则提取返回空
+        if level > 5 || !manifest.is_threshold_exceeded_major(config.major_threshold_with_sst_size,
+                                                level,
+                                                config.level_sst_magnification) {
+            return Ok(None);
+        }
 
         if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
             let vec_ss_table_l_1 =
