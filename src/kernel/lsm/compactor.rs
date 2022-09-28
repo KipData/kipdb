@@ -210,21 +210,21 @@ impl Compactor {
 
 }
 
-#[test]
-fn test_sharding() -> Result<()> {
-    tokio_test::block_on(async move {
-        let mut vec_data_1 = Vec::new();
-        for _ in 0..101 {
-            vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
-        }
-
-        let vec_sharding_1 =
-            Compactor::data_sharding(vec_data_1, 10, &Config::new()).await;
-        assert_eq!(vec_sharding_1.len(), 21);
-
-        Ok(())
-    })
-}
+// #[test]
+// fn test_sharding() -> Result<()> {
+//     tokio_test::block_on(async move {
+//         let mut vec_data_1 = Vec::new();
+//         for _ in 0..101 {
+//             vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
+//         }
+//
+//         let vec_sharding_1 =
+//             Compactor::data_sharding(vec_data_1, 10, &Config::new()).await;
+//         assert_eq!(vec_sharding_1.len(), 21);
+//
+//         Ok(())
+//     })
+// }
 
 impl Clone for Compactor {
     fn clone(&self) -> Self {

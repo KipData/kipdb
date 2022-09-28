@@ -396,38 +396,38 @@ fn log_path(dir: &Path, gen: i64) -> PathBuf {
     dir.join(format!("{}.log", gen))
 }
 
-#[test]
-fn test_cmd_len() -> Result<()>{
-    use tracing::info;
-
-    let data_big_p = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-                            abcdefghijklmnopqrstuvwxyz
-                            0123456789)(*&^%$#@!~aopsdjqwpejopwqnapodfjcposzpodadqwpempqownponrpqwojerpoqwepqmweop
-                            qwejpqowjepoqwjeoqwepoq".to_vec(), vec![b'1']);
-
-    let data_big = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-                            abcdefghijklmnopqrstuvwxyz
-                            0123456789)(*&^%$#@!~".to_vec(), vec![b'1']);
-
-    let data_middle = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-                            abcd".to_vec(), vec![b'1']);
-
-    let data_smail = CommandData::set(vec![b'1'], vec![b'1']);
-
-    let data_smail_len = data_smail.get_data_len_for_rmp();
-    let data_middle_len = data_middle.get_data_len_for_rmp();
-    let data_big_len = data_big.get_data_len_for_rmp();
-    let data_big_p_len = data_big_p.get_data_len_for_rmp();
-    let data0_len = rmp_serde::to_vec(&CommandData::get(vec![]))?.len();
-    let data1_len = rmp_serde::to_vec(&data_smail)?.len() - data_smail_len;
-    let data2_len = rmp_serde::to_vec(&data_middle)?.len() - data_middle_len;
-    let data3_len = rmp_serde::to_vec(&data_big)?.len() - data_big_len;
-    let data4_len = rmp_serde::to_vec(&data_big_p)?.len() - data_big_p_len;
-    let cmd_len = vec![data0_len, data1_len, data2_len, data3_len, data4_len].into_iter()
-        .counts().into_iter()
-        .max_by_key(|(_, count)| count.clone())
-        .map(|(len, _)| len).unwrap();
-    info!("{}", cmd_len);
-
-    Ok(())
-}
+// #[test]
+// fn test_cmd_len() -> Result<()>{
+//     use tracing::info;
+//
+//     let data_big_p = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
+//                             abcdefghijklmnopqrstuvwxyz
+//                             0123456789)(*&^%$#@!~aopsdjqwpejopwqnapodfjcposzpodadqwpempqownponrpqwojerpoqwepqmweop
+//                             qwejpqowjepoqwjeoqwepoq".to_vec(), vec![b'1']);
+//
+//     let data_big = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
+//                             abcdefghijklmnopqrstuvwxyz
+//                             0123456789)(*&^%$#@!~".to_vec(), vec![b'1']);
+//
+//     let data_middle = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
+//                             abcd".to_vec(), vec![b'1']);
+//
+//     let data_smail = CommandData::set(vec![b'1'], vec![b'1']);
+//
+//     let data_smail_len = data_smail.get_data_len_for_rmp();
+//     let data_middle_len = data_middle.get_data_len_for_rmp();
+//     let data_big_len = data_big.get_data_len_for_rmp();
+//     let data_big_p_len = data_big_p.get_data_len_for_rmp();
+//     let data0_len = rmp_serde::to_vec(&CommandData::get(vec![]))?.len();
+//     let data1_len = rmp_serde::to_vec(&data_smail)?.len() - data_smail_len;
+//     let data2_len = rmp_serde::to_vec(&data_middle)?.len() - data_middle_len;
+//     let data3_len = rmp_serde::to_vec(&data_big)?.len() - data_big_len;
+//     let data4_len = rmp_serde::to_vec(&data_big_p)?.len() - data_big_p_len;
+//     let cmd_len = vec![data0_len, data1_len, data2_len, data3_len, data4_len].into_iter()
+//         .counts().into_iter()
+//         .max_by_key(|(_, count)| count.clone())
+//         .map(|(len, _)| len).unwrap();
+//     info!("{}", cmd_len);
+//
+//     Ok(())
+// }
