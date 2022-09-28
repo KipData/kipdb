@@ -25,7 +25,7 @@ pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE: u64 = 1024;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
-pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
+pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 32 * 1024 * 1024;
 
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 

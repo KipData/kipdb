@@ -177,7 +177,7 @@ impl Compactor {
     async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Config) -> MergeShardingVec {
         // 向上取整计算STable数量
         let part_size = (vec_data.iter()
-            .map(|cmd| cmd.get_data_len())
+            .map(|cmd| cmd.get_data_len_for_rmp())
             .sum::<usize>() + file_size - 1) / file_size;
         let mut vec_sharding = vec![(0, Vec::new()); part_size];
         let slice = vec_sharding.as_mut_slice();
@@ -186,7 +186,7 @@ impl Compactor {
             let mut data_len = 0;
             while !vec_data.is_empty() {
                 if let Some(cmd_data) = vec_data.pop() {
-                    data_len += cmd_data.get_data_len();
+                    data_len += cmd_data.get_data_len_for_rmp();
                     slice[i].1.push(cmd_data);
                     if data_len >= file_size {
                         break

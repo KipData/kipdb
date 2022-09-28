@@ -1,5 +1,6 @@
 use chrono::Local;
 use criterion::{Criterion, criterion_group, criterion_main};
+use itertools::Itertools;
 use tempfile::TempDir;
 use kip_db::kernel::{KVStore, hash_kv::HashStore};
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
@@ -49,7 +50,13 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             async {
                 let timestamp = Local::now().timestamp_nanos() as u64;
-                store.set(&bincode::serialize(&timestamp).unwrap(), value1.clone()).await
+                let vec_time = bincode::serialize(&timestamp).unwrap();
+                let vec_all = vec_time.into_iter()
+                    .chain(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
+                            abcdefghijklmnopqrstuvwxyz
+                            0123456789)(*&^%$#@!~".to_vec())
+                    .collect_vec();
+                store.set(&vec_all, vec_all.clone()).await
                     .unwrap();
             }
         }));
