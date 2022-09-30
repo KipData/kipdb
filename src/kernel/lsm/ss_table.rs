@@ -5,10 +5,12 @@ use tracing::{info};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::{Manifest, MetaInfo, Position};
+use crate::kernel::lsm::{data_sharding, Manifest, MetaInfo, Position};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 use crate::KvsError;
+
+const ALIGNMENT_4K: usize = 4096;
 
 /// SSTable
 pub(crate) struct SsTable {
@@ -144,27 +146,27 @@ impl SsTable {
     }
 
     /// 写入CommandData数据段
-    async fn write_data_part(vec_cmd_data: &mut Vec<&CommandData>, io_handler: &IOHandler, sparse_index: &mut BTreeMap<Vec<u8>, Position>) -> Result<()> {
-
-        let mut start_pos = 0;
-        let mut part_len = 0;
-        for (index, cmd_data) in vec_cmd_data.iter().enumerate() {
-            let (start, len) = CommandPackage::write_back_real_pos(io_handler, cmd_data).await?;
-            if index == 0 {
-                start_pos = start;
-            }
-            part_len += len;
-        }
-
-        info!("[SSTable][write_data_part][data_zone]: {} to {}", start_pos, part_len);
+    async fn write_data_part(vec_cmd_data: Vec<CommandData>, io_handler: &IOHandler, sparse_index: &mut BTreeMap<Vec<u8>, Position>) -> Result<()> {
         // 获取该段首位数据
         if let Some(cmd) = vec_cmd_data.first() {
-            info!("[SSTable][write_data_part][sparse_index]: index of the part: {:?}", cmd.get_key());
-            sparse_index.insert(cmd.get_key_clone(), Position { start: start_pos, len: part_len });
-        }
+            let first_key = cmd.get_key_clone();
 
-        vec_cmd_data.clear();
-        Ok(())
+            let mut start_pos = 0;
+            let mut part_len = 0;
+
+            for (index, cmd_data) in vec_cmd_data.into_iter().enumerate() {
+                let (start, len) = CommandPackage::write_back_real_pos(io_handler, &cmd_data).await?;
+                if index == 0 {
+                    start_pos = start;
+                }
+                part_len += len;
+            }
+
+            info!("[SSTable][write_data_part][sparse_index]: index of the part: {:?}, [data_zone]: {} -> {}", &first_key, start_pos, part_len);
+            sparse_index.insert(first_key, Position { start: start_pos, len: part_len });
+
+            Ok(())
+        } else { Err(KvsError::DataEmpty) }
     }
 
     pub(crate) fn level(&mut self, level: u64) {
@@ -236,25 +238,16 @@ impl SsTable {
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: &Vec<CommandData>, level: usize) -> Result<Self> {
+    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: Vec<CommandData>, level: usize) -> Result<Self> {
         // 获取数据的Key涵盖范围
-        let score = Score::from_vec_cmd_data(vec_mem_data)?;
+        let score = Score::from_vec_cmd_data(&vec_mem_data)?;
         // 获取地址
         let part_size = config.part_size;
         let gen = io_handler.get_gen();
-        let mut vec_cmd = Vec::new();
         let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
 
-        // 将数据按part_size一组分段存入
-        for cmd_data in vec_mem_data {
-            vec_cmd.push(cmd_data);
-            if vec_cmd.len() >= part_size as usize {
-                Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
-            }
-        }
-        // 将剩余的指令当作一组持久化
-        if !vec_cmd.is_empty() {
-            Self::write_data_part(&mut vec_cmd, &io_handler, &mut sparse_index).await?;
+        for (_, sharding) in data_sharding(vec_mem_data, ALIGNMENT_4K, config).await {
+            Self::write_data_part(sharding, &io_handler, &mut sparse_index).await?;
         }
 
         // 开始对稀疏索引进行伪装并断点处理
@@ -263,7 +256,6 @@ impl SsTable {
         let cmd_sparse_index = CommandData::Set { key: rmp_serde::to_vec(&sparse_index)?, value: rmp_serde::to_vec(&score)?};
         // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
         let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
-
 
         // 将以上持久化信息封装为MetaInfo
         let meta_info = MetaInfo{

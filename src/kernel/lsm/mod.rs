@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use crate::kernel::{CommandData, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::lsm_kv::{LevelSlice, SsTableMap};
+use crate::kernel::lsm::compactor::MergeShardingVec;
+use crate::kernel::lsm::lsm_kv::{Config, LevelSlice, SsTableMap};
 use crate::kernel::lsm::ss_table::{Score, SsTable};
 
 pub(crate) mod ss_table;
@@ -220,6 +221,37 @@ impl Position {
             .find(|(key_item, _)| !key.cmp(key_item).eq(&Ordering::Less))
             .map(|(_, value_item)| value_item)
     }
+}
+
+/// CommandData数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
+/// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
+async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Config) -> MergeShardingVec {
+    // 向上取整计算STable数量
+    let part_size = (vec_data.iter()
+        .map(|cmd| cmd.get_data_len_for_rmp())
+        .sum::<usize>() + file_size - 1) / file_size;
+
+    vec_data.reverse();
+    let mut vec_sharding = vec![(0, Vec::new()); part_size];
+    let slice = vec_sharding.as_mut_slice();
+    for i in 0 .. part_size {
+        slice[i].0 = config.create_gen();
+        let mut data_len = 0;
+        while !vec_data.is_empty() {
+            if let Some(cmd_data) = vec_data.pop() {
+                data_len += cmd_data.get_data_len_for_rmp();
+                if data_len >= file_size && i < part_size - 1 {
+                    slice[i + 1].1.push(cmd_data);
+                    break
+                } else {
+                    slice[i].1.push(cmd_data);
+                }
+            } else { break }
+        }
+    }
+    // 过滤掉没有数据的切片
+    vec_sharding.retain(|(_, vec)| vec.len() > 0);
+    vec_sharding
 }
 
 #[test]

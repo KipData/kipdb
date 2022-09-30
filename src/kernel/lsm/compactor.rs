@@ -7,7 +7,7 @@ use crate::{HashStore, KvsError};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
-use crate::kernel::lsm::Manifest;
+use crate::kernel::lsm::{data_sharding, Manifest};
 use crate::kernel::lsm::ss_table::{Score, SsTable};
 
 pub(crate) const LEVEL_0: usize = 0;
@@ -44,7 +44,7 @@ impl Compactor {
         // 从内存表中将数据持久化为ss_table
         let ss_table = SsTable::create_for_immutable_table(&self.config
                                                            , io_handler
-                                                           , &vec_values
+                                                           , vec_values
                                                            , LEVEL_0).await?;
         manifest.insert_ss_table_with_index(ss_table, 0);
 
@@ -77,14 +77,13 @@ impl Compactor {
             return Err(KvsError::LevelOver);
         }
         let config = &self.config;
-        let file_size = config.sst_file_size;
 
         while level < 7 {
             if let Some((index, vec_expire_gen, vec_sharding))
-                        = self.data_loading_with_level(level, file_size).await? {
+                        = self.data_loading_with_level(level).await? {
 
                 // 并行创建SSTable
-                let ss_table_futures = vec_sharding.iter()
+                let ss_table_futures = vec_sharding.into_iter()
                     .map(|(gen, sharding)| {
                         let io_handler = self.io_handler_factory.create(gen.clone()).unwrap();
                         SsTable::create_for_immutable_table(&config,
@@ -105,7 +104,7 @@ impl Compactor {
     }
 
     /// 通过Level进行归并数据加载
-    async fn data_loading_with_level(&self, level: usize, file_size: usize) -> Result<Option<(usize, ExpiredGenVec, MergeShardingVec)>> {
+    async fn data_loading_with_level(&self, level: usize) -> Result<Option<(usize, ExpiredGenVec, MergeShardingVec)>> {
         let manifest = self.manifest.read().await;
         let config = &self.config;
         let next_level = level + 1;
@@ -133,7 +132,7 @@ impl Compactor {
 
             // 数据合并并切片
             let vec_merge_sharding =
-                Self::data_merge_and_sharding(&vec_ss_table_final, file_size, &self.config).await?;
+                Self::data_merge_and_sharding(&vec_ss_table_final, &self.config).await?;
 
             // 收集需要清除的SSTable
             let vec_expire_gen = SsTable::collect_gen(vec_ss_table_final)?;
@@ -147,7 +146,7 @@ impl Compactor {
     /// 以SSTables的数据归并再排序后切片，获取以Command的Key值由小到大的切片排序
     /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
     /// 真他妈完美
-    async fn data_merge_and_sharding(vec_ss_table: &Vec<&SsTable>, file_size: usize, config: &Config) -> Result<MergeShardingVec>{
+    async fn data_merge_and_sharding(vec_ss_table: &Vec<&SsTable>, config: &Config) -> Result<MergeShardingVec>{
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
         // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
         let map_futures = vec_ss_table.into_iter()
@@ -160,7 +159,7 @@ impl Compactor {
             .unique_by(|cmd| cmd.get_key_clone())
             .sorted_unstable()
             .collect();
-        Ok(Self::data_sharding(vec_cmd_data, file_size, config).await)
+        Ok(data_sharding(vec_cmd_data, config.sst_file_size, config).await)
     }
 
     /// 获取对应Level的开头指定数量的SSTable
@@ -170,33 +169,6 @@ impl Compactor {
             .cloned()
             .collect_vec();
         manifest.get_ss_table_batch(&level_vec.to_vec())
-    }
-
-    /// CommandData数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
-    /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
-    async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Config) -> MergeShardingVec {
-        // 向上取整计算STable数量
-        let part_size = (vec_data.iter()
-            .map(|cmd| cmd.get_data_len_for_rmp())
-            .sum::<usize>() + file_size - 1) / file_size;
-        let mut vec_sharding = vec![(0, Vec::new()); part_size];
-        let slice = vec_sharding.as_mut_slice();
-        for i in 0 .. part_size {
-            slice[i].0 = config.create_gen();
-            let mut data_len = 0;
-            while !vec_data.is_empty() {
-                if let Some(cmd_data) = vec_data.pop() {
-                    data_len += cmd_data.get_data_len_for_rmp();
-                    slice[i].1.push(cmd_data);
-                    if data_len >= file_size {
-                        break
-                    }
-                } else { break }
-            }
-        }
-        // 过滤掉没有数据的切片
-        vec_sharding.retain(|(_, vec)| vec.len() > 0);
-        vec_sharding
     }
 
     pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
