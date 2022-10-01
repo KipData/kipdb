@@ -44,7 +44,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 # 工具
 clap = { version = "3.1.18", features = ["derive"] }
-#snowflake = { version = "1.2", features = ["serde_support"] }
+growable-bloom-filter = "2.0.1"
 itertools = "0.10.3"
 chrono = "0.4.19"
 rs-snowflake = "0.6.0"

@@ -1,11 +1,12 @@
 use std::cmp::Ordering;
 use std::collections::btree_map::BTreeMap;
+use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use tracing::{info};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
-use crate::kernel::lsm::{data_sharding, Manifest, MetaInfo, Position};
+use crate::kernel::lsm::{data_sharding, ExtraInfo, Manifest, MetaInfo, Position};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
 use crate::KvsError;
@@ -23,7 +24,9 @@ pub(crate) struct SsTable {
     // 文件路径
     gen: i64,
     // 数据范围索引
-    score: Score
+    score: Score,
+    // 过滤器
+    filter: GrowableBloom
 }
 
 /// 数据范围索引
@@ -127,16 +130,19 @@ impl SsTable {
 
         if let Some(data) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
             match data {
-                CommandData::Set { key, value } => {
-                    let sparse_index = rmp_serde::from_slice(&key)?;
-                    let score = rmp_serde::from_slice(&value)?;
-                    Ok(SsTable {
-                        meta_info,
-                        sparse_index,
-                        gen,
-                        io_handler,
-                        score
-                    })
+                CommandData::Get { key } => {
+                    match rmp_serde::from_slice::<ExtraInfo>(&key)? {
+                        ExtraInfo { sparse_index, score, filter } => {
+                            Ok(SsTable {
+                                meta_info,
+                                sparse_index,
+                                gen,
+                                io_handler,
+                                score,
+                                filter
+                            })
+                        }
+                    }
                 }
                 _ => Err(KvsError::NotMatchCmd)
             }
@@ -191,16 +197,17 @@ impl SsTable {
 
     /// 从该sstable中获取指定key对应的CommandData
     pub(crate) async fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
-        if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
-            info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
-            // 获取该区间段的数据
-            let zone = self.io_handler.read_with_pos(position.start, position.len).await?;
+        if self.filter.contains(key) {
+            if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
+                info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
+                // 获取该区间段的数据
+                let zone = self.io_handler.read_with_pos(position.start, position.len).await?;
 
-            // 返回该区间段对应的数据结果
-            Ok(CommandPackage::find_key_with_zone_unpack(zone.as_slice(), &key).await?)
-        } else {
-            Ok(None)
+                // 返回该区间段对应的数据结果
+                return Ok(CommandPackage::find_key_with_zone_unpack(zone.as_slice(), &key).await?);
+            }
         }
+        Ok(None)
     }
 
     /// 获取SsTable内所有的正常数据
@@ -245,15 +252,26 @@ impl SsTable {
         let part_size = config.part_size;
         let gen = io_handler.get_gen();
         let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
+        let mut filter = GrowableBloom::new(config.desired_error_prob, vec_mem_data.len());
+
+        for data in vec_mem_data.iter() {
+            filter.insert(data.get_key());
+        }
 
         for (_, sharding) in data_sharding(vec_mem_data, ALIGNMENT_4K, config).await {
             Self::write_data_part(sharding, &io_handler, &mut sparse_index).await?;
         }
 
+        let extra_info = ExtraInfo {
+            sparse_index,
+            score,
+            filter
+        };
+
         // 开始对稀疏索引进行伪装并断点处理
         // 获取指令数据段的数据长度
         // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
-        let cmd_sparse_index = CommandData::Set { key: rmp_serde::to_vec(&sparse_index)?, value: rmp_serde::to_vec(&score)?};
+        let cmd_sparse_index = CommandData::Get { key: rmp_serde::to_vec(&extra_info)?};
         // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
         let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
 
@@ -270,13 +288,18 @@ impl SsTable {
         io_handler.flush().await?;
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
-        Ok(SsTable {
-            meta_info,
-            sparse_index,
-            io_handler,
-            gen,
-            score
-        })
+        match extra_info {
+            ExtraInfo { sparse_index, score, filter} => {
+                Ok(SsTable {
+                    meta_info,
+                    sparse_index,
+                    io_handler,
+                    gen,
+                    score,
+                    filter
+                })
+            }
+        }
 
     }
 }

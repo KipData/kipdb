@@ -35,6 +35,8 @@ pub(crate) const DEFAULT_MACHINE_ID: i32 = 1;
 
 pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 100;
 
+pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
+
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
@@ -314,7 +316,9 @@ pub struct Config {
     pub(crate) level_sst_magnification: usize,
     /// 用于ID生成的原子缓冲
     /// 避免极端情况下，SSTable创建重复问题并保持时间有序性
-    pub(crate) buffer_i32: AtomicI32
+    pub(crate) buffer_i32: AtomicI32,
+    /// 布隆过滤器 期望的错误概率
+    pub(crate) desired_error_prob: f64
 }
 
 impl Config {
@@ -364,6 +368,11 @@ impl Config {
         self
     }
 
+    pub fn desired_error_prob(mut self, desired_error_prob: f64) -> Self {
+        self.desired_error_prob = desired_error_prob;
+        self
+    }
+
     pub fn create_gen(&self) -> i64 {
         SnowflakeIdBucket::new(self.node_id, self.buffer_i32.fetch_add(1, Ordering::SeqCst))
             .get_id()
@@ -380,7 +389,8 @@ impl Config {
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
             node_id: DEFAULT_MACHINE_ID,
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
-            buffer_i32: AtomicI32::new(0)
+            buffer_i32: AtomicI32::new(0),
+            desired_error_prob: DEFAULT_DESIRED_ERROR_PROB
         }
     }
 }
@@ -406,7 +416,7 @@ fn test_lsm_major_compactor() -> Result<()> {
         let kv_store = LsmStore::open(temp_dir.path()).await?;
         let mut vec_key: Vec<i32> = Vec::new();
 
-        for i in 0..3000 {
+        for i in 0..30000 {
             let vec_u8 = rmp_serde::to_vec(&i).unwrap();
             kv_store.set(&vec_u8, vec_u8.clone()).await?;
             vec_key.push(i);

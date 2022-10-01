@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -29,6 +30,13 @@ struct MetaInfo {
     data_len: u64,
     index_len: u64,
     part_size: u64
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExtraInfo {
+    sparse_index: BTreeMap<Vec<u8>, Position>,
+    score: Score,
+    filter: GrowableBloom
 }
 
 struct MemTable {
