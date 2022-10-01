@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,6 +51,8 @@ pub(crate) struct Manifest {
     // Level层级Vec
     // 以索引0为level-0这样的递推，存储文件的gen值
     level_slice: LevelSlice,
+    // SSTable集合占有磁盘大小
+    size_of_disk: u64
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -124,7 +126,12 @@ impl Manifest {
     pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>) -> Self {
         // 获取ss_table分级Vec
         let level_vec = Self::level_layered(&mut ss_tables_map);
-        Self { _path: path, ss_tables_map, level_slice: level_vec }
+
+        let size_of_disk = ss_tables_map.iter()
+            .map(|(_, ss_table)| ss_table.get_size_of_disk())
+            .sum();
+
+        Self { _path: path, ss_tables_map, level_slice: level_vec, size_of_disk }
     }
 
     /// 使用ss_tables返回LevelVec
@@ -141,6 +148,8 @@ impl Manifest {
     pub(crate) fn insert_ss_table_with_index(&mut self, ss_table: SsTable, index: usize) {
         let gen = ss_table.get_gen();
         let level = ss_table.get_level();
+
+        self.size_of_disk += ss_table.get_size_of_disk();
         self.ss_tables_map.insert(gen, ss_table);
         self.level_slice[level].insert(index, gen);
     }
@@ -161,16 +170,19 @@ impl Manifest {
 
     /// 删除指定的过期gen
     pub(crate) fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &Vec<i64>) -> Result<()> {
+        self.size_of_disk -= vec_expired_gen.iter()
+            .map(|gen| self.get_ss_table(gen).map(SsTable::get_size_of_disk).unwrap_or(0))
+            .sum::<u64>();
+
         // 遍历过期Vec对数据进行旧文件删除
         for expired_gen in vec_expired_gen.iter() {
             self.ss_tables_map.remove(expired_gen);
             fs::remove_file(log_path(&self._path, *expired_gen))?;
         }
-        // 将需要删除的Vec转换为HashSet方便使用retain方法
-        let set_expired_gen: HashSet<&i64> = vec_expired_gen.iter().collect();
+
         // 将存储的Level表中含有该gen的SSTable一并删除
         for vec_level in &mut self.level_slice {
-            vec_level.retain(|gen| !set_expired_gen.contains(gen));
+            vec_level.retain(|gen| !vec_expired_gen.contains(gen));
         }
 
         Ok(())
@@ -185,7 +197,7 @@ impl Manifest {
     }
 
     fn is_threshold_exceeded_major(&self, sst_size: usize, level: usize, sst_magnification: usize) -> bool {
-        self.level_slice[level].len() > (sst_size * sst_magnification * (level + 1))
+        self.level_slice[level].len() > (sst_size.pow(level as u32) * sst_magnification)
     }
 
     /// 使用Key从现有SSTables中获取对应的数据
@@ -207,9 +219,15 @@ impl Manifest {
 
     pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score) -> Vec<&SsTable> {
         self.get_level_vec(level).iter()
-            .map(|gen| self.get_ss_table(gen).unwrap())
-            .filter(|ss_table| ss_table.get_score()
-                .meet(score))
+            .map(|gen| self.get_ss_table(gen))
+            .filter(|option| option.is_some() && match option {
+                None => { false }
+                Some(ss_table) => {
+                    ss_table.get_score()
+                        .meet(score)
+                }
+            })
+            .map(|option| option.unwrap())
             .collect_vec()
     }
 

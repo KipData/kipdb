@@ -21,7 +21,7 @@ pub(crate) type SsTableMap = BTreeMap<i64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE: u64 = 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE: u64 = 10 * 1024;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
@@ -33,15 +33,21 @@ pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
 
 pub(crate) const DEFAULT_MACHINE_ID: i32 = 1;
 
-pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 100;
+pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
+    /// MemTable
+    /// https://zhuanlan.zhihu.com/p/79064869
     mem_table: MemTable,
+    /// Manifest
+    /// 用于管理内部SSTable的Gen映射以及Level分级结构
+    /// TODO：多版本持久化
     manifest: Arc<RwLock<Manifest>>,
+    /// LSM全局参数配置
     config: Arc<Config>,
     io_handler_factory: Arc<IOHandlerFactory>,
     /// WAL存储器
@@ -54,7 +60,8 @@ pub struct LsmStore {
     /// 2、作Key-Value分离的准备，当作vLog
     /// 3、HashStore会丢弃超出大小的数据，保证最新数据不会丢失
     wal: Arc<HashStore>,
-    vec_rev: Mutex<Vec<oneshot::Receiver<()>>>
+    /// 异步任务阻塞监听器
+    vec_rev: Mutex<Vec<oneshot::Receiver<()>>>,
 }
 
 #[async_trait]
@@ -118,8 +125,8 @@ impl LsmStore {
         let mem_table = &self.mem_table;
         let threshold_size = self.config.minor_threshold_with_data_size as usize;
 
-        // Wal与MemTable双写
         let key = cmd.get_key();
+        // Wal与MemTable双写
         wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
         mem_table.insert_data(key.clone(), cmd).await;
 
@@ -416,7 +423,7 @@ fn test_lsm_major_compactor() -> Result<()> {
         let kv_store = LsmStore::open(temp_dir.path()).await?;
         let mut vec_key: Vec<i32> = Vec::new();
 
-        for i in 0..30000 {
+        for i in 0..300000 {
             let vec_u8 = rmp_serde::to_vec(&i).unwrap();
             kv_store.set(&vec_u8, vec_u8.clone()).await?;
             vec_key.push(i);

@@ -26,7 +26,9 @@ pub(crate) struct SsTable {
     // 数据范围索引
     score: Score,
     // 过滤器
-    filter: GrowableBloom
+    filter: GrowableBloom,
+    // 硬盘占有大小
+    size_of_disk: u64,
 }
 
 /// 数据范围索引
@@ -123,7 +125,8 @@ impl SsTable {
         let gen = io_handler.get_gen();
 
         let meta_info = MetaInfo::read_to_file(&io_handler).await?;
-        info!("[SsTable: {}][restore_from_file][TableMetaInfo]: {:?}", gen, meta_info);
+        let size_of_disk = io_handler.file_size().await?;
+        info!("[SsTable: {}][restore_from_file][TableMetaInfo]: {:?}, Size of Disk: {}", gen, meta_info, &size_of_disk);
 
         let index_pos = meta_info.data_len;
         let index_len = meta_info.index_len as usize;
@@ -139,7 +142,8 @@ impl SsTable {
                                 gen,
                                 io_handler,
                                 score,
-                                filter
+                                filter,
+                                size_of_disk
                             })
                         }
                     }
@@ -193,6 +197,10 @@ impl SsTable {
 
     pub(crate) fn get_score(&self) -> &Score {
         &self.score
+    }
+
+    pub(crate) fn get_size_of_disk(&self) -> u64 {
+        self.size_of_disk
     }
 
     /// 从该sstable中获取指定key对应的CommandData
@@ -287,6 +295,8 @@ impl SsTable {
 
         io_handler.flush().await?;
 
+        let size_of_disk = io_handler.file_size().await?;
+
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
         match extra_info {
             ExtraInfo { sparse_index, score, filter} => {
@@ -296,7 +306,8 @@ impl SsTable {
                     io_handler,
                     gen,
                     score,
-                    filter
+                    filter,
+                    size_of_disk
                 })
             }
         }
