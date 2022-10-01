@@ -63,3 +63,9 @@ predicates = "1.0.0"
 walkdir = "2.2.7"
 tokio-test = "*"
 criterion = { version = "0.3.5", features = ["async_tokio", "html_reports"] }
+
+#[source.crates-io]
+#replace-with = "vendored-sources"
+#
+#[source.vendored-sources]
+#directory = "./vendor"
