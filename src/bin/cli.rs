@@ -48,17 +48,17 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Set { key, value } => {
             client.set(encode(&key), encode(&value)).await?;
-            print!("Done!");
+            info!("Done!");
         }
         Command::Remove { key } => {
             client.remove(encode(&key)).await?;
-            print!("Done!");
+            info!("Done!");
         }
         Command::Get { key } => {
             if let Some(value) = client.get(encode(&key)).await? {
-                print!("\"{}\"", decode(value));
+                info!("\"{}\"", decode(value));
             } else {
-                print!("(Nil)");
+                info!("(Nil)");
             }
         }
         Command::BatchSet { batch } => {
@@ -98,6 +98,9 @@ async fn main() -> Result<()> {
                         key: encode(&key)
                     }).collect_vec();
             batch_run_and_print(&mut client, vec_batch_get, "Nil", true).await?;
+        }
+        Command::SizeOfDisk => {
+            info!("{}", client.size_of_disk().await?);
         }
     }
 

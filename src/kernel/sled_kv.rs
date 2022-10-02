@@ -54,4 +54,8 @@ impl KVStore for SledStore {
     async fn shut_down(&self) -> crate::kernel::Result<()> {
         self.flush().await
     }
+
+    async fn size_of_disk(&self) -> crate::kernel::Result<u64> {
+        Ok(self.data_base.size_on_disk()?)
+    }
 }

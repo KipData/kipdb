@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use itertools::Itertools;
 use async_trait::async_trait;
+use futures::future;
 use tokio::sync::RwLock;
 use tracing::error;
 
@@ -244,6 +245,17 @@ impl KVStore for HashStore {
 
     async fn shut_down(&self) -> Result<()> {
         self.flush().await
+    }
+
+    async fn size_of_disk(&self) -> Result<u64> {
+        let manifest = self.manifest.read().await;
+
+        let map_futures = manifest.io_handler_index.iter()
+            .map(|(_, io_handler)| io_handler.file_size());
+        Ok(future::try_join_all(map_futures)
+            .await?
+            .into_iter()
+            .sum::<u64>())
     }
 }
 

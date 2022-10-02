@@ -1,5 +1,7 @@
 use tokio::net::{TcpStream, ToSocketAddrs};
+use crate::error::ConnectionError;
 use crate::kernel::CommandData;
+use crate::KvsError;
 use crate::net::connection::Connection;
 use crate::net::{Result, CommandOption};
 
@@ -35,7 +37,7 @@ impl Client {
     pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>>{
         match self.send_cmd(CommandOption::Cmd(CommandData::get(key))).await? {
             CommandOption::Value(vec) => Ok(Some(vec)),
-            _ => Ok(None)
+            _ => Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
         }
     }
 
@@ -43,7 +45,15 @@ impl Client {
     pub async fn batch(&mut self, batch_cmd: Vec<CommandData>, is_parallel: bool) -> Result<Vec<Option<Vec<u8>>>>{
         match self.send_cmd(CommandOption::VecCmd(batch_cmd, is_parallel)).await? {
             CommandOption::ValueVec(vec) => Ok(vec),
-            _ => Ok(Vec::new())
+            _ => Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
+        }
+    }
+
+    /// 磁盘占用
+    pub async fn size_of_disk(&mut self) -> Result<u64> {
+        match self.send_cmd(CommandOption::SizeOfDisk(0)).await? {
+            CommandOption::SizeOfDisk(size_of_disk) => {Ok(size_of_disk)},
+            _ => Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
         }
     }
 

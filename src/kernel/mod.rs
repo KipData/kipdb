@@ -64,6 +64,8 @@ pub trait KVStore: Send + 'static + Sized {
             .collect_vec())
     }
 
+    async fn size_of_disk(&self) -> Result<u64>;
+
 }
 
 /// 用于包装Command交予持久化核心实现使用的操作类

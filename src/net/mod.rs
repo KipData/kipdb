@@ -17,6 +17,7 @@ pub enum CommandOption {
     VecCmd(Vec<CommandData>, bool),
     Value(Vec<u8>),
     ValueVec(Vec<Option<Vec<u8>>>),
+    SizeOfDisk(u64),
     None
 }
 

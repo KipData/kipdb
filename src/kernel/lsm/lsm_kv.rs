@@ -116,6 +116,13 @@ impl KVStore for LsmStore {
 
         Ok(())
     }
+
+    async fn size_of_disk(&self) -> Result<u64> {
+        Ok(self.manifest.read().await
+            .ss_tables_map.iter()
+            .map(|(_, ss_table)| ss_table.get_size_of_disk())
+            .sum::<u64>() + self.wal.size_of_disk().await?)
+    }
 }
 
 impl LsmStore {

@@ -15,6 +15,7 @@ pub enum Command {
     BatchRemoveParallel { keys: Vec<String> },
     BatchGet { keys: Vec<String> },
     BatchGetParallel { keys: Vec<String> },
+    SizeOfDisk,
 }
 
 impl Command {

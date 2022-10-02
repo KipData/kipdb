@@ -162,6 +162,12 @@ impl Handler {
 
                     Ok(())
                 }
+                CommandOption::SizeOfDisk(_) => {
+                    let size_of_disk = self.kv_store.size_of_disk().await?;
+                    self.connection.write(CommandOption::SizeOfDisk(size_of_disk)).await?;
+
+                    Ok(())
+                }
                 _ => Err(ConnectionError::WrongInstruction)
             }
         }
