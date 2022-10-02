@@ -1,0 +1,9 @@
+FROM alpine:latest
+RUN sed -i.bak 's/dl-cdn.alpinelinux.org/mirrors.cloud.tencent.com/g' /etc/apk/repositories
+RUN apk add --update bash vim git perf perl thttpd
+RUN git clone --depth=1 https://gitee.com/jason91/FlameGraph
+RUN echo 'perf record -g -p $1' >  record.sh && \
+    echo 'perf script | FlameGraph/stackcollapse-perf.pl | FlameGraph/flamegraph.pl > $1' > plot.sh && \
+    chmod +x *.sh
+
+ENTRYPOINT ["bash"]

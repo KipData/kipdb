@@ -1,6 +1,8 @@
 FROM rust:1.62 as builder
 
-ADD ./ ./builder
+ADD ./src ./builder/src
+ADD ./Cargo.toml ./builder/Cargo.toml
+ADD ./.cargo ./builder/.cargo
 
 WORKDIR /builder
 
@@ -9,16 +11,10 @@ RUN cargo build --release
 
 FROM alpine:latest
 
-ARG APP=server
+ARG APP_SERVER=server
+ARG APP_CLI=cli
 
 WORKDIR /kip-db
-
-RUN sed -i.bak 's/dl-cdn.alpinelinux.org/mirrors.cloud.tencent.com/g' /etc/apk/repositories
-RUN apk add --update bash vim git perf perl thttpd
-RUN git clone --depth=1 https://gitee.com/jason91/FlameGraph
-RUN echo 'perf record -g -p $1' >  record.sh && \
-    echo 'perf script | FlameGraph/stackcollapse-perf.pl | FlameGraph/flamegraph.pl > $1' > plot.sh && \
-    chmod +x *.sh
 
 ENV GLIBC_REPO=https://gitee.com/tonnyluo/alpine-pkg-glibc
 ENV GLIBC_VERSION=2.31-r0
@@ -33,6 +29,7 @@ RUN set -ex && \
 
 EXPOSE 6333
 
-COPY --from=builder /builder/target/release/${APP} ${APP}
+COPY --from=builder /builder/target/release/${APP_SERVER} ${APP_SERVER}
+COPY --from=builder /builder/target/release/${APP_CLI} ${APP_CLI}
 
 ENTRYPOINT [ "./server" ]

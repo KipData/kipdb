@@ -82,3 +82,25 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
 - Manifest
   - 多版本
   - 持久化
+
+## Perf火焰图监测
+- 为了方便性能调优等监测，提供了两个Dockerfile作为支持
+  - Dockerfile: KipDB的Server与Cli
+  - Dockerfile-perf: 外部Perf监测
+
+### 使用步骤
+1. 打包KipDB本体镜像``docker build -t kould/kip-db:v1 .``
+2. 打包Perf监测镜像``docker build -f Dockerfile-perf -t kould/perf:v1 .``
+3. 以任意形式执行kould/kip
+   - 例: ``docker run kould/kip-db:v1``
+4. 执行``attach-win.sh <kip-db容器ID>``
+   - 例: ``./attach-win.sh 263ad21cc56169ebec79bbf614c6986a78ec89a6e0bdad5e364571d28bee2bfc``
+5. 在该bash内输入. ``record.sh <kip-db的server进程pid>``
+   - 若不清楚进程id是多少可以直接输入ps，通常为1
+   - 注意!： 不要关闭bash，否则会监听失败！
+6. **随后去对KipDB进行对应需要监测的操作**
+7. 操作完毕后回到**步骤5**的bash内，以ctrl + c终止监听，得到perf.data
+8. 继续在该bash内输入``. plot.sh <图片名.svg>``, 即可生成火焰图
+    - 导出图片一般可使用 ``docker cp`` 和 ``docker exec`` 或挂载 volume，为方便预览和复制文件，容器内置了轻量网页服务，执行 ``thttpd -p <端口号>`` 即可。由于脚本中没有设置端口转发，需要 ``docker inspect <目标容器ID> | grep IPAdress`` 查看目标容器的 IP，然后在浏览器中访问即可。若需要更灵活的操作，可不用以上脚本手动添加参数运行容器。
+
+参考自：https://chinggg.github.io/post/docker-perf/
