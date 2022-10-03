@@ -22,7 +22,7 @@ pub(crate) type SsTableMap = BTreeMap<i64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE: u64 = 10 * 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE: u64 = 50 * 1024;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
@@ -433,16 +433,25 @@ fn test_lsm_major_compactor() -> Result<()> {
         let kv_store = LsmStore::open(temp_dir.path()).await?;
         let mut vec_key: Vec<i32> = Vec::new();
 
+        let start = Instant::now();
         for i in 0..300000 {
             let vec_u8 = rmp_serde::to_vec(&i).unwrap();
             kv_store.set(&vec_u8, vec_u8.clone()).await?;
             vec_key.push(i);
         }
+        println!("[set_for][Time: {:?}]", start.elapsed());
+
+        let start = Instant::now();
+        kv_store.get(&rmp_serde::to_vec(&0).unwrap()).await?.unwrap();
+        println!("[compaction_for][Time: {:?}]", start.elapsed());
+
         kv_store.flush().await?;
+        let start = Instant::now();
         for key in vec_key {
             let vec_u8 = rmp_serde::to_vec(&key).unwrap();
             assert_eq!(kv_store.get(&vec_u8).await?.unwrap(), vec_u8);
         }
+        println!("[get_for][Time: {:?}]", start.elapsed());
         kv_store.shut_down().await?;
         Ok(())
     })
