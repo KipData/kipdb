@@ -2,11 +2,12 @@ use std::collections::{BTreeMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::Instant;
 use async_trait::async_trait;
 use snowflake::SnowflakeIdBucket;
 use tokio::sync::{Mutex, oneshot, RwLock};
 use tokio::sync::oneshot::Sender;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
@@ -220,11 +221,13 @@ impl LsmStore {
         let sender = self.live_tag().await;
 
         tokio::spawn(async move {
+            let start = Instant::now();
             // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
             if let Err(err) = compactor.minor_compaction(keys, values).await {
                 error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
             }
             sender.send(()).unwrap();
+            info!("[LsmStore][Compaction Drop][Time: {:?}]", start.elapsed());
         });
         Ok(())
     }

@@ -156,27 +156,28 @@ impl SsTable {
     }
 
     /// 写入CommandData数据段
-    async fn write_data_part(vec_cmd_data: Vec<CommandData>, io_handler: &IOHandler, sparse_index: &mut BTreeMap<Vec<u8>, Position>) -> Result<()> {
-        // 获取该段首位数据
-        if let Some(cmd) = vec_cmd_data.first() {
-            let first_key = cmd.get_key_clone();
+    async fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, io_handler: &IOHandler) -> Result<BTreeMap<Vec<u8>, Position>> {
+        let (start_pos, batch_len, vec_sharding_len) = CommandPackage::write_batch_first_pos_with_sharding(io_handler, &vec_cmd_data).await?;
+        info!("[SSTable][write_data_batch][data_zone]: start_pos: {}, batch_len: {}, vec_sharding_len: {:?}", start_pos, batch_len, vec_sharding_len);
 
-            let mut start_pos = 0;
-            let mut part_len = 0;
+        let keys = vec_cmd_data.into_iter()
+            .filter_map(|sharding| match sharding.as_slice() {
+                [first, ..] => Ok(first.get_key_clone()),
+                [] => Err(KvsError::DataEmpty)
+            }.ok())
+            .collect_vec();
 
-            for (index, cmd_data) in vec_cmd_data.into_iter().enumerate() {
-                let (start, len) = CommandPackage::write_back_real_pos(io_handler, &cmd_data).await?;
-                if index == 0 {
-                    start_pos = start;
-                }
-                part_len += len;
-            }
+        let mut start_len = 0;
 
-            info!("[SSTable][write_data_part][sparse_index]: index of the part: {:?}, [data_zone]: {} -> {}", &first_key, start_pos, part_len);
-            sparse_index.insert(first_key, Position { start: start_pos, len: part_len });
-
-            Ok(())
-        } else { Err(KvsError::DataEmpty) }
+        let vec_position = vec_sharding_len.into_iter()
+            .map(|sharding_len| {
+                let position = Position { start: start_len, len: sharding_len };
+                start_len += sharding_len as u64;
+                position
+            }).collect_vec();
+        Ok(keys.into_iter()
+            .zip(vec_position)
+            .collect())
     }
 
     pub(crate) fn level(&mut self, level: u64) {
@@ -259,16 +260,16 @@ impl SsTable {
         // 获取地址
         let part_size = config.part_size;
         let gen = io_handler.get_gen();
-        let mut sparse_index: BTreeMap<Vec<u8>, Position> = BTreeMap::new();
         let mut filter = GrowableBloom::new(config.desired_error_prob, vec_mem_data.len());
 
         for data in vec_mem_data.iter() {
             filter.insert(data.get_key());
         }
-
-        for (_, sharding) in data_sharding(vec_mem_data, ALIGNMENT_4K, config).await {
-            Self::write_data_part(sharding, &io_handler, &mut sparse_index).await?;
-        }
+        let vec_sharding = data_sharding(vec_mem_data, ALIGNMENT_4K, config, false).await
+            .into_iter()
+            .map(|(_, sharding)| sharding)
+            .collect();
+        let sparse_index =Self::write_data_batch(vec_sharding, &io_handler).await?;
 
         let extra_info = ExtraInfo {
             sparse_index,

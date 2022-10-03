@@ -152,14 +152,43 @@ impl CommandPackage {
     /// 写入一个Command
     /// 写入完成后该cmd的真实写入起始位置与长度
     pub async fn write_back_real_pos(io_handler: &IOHandler, cmd: &CommandData) -> Result<(u64, usize)> {
-        let vec = rmp_serde::encode::to_vec(cmd)?;
+        Ok(io_handler.write(Self::trans_to_vec_u8(cmd)?).await?)
+    }
+
+    pub async fn write_batch_first_pos(io_handler: &IOHandler, vec_cmd: &Vec<CommandData>) -> Result<(u64, usize)> {
+        let batch = vec_cmd.into_iter()
+            .map(|cmd_data| Self::trans_to_vec_u8(cmd_data).unwrap())
+            .flatten()
+            .collect_vec();
+
+        Ok(io_handler.write(batch).await?)
+    }
+
+    /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
+    pub async fn write_batch_first_pos_with_sharding(io_handler: &IOHandler, vec_sharding: &Vec<Vec<CommandData>>) -> Result<(u64, usize, Vec<usize>)> {
+        let (vec_len, vec_sharding_u8): (Vec<usize>, Vec<Vec<u8>>) = vec_sharding.into_iter()
+            .map(|sharding| sharding.into_iter()
+                .map(|cmd_data| Self::trans_to_vec_u8(cmd_data).unwrap())
+                .flatten()
+                .collect_vec())
+            .map(|sharding_u8| (sharding_u8.len(), sharding_u8))
+            .unzip();
+
+        let (start_pos, batch_len) = io_handler.write(vec_sharding_u8.into_iter().flatten().collect()).await?;
+
+        Ok((start_pos, batch_len, vec_len))
+    }
+
+    pub(crate) fn trans_to_vec_u8(cmd: &CommandData) -> Result<Vec<u8>> {
+        let vec = rmp_serde::to_vec(cmd)?;
         let i = vec.len();
-        let mut vec_head = vec![(i >> 24) as u8,
+        let vec_head = vec![(i >> 24) as u8,
                                 (i >> 16) as u8,
                                 (i >> 8) as u8,
-                                i as u8 ];
-        vec_head.extend(vec);
-        Ok(io_handler.write(vec_head).await?)
+                                i as u8];
+        Ok(vec_head.into_iter()
+            .chain(vec)
+            .collect_vec())
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command

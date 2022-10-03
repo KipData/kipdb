@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::time::Instant;
 use futures::future;
 use itertools::Itertools;
 use tokio::sync::RwLock;
-use tracing::error;
+use tracing::{error, info};
 use crate::{HashStore, KvsError};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
@@ -46,7 +47,7 @@ impl Compactor {
                                                            , io_handler
                                                            , vec_values
                                                            , LEVEL_0).await?;
-        manifest.insert_ss_table_with_index(ss_table, 0);
+        manifest.insert_ss_table_with_index(ss_table, 0).await;
 
         drop(manifest);
         if let Err(err) = self.major_compaction(LEVEL_0).await {
@@ -82,6 +83,7 @@ impl Compactor {
             if let Some((index, vec_expire_gen, vec_sharding))
                         = self.data_loading_with_level(level).await? {
 
+                let start = Instant::now();
                 // 并行创建SSTable
                 let ss_table_futures = vec_sharding.into_iter()
                     .map(|(gen, sharding)| {
@@ -94,9 +96,10 @@ impl Compactor {
                 let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
 
                 let mut manifest = self.manifest.write().await;
-                manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index);
-                manifest.retain_with_vec_gen_and_level(&vec_expire_gen)?;
+                manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index).await;
+                manifest.retain_with_vec_gen_and_level(&vec_expire_gen).await?;
 
+                info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
                 level += 1;
             } else { break }
         }
@@ -118,6 +121,7 @@ impl Compactor {
         }
 
         if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
+            let start = Instant::now();
             let vec_ss_table_l_1 =
                 manifest.get_meet_score_ss_tables(next_level, &Score::fusion_from_vec_ss_table(&vec_ss_table)?);
 
@@ -136,6 +140,7 @@ impl Compactor {
 
             // 收集需要清除的SSTable
             let vec_expire_gen = SsTable::collect_gen(vec_ss_table_final)?;
+            info!("[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]", start.elapsed());
 
             Ok(Some((index, vec_expire_gen, vec_merge_sharding)))
         } else {
@@ -159,7 +164,7 @@ impl Compactor {
             .unique_by(|cmd| cmd.get_key_clone())
             .sorted_unstable()
             .collect();
-        Ok(data_sharding(vec_cmd_data, config.sst_file_size, config).await)
+        Ok(data_sharding(vec_cmd_data, config.sst_file_size, config, true).await)
     }
 
     /// 获取对应Level的开头指定数量的SSTable
