@@ -160,7 +160,6 @@ fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
 
 // Insert data until total size of the directory decreases.
 // Test data correctness after compaction.
-#[test]
 fn compaction() -> Result<()> {
     compaction_with_kv_store::<HashStore>()?;
     compaction_with_kv_store::<SledStore>()?;
@@ -193,13 +192,14 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
                              encode_key(value.as_str())?).await?
             }
 
+            kv_store.shut_down().await?;
+
             let new_size = dir_size();
             if new_size > current_size {
                 current_size = new_size;
                 continue;
             }
             // Compaction triggered.
-            kv_store.shut_down().await?;
             drop(kv_store);
             // reopen and check content.
             let kv_store = T::open(temp_dir.path()).await?;

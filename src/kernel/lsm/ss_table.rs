@@ -32,6 +32,7 @@ pub(crate) struct SsTable {
     filter: GrowableBloom,
     // 硬盘占有大小
     size_of_disk: u64,
+    size_of_data: usize,
     cache: Mutex<LruCache<Vec<u8>, Vec<u8>>>
 }
 
@@ -125,7 +126,7 @@ impl SsTable {
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
-    pub(crate) async fn restore_from_file(io_handler: IOHandler, cache_size: usize) -> Result<Self>{
+    pub(crate) async fn restore_from_file(io_handler: IOHandler, cache_ratio: f32) -> Result<Self>{
         let gen = io_handler.get_gen();
 
         let meta_info = MetaInfo::read_to_file(&io_handler).await?;
@@ -139,7 +140,7 @@ impl SsTable {
             match data {
                 CommandData::Get { key } => {
                     match rmp_serde::from_slice::<ExtraInfo>(&key)? {
-                        ExtraInfo { sparse_index, score, filter } => {
+                        ExtraInfo { sparse_index, score, filter , size_of_data} => {
                             Ok(SsTable {
                                 meta_info,
                                 sparse_index,
@@ -148,7 +149,8 @@ impl SsTable {
                                 score,
                                 filter,
                                 size_of_disk,
-                                cache: Mutex::new(LruCache::new(NonZeroUsize::new(cache_size).unwrap())),
+                                size_of_data,
+                                cache: Mutex::new(LruCache::new(get_cache_size(cache_ratio, size_of_data))),
                             })
                         }
                     }
@@ -213,6 +215,7 @@ impl SsTable {
     pub(crate) async fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
         if self.filter.contains(key) {
             let mut cache = self.cache.lock().await;
+            
             if let Some(value_ref) = cache.get(key) {
                 return Ok(Some(from_kv_ref(key, value_ref)));
             } else {
@@ -220,14 +223,19 @@ impl SsTable {
                     info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
                     // 获取该区间段的数据
                     let zone = self.io_handler.read_with_pos(position.start, position.len).await?;
-    
+                    
+                    let mut result_option = None;
+
                     CommandPackage::from_zone_to_vec(&zone).await?.into_iter()
                         .for_each(|cmd_data| match cmd_data.unpack() {
-                            CommandData::Set { key,value } => { cache.put(key, value); },
+                            CommandData::Set { key: c_key, value: c_value } => { 
+                                if c_key.eq(key) { result_option = Some(from_kv_ref(key, &c_value)) }
+                                cache.put(c_key, c_value);
+                            },
                             _ => (),
                         });
                 
-                    return Ok(cache.get(key).map(|value_ref| from_kv_ref(key, value_ref)));
+                    return Ok(result_option);
                 }
             }
         }
@@ -280,16 +288,18 @@ impl SsTable {
         for data in vec_mem_data.iter() {
             filter.insert(data.get_key());
         }
+        let size_of_data = vec_mem_data.len();
         let vec_sharding = data_sharding(vec_mem_data, ALIGNMENT_4K, config, false).await
             .into_iter()
             .map(|(_, sharding)| sharding)
             .collect();
         let sparse_index =Self::write_data_batch(vec_sharding, &io_handler).await?;
-
+        
         let extra_info = ExtraInfo {
             sparse_index,
             score,
-            filter
+            filter,
+            size_of_data,
         };
 
         // 开始对稀疏索引进行伪装并断点处理
@@ -315,7 +325,7 @@ impl SsTable {
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
         match extra_info {
-            ExtraInfo { sparse_index, score, filter} => {
+            ExtraInfo { sparse_index, score, filter, size_of_data} => {
                 Ok(SsTable {
                     meta_info,
                     sparse_index,
@@ -324,12 +334,17 @@ impl SsTable {
                     score,
                     filter,
                     size_of_disk,
-                    cache: Mutex::new(LruCache::new(NonZeroUsize::new(config.cache_size_for_sstable).unwrap())),
+                    size_of_data,
+                    cache: Mutex::new(LruCache::new(get_cache_size(config.cache_ratio_for_sstable, size_of_data))),
                 })
             }
         }
 
     }
+}
+
+fn get_cache_size(cache_ratio: f32, size_of_data: usize) -> NonZeroUsize {
+    NonZeroUsize::new((cache_ratio * size_of_data as f32) as usize + 1).unwrap()
 }
 
 fn from_kv_ref(key: &Vec<u8>, value_ref: &Vec<u8>) -> CommandData {

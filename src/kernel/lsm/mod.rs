@@ -36,7 +36,8 @@ struct MetaInfo {
 struct ExtraInfo {
     sparse_index: BTreeMap<Vec<u8>, Position>,
     score: Score,
-    filter: GrowableBloom
+    filter: GrowableBloom,
+    size_of_data: usize
 }
 
 struct MemTable {

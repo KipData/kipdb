@@ -38,7 +38,7 @@ pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
-pub(crate) const DEFAULT_CACHE_SIZE_FOR_SSTABLE: usize = 20 * 1024;
+pub(crate) const DEFAULT_CACHE_RATIO_FOR_SSTABLE: f32 = 0.33;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
@@ -166,7 +166,7 @@ impl LsmStore {
         for gen in sorted_gen_list(&path).await?.iter().rev() {
             let io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
-            match SsTable::restore_from_file(io_handler, config.cache_size_for_sstable).await {
+            match SsTable::restore_from_file(io_handler, config.cache_ratio_for_sstable).await {
                 Ok(ss_table) => {
                     // 初始化成功时直接传入SSTable的索引中
                     ss_tables.insert(*gen, ss_table);
@@ -338,8 +338,8 @@ pub struct Config {
     pub(crate) buffer_i32: AtomicI32,
     /// 布隆过滤器 期望的错误概率
     pub(crate) desired_error_prob: f64,
-    /// Cache for SSTable everyone
-    pub(crate) cache_size_for_sstable: usize
+    /// 单个SSTable的缓存数据占内部所有数据的比率大小
+    pub(crate) cache_ratio_for_sstable: f32
 }
 
 impl Config {
@@ -394,8 +394,8 @@ impl Config {
         self
     }
 
-    pub fn cache_size_for_sstable(mut self, cache_size: usize) -> Self {
-        self.cache_size_for_sstable = cache_size;
+    pub fn cache_ratio_for_sstable(mut self, cache_size: f32) -> Self {
+        self.cache_ratio_for_sstable = cache_size;
         self
     }
 
@@ -417,7 +417,7 @@ impl Config {
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
             buffer_i32: AtomicI32::new(0),
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
-            cache_size_for_sstable: DEFAULT_CACHE_SIZE_FOR_SSTABLE,
+            cache_ratio_for_sstable: DEFAULT_CACHE_RATIO_FOR_SSTABLE,
         }
     }
 }
