@@ -38,6 +38,8 @@ pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
+pub(crate) const DEFAULT_CACHE_SIZE_FOR_SSTABLE: usize = 20 * 1024;
+
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
 pub struct LsmStore {
@@ -164,7 +166,7 @@ impl LsmStore {
         for gen in sorted_gen_list(&path).await?.iter().rev() {
             let io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
-            match SsTable::restore_from_file(io_handler).await {
+            match SsTable::restore_from_file(io_handler, config.cache_size_for_sstable).await {
                 Ok(ss_table) => {
                     // 初始化成功时直接传入SSTable的索引中
                     ss_tables.insert(*gen, ss_table);
@@ -335,7 +337,9 @@ pub struct Config {
     /// 避免极端情况下，SSTable创建重复问题并保持时间有序性
     pub(crate) buffer_i32: AtomicI32,
     /// 布隆过滤器 期望的错误概率
-    pub(crate) desired_error_prob: f64
+    pub(crate) desired_error_prob: f64,
+    /// Cache for SSTable everyone
+    pub(crate) cache_size_for_sstable: usize
 }
 
 impl Config {
@@ -390,9 +394,14 @@ impl Config {
         self
     }
 
+    pub fn cache_size_for_sstable(mut self, cache_size: usize) -> Self {
+        self.cache_size_for_sstable = cache_size;
+        self
+    }
+
     pub fn create_gen(&self) -> i64 {
-        SnowflakeIdBucket::new(self.node_id, self.buffer_i32.fetch_add(1, Ordering::SeqCst))
-            .get_id()
+        SnowflakeIdBucket::new(self.node_id, self.buffer_i32
+            .fetch_add(1, Ordering::SeqCst)).get_id()
     }
 
     pub fn new() -> Self {
@@ -407,7 +416,8 @@ impl Config {
             node_id: DEFAULT_MACHINE_ID,
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
             buffer_i32: AtomicI32::new(0),
-            desired_error_prob: DEFAULT_DESIRED_ERROR_PROB
+            desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
+            cache_size_for_sstable: DEFAULT_CACHE_SIZE_FOR_SSTABLE,
         }
     }
 }

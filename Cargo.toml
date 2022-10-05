@@ -37,6 +37,7 @@ tokio-stream = "0.1.9"
 async-trait = "0.1.57"
 # 数据承载媒介
 bytes = "1.2.1"
+lru = "0.8.1"
 # 文件IO
 memmap2 = "0.5.4"
 # 日志

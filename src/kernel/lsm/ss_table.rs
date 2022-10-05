@@ -1,7 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::btree_map::BTreeMap;
+use std::num::NonZeroUsize;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
+use lru::LruCache;
+use tokio::sync::Mutex;
 use tracing::{info};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, CommandPackage};
@@ -29,6 +32,7 @@ pub(crate) struct SsTable {
     filter: GrowableBloom,
     // 硬盘占有大小
     size_of_disk: u64,
+    cache: Mutex<LruCache<Vec<u8>, Vec<u8>>>
 }
 
 /// 数据范围索引
@@ -121,7 +125,7 @@ impl SsTable {
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
-    pub(crate) async fn restore_from_file(io_handler: IOHandler) -> Result<Self>{
+    pub(crate) async fn restore_from_file(io_handler: IOHandler, cache_size: usize) -> Result<Self>{
         let gen = io_handler.get_gen();
 
         let meta_info = MetaInfo::read_to_file(&io_handler).await?;
@@ -143,7 +147,8 @@ impl SsTable {
                                 io_handler,
                                 score,
                                 filter,
-                                size_of_disk
+                                size_of_disk,
+                                cache: Mutex::new(LruCache::new(NonZeroUsize::new(cache_size).unwrap())),
                             })
                         }
                     }
@@ -207,13 +212,23 @@ impl SsTable {
     /// 从该sstable中获取指定key对应的CommandData
     pub(crate) async fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
         if self.filter.contains(key) {
-            if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
-                info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
-                // 获取该区间段的数据
-                let zone = self.io_handler.read_with_pos(position.start, position.len).await?;
-
-                // 返回该区间段对应的数据结果
-                return Ok(CommandPackage::find_key_with_zone_unpack(zone.as_slice(), &key).await?);
+            let mut cache = self.cache.lock().await;
+            if let Some(value_ref) = cache.get(key) {
+                return Ok(Some(from_kv_ref(key, value_ref)));
+            } else {
+                if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
+                    info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
+                    // 获取该区间段的数据
+                    let zone = self.io_handler.read_with_pos(position.start, position.len).await?;
+    
+                    CommandPackage::from_zone_to_vec(&zone).await?.into_iter()
+                        .for_each(|cmd_data| match cmd_data.unpack() {
+                            CommandData::Set { key,value } => { cache.put(key, value); },
+                            _ => (),
+                        });
+                
+                    return Ok(cache.get(key).map(|value_ref| from_kv_ref(key, value_ref)));
+                }
             }
         }
         Ok(None)
@@ -308,10 +323,15 @@ impl SsTable {
                     gen,
                     score,
                     filter,
-                    size_of_disk
+                    size_of_disk,
+                    cache: Mutex::new(LruCache::new(NonZeroUsize::new(config.cache_size_for_sstable).unwrap())),
                 })
             }
         }
 
     }
+}
+
+fn from_kv_ref(key: &Vec<u8>, value_ref: &Vec<u8>) -> CommandData {
+    CommandData::Set { key: key.clone(), value: value_ref.clone() }
 }
