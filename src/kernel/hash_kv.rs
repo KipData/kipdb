@@ -257,6 +257,11 @@ impl KVStore for HashStore {
             .into_iter()
             .sum::<u64>())
     }
+
+    async fn len(&self) -> Result<usize> {
+        Ok(self.manifest.read().await
+            .index.len())
+    }
 }
 
 /// 通过目录地址加载数据并返回数据总大小

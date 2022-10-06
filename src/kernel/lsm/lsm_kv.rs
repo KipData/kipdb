@@ -126,6 +126,13 @@ impl KVStore for LsmStore {
             .map(|(_, ss_table)| ss_table.get_size_of_disk())
             .sum::<u64>() + self.wal.size_of_disk().await?)
     }
+
+    async fn len(&self) -> Result<usize> {
+        Ok(self.manifest.read().await
+            .ss_tables_map.iter()
+            .map(|(_, ss_table)| ss_table.len())
+            .sum::<usize>() + self.wal.len().await?)
+    }
 }
 
 impl LsmStore {
@@ -137,7 +144,9 @@ impl LsmStore {
 
         let key = cmd.get_key();
         // Wal与MemTable双写
-        wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
+        if self.config.wal_enable { 
+            wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
+        }
         mem_table.insert_data(key.clone(), cmd).await;
 
         if mem_table.is_threshold_exceeded_minor(threshold_size).await {
@@ -339,7 +348,11 @@ pub struct Config {
     /// 布隆过滤器 期望的错误概率
     pub(crate) desired_error_prob: f64,
     /// 单个SSTable的缓存数据占内部所有数据的比率大小
-    pub(crate) cache_ratio_for_sstable: f32
+    pub(crate) cache_ratio_for_sstable: f32,
+    /// 开启wal日志写入
+    /// 在开启状态时，会在SSTable文件读取失败时生效，避免数据丢失
+    /// 不过在设备IO容易成为瓶颈，或使用多节点冗余写入时，建议关闭以提高写入性能
+    pub(crate) wal_enable: bool
 }
 
 impl Config {
@@ -404,6 +417,11 @@ impl Config {
             .fetch_add(1, Ordering::SeqCst)).get_id()
     }
 
+    pub fn wal_enable(mut self, wal_enable: bool) -> Self {
+        self.wal_enable = wal_enable;
+        self
+    }
+
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
@@ -418,6 +436,7 @@ impl Config {
             buffer_i32: AtomicI32::new(0),
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
             cache_ratio_for_sstable: DEFAULT_CACHE_RATIO_FOR_SSTABLE,
+            wal_enable: true,
         }
     }
 }

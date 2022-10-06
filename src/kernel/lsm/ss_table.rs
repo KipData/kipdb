@@ -211,6 +211,10 @@ impl SsTable {
         self.size_of_disk
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.size_of_data
+    }
+
     /// 从该sstable中获取指定key对应的CommandData
     pub(crate) async fn query(&self, key: &Vec<u8>) -> Result<Option<CommandData>> {
         if self.filter.contains(key) {

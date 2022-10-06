@@ -66,6 +66,7 @@ pub trait KVStore: Send + 'static + Sized {
 
     async fn size_of_disk(&self) -> Result<u64>;
 
+    async fn len(&self) -> Result<usize>;
 }
 
 /// 用于包装Command交予持久化核心实现使用的操作类
@@ -230,19 +231,6 @@ impl CommandPackage {
             }
             // 对pos进行长度自增并对占位符进行跳过
             pos += len as u64 + 4;
-        }
-        Ok(None)
-    }
-
-    /// 从该数据区间中找到对应Key的CommandData
-    /// TODO: 优化成Iter的形式
-    pub async fn find_key_with_zone_unpack(zone: &[u8], key: &Vec<u8>) -> Result<Option<CommandData>> {
-        let vec_u8 = Self::get_vec_bytes(zone).await;
-        for &cmd_u8 in vec_u8.iter() {
-            let cmd: CommandData = rmp_serde::from_slice(cmd_u8)?;
-            if cmd.get_key().eq(key) {
-                return Ok(Some(cmd));
-            }
         }
         Ok(None)
     }

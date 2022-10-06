@@ -58,4 +58,8 @@ impl KVStore for SledStore {
     async fn size_of_disk(&self) -> crate::kernel::Result<u64> {
         Ok(self.data_base.size_on_disk()?)
     }
+
+    async fn len(&self) -> crate::kernel::Result<usize> {
+        Ok(self.data_base.len())
+    }
 }
