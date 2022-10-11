@@ -1,13 +1,13 @@
 use std::{sync::Arc};
+use std::path::PathBuf;
 
 use futures::future;
 use itertools::Itertools;
-use tempfile::TempDir;
 
 use super::{lsm_kv::{Config, LsmStore}};
 use crate::kernel::{Result, CommandData, io_handler::{IOHandler, IOHandlerFactory}, CommandPackage};
 
-struct Mapper {
+pub struct Mapper {
     io_handler_factory: IOHandlerFactory,
     config: Arc<Config>,
     vec_result_io_handler: Vec<IOHandler>,
@@ -39,10 +39,8 @@ impl Mapper {
         .collect())
     }
 
-    pub async fn from_lsm_kv<F>(lsm_kv: &LsmStore, match_func: F) -> Result<Mapper>  where F: Fn(&CommandData) -> bool {
-        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-        let io_handler_factory = IOHandlerFactory::new(temp_dir.path());
+    pub async fn from_lsm_kv<F>(lsm_kv: &LsmStore, match_func: F, path: impl Into<PathBuf> + Send) -> Result<Mapper> where F: Fn(&CommandData) -> bool {
+        let io_handler_factory = IOHandlerFactory::new(path);
         let config = Arc::clone(&lsm_kv.config());
 
         let manifest = lsm_kv.manifest().read().await;

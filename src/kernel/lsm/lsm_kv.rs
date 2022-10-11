@@ -14,6 +14,7 @@ use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::lsm::{Manifest, MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
 use crate::kernel::lsm::ss_table::SsTable;
+use crate::kernel::lsm::mapper::Mapper;
 use crate::kernel::Result;
 
 pub(crate) type LevelSlice = [Vec<i64>; 7];
@@ -136,6 +137,10 @@ impl KVStore for LsmStore {
 }
 
 impl LsmStore {
+
+    pub async fn map<F>(&self, match_func: F, path: impl Into<PathBuf> + Send) -> Result<Mapper> where F: Fn(&CommandData) -> bool {
+        Mapper::from_lsm_kv(self, match_func, path).await
+    }
 
     /// 追加数据
     async fn append_cmd_data(&self, cmd: CommandData) -> Result<()> {
@@ -481,6 +486,37 @@ fn test_lsm_major_compactor() -> Result<()> {
             assert_eq!(kv_store.get(&vec_u8).await?.unwrap(), vec_u8);
         }
         println!("[get_for][Time: {:?}]", start.elapsed());
+        kv_store.shut_down().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn test_lsm_map_reduce() -> Result<()> {
+    use tempfile::TempDir;
+
+    let _temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+    tokio_test::block_on(async move {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let kv_store = LsmStore::open(temp_dir.path()).await?;
+        let mut vec_key: Vec<i32> = Vec::new();
+
+        for i in 0..30000 {
+            let vec_u8 = rmp_serde::to_vec(&i).unwrap();
+            kv_store.set(&vec_u8, vec_u8.clone()).await?;
+            vec_key.push(i);
+        }
+
+        kv_store.flush().await?;
+
+        kv_store.map(|cmd| { cmd.get_key().len().eq(&1) }, temp_dir.path()).await?
+            .reduce().await?
+            .into_iter()
+            .for_each(|cmd| {
+                assert_eq!(cmd.get_key().len(), 1);
+            } );
         kv_store.shut_down().await?;
         Ok(())
     })
