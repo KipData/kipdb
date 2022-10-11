@@ -16,6 +16,7 @@ use crate::kernel::lsm::ss_table::{Score, SsTable};
 pub(crate) mod ss_table;
 pub mod lsm_kv;
 mod compactor;
+mod mapper;
 
 pub(crate) type MemMap = BTreeMap<Vec<u8>, CommandData>;
 
@@ -253,6 +254,10 @@ impl Manifest {
             .enumerate()
             .find(|(_ , gen)| source_gen.eq(*gen))
             .map(|(index, _)| index)
+    }
+
+    pub(crate) fn get_vec_ref_sst(&self) -> Vec<&SsTable>{
+        self.ss_tables_map.values().collect_vec()
     }
 }
 

@@ -195,6 +195,10 @@ impl SsTable {
         self.meta_info.level as usize
     }
 
+    pub(crate) fn get_io_handler(&self) -> &IOHandler {
+        &self.io_handler
+    }
+
     pub(crate) fn get_version(&self) -> u64 {
         self.meta_info.version
     }
