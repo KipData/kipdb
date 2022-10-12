@@ -309,7 +309,8 @@ fn test_meta_info() -> Result<()> {
         version: 0,
         data_len: 0,
         index_len: 0,
-        part_size: 0
+        part_size: 0,
+        crc_code: 0
     };
 
     let vec_u8 = bincode::serialize(&info)?;
