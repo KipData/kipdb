@@ -9,8 +9,8 @@ use kip_db::kernel::sled_kv::SledStore;
 
 #[test]
 fn get_stored_value() -> Result<()> {
-    get_stored_value_with_kv_store::<HashStore>()?;
-    get_stored_value_with_kv_store::<SledStore>()?;
+    // get_stored_value_with_kv_store::<HashStore>()?;
+    // get_stored_value_with_kv_store::<SledStore>()?;
     get_stored_value_with_kv_store::<LsmStore>()?;
     Ok(())
 }

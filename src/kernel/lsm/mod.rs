@@ -21,7 +21,7 @@ pub(crate) type MemMap = BTreeMap<Vec<u8>, CommandData>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
-const TABLE_META_INFO_SIZE: usize = 40;
+const TABLE_META_INFO_SIZE: usize = 48;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct MetaInfo {
@@ -29,7 +29,8 @@ struct MetaInfo {
     version: u64,
     data_len: u64,
     index_len: u64,
-    part_size: u64
+    part_size: u64,
+    crc_code: u64
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,7 +38,7 @@ struct ExtraInfo {
     sparse_index: BTreeMap<Vec<u8>, Position>,
     score: Score,
     filter: GrowableBloom,
-    size_of_data: usize
+    size_of_data: usize,
 }
 
 struct MemTable {
@@ -113,8 +114,9 @@ impl MemTable {
 
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
-    async fn write_to_file(&self, io_handler: &IOHandler) -> Result<()> {
+    async fn write_to_file_and_flush(&self, io_handler: &IOHandler) -> Result<()> {
         io_handler.write(bincode::serialize(&self)?).await?;
+        io_handler.flush().await?;
         Ok(())
     }
 

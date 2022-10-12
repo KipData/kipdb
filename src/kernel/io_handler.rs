@@ -120,6 +120,15 @@ impl IOHandler {
         Ok(self.writer.read().await.pos)
     }
 
+    /// 获取文件二进制序列
+    pub async fn get_crc_code(&self) -> Result<u32> {
+        let mut buffer = Vec::new();
+
+        self.reader.lock().await
+            .read_to_end(&mut buffer)?;
+        Ok(crc32fast::hash(buffer.as_slice()))
+    }
+
     pub async fn flush(&self) -> Result<()> {
         self.writer.write()
             .await

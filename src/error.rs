@@ -27,6 +27,8 @@ pub enum KvsError {
     LevelOver,
     #[fail(display = "Not the correct type of Cmd")]
     NotMatchCmd,
+    #[fail(display = "CRC code does not match")]
+    CrcMisMatch,
     #[fail(display = "{}", _0)]
     Sled(#[cause] sled::Error),
 
