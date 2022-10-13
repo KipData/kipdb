@@ -9,8 +9,8 @@ use kip_db::kernel::sled_kv::SledStore;
 
 #[test]
 fn get_stored_value() -> Result<()> {
-    // get_stored_value_with_kv_store::<HashStore>()?;
-    // get_stored_value_with_kv_store::<SledStore>()?;
+    get_stored_value_with_kv_store::<HashStore>()?;
+    get_stored_value_with_kv_store::<SledStore>()?;
     get_stored_value_with_kv_store::<LsmStore>()?;
     Ok(())
 }
@@ -31,7 +31,7 @@ fn get_stored_value_with_kv_store<T: KVStore>() -> Result<()> {
 
         kv_store.get(&key1).await?;
         kv_store.get(&key2).await?;
-        kv_store.shut_down().await?;
+        kv_store.flush().await?;
         // Open from disk again and check persistent data.
         drop(kv_store);
         let kv_store = T::open(temp_dir.path()).await?;
@@ -70,7 +70,7 @@ fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
         assert_eq!(kv_store.get(&key1).await?, Some(value2.clone()));
 
         // Open from disk again and check persistent data.
-        kv_store.shut_down().await?;
+        kv_store.flush().await?;
         drop(kv_store);
         let kv_store = T::open(temp_dir.path()).await?;
         assert_eq!(kv_store.get(&key1).await?, Some(value2.clone()));
@@ -105,7 +105,7 @@ fn get_non_existent_value_with_kv_store<T: KVStore>() -> Result<()> {
         assert_eq!(kv_store.get(&key2).await?, None);
 
         // Open from disk again and check persistent data.
-        kv_store.shut_down().await?;
+        kv_store.flush().await?;
         drop(kv_store);
         let kv_store = T::open(temp_dir.path()).await?;
         assert_eq!(kv_store.get(&key2).await?, None);
@@ -192,7 +192,7 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
                              encode_key(value.as_str())?).await?
             }
 
-            kv_store.shut_down().await?;
+            kv_store.flush().await?;
 
             let new_size = dir_size();
             if new_size > current_size {

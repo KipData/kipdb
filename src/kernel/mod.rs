@@ -40,9 +40,6 @@ pub trait KVStore: Send + 'static + Sized {
     /// 通过键删除键值对
     async fn remove(&self, key: &Vec<u8>) -> Result<()>;
 
-    /// 将内核关闭
-    async fn shut_down(&self) -> Result<()>;
-
     /// 顺序批量执行
     async fn batch_order(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
         let mut vec_result = Vec::new();

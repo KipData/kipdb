@@ -243,10 +243,6 @@ impl KVStore for HashStore {
         }
     }
 
-    async fn shut_down(&self) -> Result<()> {
-        self.flush().await
-    }
-
     async fn size_of_disk(&self) -> Result<u64> {
         let manifest = self.manifest.read().await;
 

@@ -20,9 +20,6 @@ kip_db.remove(&vec![b'k']).await?;
 
 // 强制数据刷入硬盘
 kip_db.flush().await?;
-
-// 关闭内核(关闭，但没完全关闭 仅结束前处理)
-kip_db.shut_down().await?;
 ```
 ### 远程应用
 #### 服务启动

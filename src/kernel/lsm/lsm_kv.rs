@@ -79,6 +79,10 @@ impl KVStore for LsmStore {
 
     async fn flush(&self) -> Result<()> {
         self.wal.flush().await?;
+        if !self.mem_table.mem_table_is_empty().await {
+            self.minor_compaction().await?;
+        }
+        self.wait_for_compression_down().await?;
 
         Ok(())
     }
@@ -88,8 +92,8 @@ impl KVStore for LsmStore {
     }
 
     async fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
-        if let Some(cmd_data) = self.mem_table.get_cmd_data(key).await {
-            return Ok(LsmStore::value_unpack_with_owner(cmd_data));
+        if let Some(CommandData::Set { value, ..}) = self.mem_table.get_cmd_data(key).await {
+            return Ok(Some(value));
         }
         // 读取前等待压缩完毕
         // 相对来说，消耗较小
@@ -106,18 +110,6 @@ impl KVStore for LsmStore {
             Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.clone() }).await }
             None => { Err(KvsError::KeyNotFound) }
         }
-    }
-
-    async fn shut_down(&self) -> Result<()> {
-        self.wal.flush().await?;
-        // 注意此处不使用let保存读锁
-        // Compactor进行minor_compaction时需要使用到写锁
-        if !self.mem_table.mem_table_is_empty().await {
-            self.minor_compaction().await?;
-        }
-        self.wait_for_compression_down().await?;
-
-        Ok(())
     }
 
     async fn size_of_disk(&self) -> Result<u64> {
@@ -228,18 +220,20 @@ impl LsmStore {
     /// 异步持久化immutable_table为SSTable
     pub async fn minor_compaction(&self) -> Result<()> {
         let (keys, values) = self.mem_table.table_swap().await;
-        let compactor = Compactor::from_lsm_kv(self);
-        let sender = self.live_tag().await;
+        if !keys.is_empty() && !values.is_empty() {
+            let compactor = Compactor::from_lsm_kv(self);
+            let sender = self.live_tag().await;
 
-        tokio::spawn(async move {
-            let start = Instant::now();
-            // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
-            if let Err(err) = compactor.minor_compaction(keys, values).await {
-                error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
-            }
-            sender.send(()).unwrap();
-            info!("[LsmStore][Compaction Drop][Time: {:?}]", start.elapsed());
-        });
+            tokio::spawn(async move {
+                let start = Instant::now();
+                // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
+                if let Err(err) = compactor.minor_compaction(keys, values).await {
+                    error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
+                }
+                sender.send(()).unwrap();
+                info!("[LsmStore][Compaction Drop][Time: {:?}]", start.elapsed());
+            });
+        }
         Ok(())
     }
 
@@ -481,7 +475,7 @@ fn test_lsm_major_compactor() -> Result<()> {
             assert_eq!(kv_store.get(&vec_u8).await?.unwrap(), vec_u8);
         }
         println!("[get_for][Time: {:?}]", start.elapsed());
-        kv_store.shut_down().await?;
+        kv_store.flush().await?;
         Ok(())
     })
 }

@@ -81,7 +81,7 @@ impl MemTable {
     pub(crate) async fn mem_table_is_empty(&self) -> bool {
         let mem_table_slice = self.mem_table_slice.read().await;
 
-        mem_table_slice[0].len() < 1 && mem_table_slice[1].len() < 1
+        mem_table_slice[0].is_empty()
     }
 
     async fn is_threshold_exceeded_minor(&self, threshold_size: usize) -> bool {
@@ -221,7 +221,7 @@ impl Manifest {
 
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) async fn get_data_for_ss_tables(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
-        for (_, ss_table) in &self.ss_tables_map {
+        for (_, ss_table) in self.ss_tables_map.iter().rev() {
             if let Some(cmd_data) = ss_table.query(key).await? {
                 return Ok(cmd_data.get_value_owner());
             }
