@@ -1,7 +1,7 @@
 use clap::Parser;
 use tokio::net::TcpListener;
 
-use kip_db::DEFAULT_PORT;
+use kip_db::{DEFAULT_PORT, LOCAL_IP};
 use kip_db::net::{server, Result};
 
 /// 服务启动方法
@@ -11,10 +11,11 @@ pub async fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().unwrap();
 
     let cli = Cli::parse();
+    let ip = cli.ip.unwrap_or(LOCAL_IP.to_string());
     let port = cli.port.unwrap_or(DEFAULT_PORT);
 
     // Bind a TCP listener
-    let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
+    let listener = TcpListener::bind(&format!("{}:{}", ip, port)).await?;
 
     server::run(listener, quit()).await;
 
@@ -34,13 +35,15 @@ pub async fn quit() -> Result<()> {
     }
     #[cfg(windows)]
     {
-        tokio::signal::ctrl_c()
+        Ok(tokio::signal::ctrl_c().await?)
     }
 }
 
 #[derive(Parser, Debug)]
 #[clap(name = "KipDB-Server", version, author, about = "A KV-Store server")]
 struct Cli {
+    #[clap(long)]
+    ip: Option<String>,
     #[clap(long)]
     port: Option<u16>
 }
