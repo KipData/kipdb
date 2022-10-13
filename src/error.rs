@@ -63,6 +63,8 @@ pub enum ConnectionError {
     SerdeMPEncode(#[cause] rmp_serde::encode::Error),
     #[fail(display = "{}", _0)]
     SerdeMPDecode(#[cause] rmp_serde::decode::Error),
+    #[fail(display = "server flush error")]
+    RemoteFlushError,
     #[fail(display = "{}", _0)]
     KvStoreError(#[cause] KvsError),
 }

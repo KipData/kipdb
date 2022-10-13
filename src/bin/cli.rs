@@ -102,6 +102,13 @@ async fn main() -> Result<()> {
         Command::SizeOfDisk => {
             info!("{}", client.size_of_disk().await?);
         }
+        Command::Len => {
+            info!("{}", client.len().await?);
+        }
+        Command::Flush => {
+            client.flush().await?;
+            info!("Done!");
+        }
     }
 
     Ok(())

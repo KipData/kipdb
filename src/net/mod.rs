@@ -18,6 +18,8 @@ pub enum CommandOption {
     Value(Vec<u8>),
     ValueVec(Vec<Option<Vec<u8>>>),
     SizeOfDisk(u64),
+    Len(usize),
+    Flush,
     None
 }
 

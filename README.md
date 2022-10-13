@@ -40,6 +40,10 @@ client.set(&vec![b'k'], vec![b'v']).await?
 client.get(&vec![b'k']).await?
 // 已占有硬盘大小
 client.size_of_disk().await?
+// 存入指令数
+client.len().await?
+// 数据刷入硬盘
+client.flush().await?
 // 删除数据
 client.remove(&vec![b'k']).await?;
 // 批量指令执行(可选 并行/同步 执行)
@@ -98,8 +102,10 @@ SUBCOMMANDS:
     batch-remove-parallel
     batch-set
     batch-set-parallel
+    flush
     get
     help                     Print this message or the help of the given subcommand(s)
+    len
     remove
     set
     size-of-disk

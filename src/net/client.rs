@@ -41,6 +41,14 @@ impl Client {
         }
     }
 
+    /// 刷入硬盘
+    pub async fn flush(&mut self) -> Result<()>{
+        match self.send_cmd(CommandOption::Flush).await? {
+            CommandOption::Flush => Ok(()),
+            _ => Err(ConnectionError::RemoteFlushError)
+        }
+    }
+
     /// 批量处理
     pub async fn batch(&mut self, batch_cmd: Vec<CommandData>, is_parallel: bool) -> Result<Vec<Option<Vec<u8>>>>{
         match self.send_cmd(CommandOption::VecCmd(batch_cmd, is_parallel)).await? {
@@ -53,6 +61,14 @@ impl Client {
     pub async fn size_of_disk(&mut self) -> Result<u64> {
         match self.send_cmd(CommandOption::SizeOfDisk(0)).await? {
             CommandOption::SizeOfDisk(size_of_disk) => {Ok(size_of_disk)},
+            _ => Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
+        }
+    }
+
+    /// 数据数量
+    pub async fn len(&mut self) -> Result<usize> {
+        match self.send_cmd(CommandOption::Len(0)).await? {
+            CommandOption::Len(len) => {Ok(len)},
             _ => Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
         }
     }

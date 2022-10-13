@@ -6,6 +6,7 @@ pub enum Command {
     Set { key: String, value: String },
     Remove { key: String },
     Get { key: String },
+    Flush,
 
     #[clap(help = "cli.exe batch-set [keys]... [values]...")]
     BatchSet { batch: Vec<String> },
@@ -16,6 +17,7 @@ pub enum Command {
     BatchGet { keys: Vec<String> },
     BatchGetParallel { keys: Vec<String> },
     SizeOfDisk,
+    Len
 }
 
 impl Command {
@@ -29,6 +31,10 @@ impl Command {
 
     pub fn get(key: String) -> Command {
         Command::Get { key }
+    }
+
+    pub fn flush() -> Command {
+        Command::Flush
     }
 
     pub fn batch_set(batch: Vec<String>) -> Command {

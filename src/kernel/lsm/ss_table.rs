@@ -35,9 +35,7 @@ pub(crate) struct SsTable {
     // 数据数量
     size_of_data: usize,
     // 读取用LRU缓存
-    read_cache: Mutex<LruCache<Vec<u8>, Vec<u8>>>,
-    // CRC编码
-    crc_code: u64
+    read_cache: Mutex<LruCache<Vec<u8>, Vec<u8>>>
 }
 
 /// 数据范围索引
@@ -149,7 +147,6 @@ impl SsTable {
                     match rmp_serde::from_slice::<ExtraInfo>(&key)? {
                         ExtraInfo { sparse_index, score, filter , size_of_data } => {
                             if crc_code_verification.eq(&meta_info.crc_code) {
-                                let crc_code = meta_info.crc_code;
                                 Ok(SsTable {
                                     meta_info,
                                     sparse_index,
@@ -159,8 +156,7 @@ impl SsTable {
                                     filter,
                                     size_of_disk,
                                     size_of_data,
-                                    read_cache: Mutex::new(LruCache::new(get_cache_size(cache_ratio, size_of_data))),
-                                    crc_code
+                                    read_cache: Mutex::new(LruCache::new(get_cache_size(cache_ratio, size_of_data)))
                                 })
                             } else {
                                 Err(KvsError::CrcMisMatch)
@@ -355,7 +351,6 @@ impl SsTable {
                     size_of_disk,
                     size_of_data,
                     read_cache: Mutex::new(LruCache::new(get_cache_size(config.cache_ratio_for_sstable, size_of_data))),
-                    crc_code
                 })
             }
         }

@@ -168,6 +168,18 @@ impl Handler {
 
                     Ok(())
                 }
+                CommandOption::Len(_) => {
+                    let len = self.kv_store.len().await?;
+                    self.connection.write(CommandOption::Len(len)).await?;
+
+                    Ok(())
+                }
+                CommandOption::Flush => {
+                    self.kv_store.flush().await?;
+                    self.connection.write(CommandOption::Flush).await?;
+
+                    Ok(())
+                }
                 _ => Err(ConnectionError::WrongInstruction)
             }
         }
