@@ -1,6 +1,5 @@
 use clap::Parser;
 use tokio::net::TcpListener;
-use tokio::signal;
 
 use kip_db::DEFAULT_PORT;
 use kip_db::net::{server, Result};
@@ -17,9 +16,26 @@ pub async fn main() -> Result<()> {
     // Bind a TCP listener
     let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
 
-    server::run(listener, signal::ctrl_c()).await;
+    server::run(listener, quit()).await;
 
     Ok(())
+}
+
+pub async fn quit() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            _ = interrupt.recv() => (),
+            _ = terminate.recv() => (),
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        tokio::signal::ctrl_c()
+    }
 }
 
 #[derive(Parser, Debug)]
