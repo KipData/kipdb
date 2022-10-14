@@ -4,7 +4,7 @@ version = "0.1.0-alpha.0"
 edition = "2021"
 authors = ["Kould <kould2333@gmail.com>"]
 description = "轻量级、异步 基于LSM Leveled Compaction K-V数据库"
-license = "Apache 2.0"
+license = "Apache-2.0"
 repository = "https://github.com/KKould/KipDB"
 readme = "README.md"
 
