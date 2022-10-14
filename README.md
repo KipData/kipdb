@@ -1,5 +1,10 @@
 # KipDB - Keep it Public DB
 
+[![Crates.io][ci]][cl]
+
+[ci]: https://img.shields.io/crates/v/kip_db.svg
+[cl]: https://crates.io/crates/kip_db/
+
 [Kiss](https://zh.m.wikipedia.org/zh/KISS%E5%8E%9F%E5%88%99) First Data Base
 ## 快速上手 🤞
 ### 直接调用
@@ -27,7 +32,7 @@ kip_db.flush().await?;
 /// 服务端启动！
 let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
-kip_db::net::server::run(listener, quit()).await;
+kip_db::net::server::run(listener, tokio::signal::ctrl_c()).await;
 ```
 #### 远程调用
 ```rust
