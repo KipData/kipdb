@@ -1,11 +1,20 @@
 # KipDB - Keep it Public DB
 
-[![Crates.io][ci]][cl]
+<p align="left">
+  <a href="https://gitee.com/objs/mayfly-go" target="_blank">
+    <img src="https://gitee.com/Kould/KipDB/badge/star.svg?theme=white" alt="star"/>
+    <img src="https://gitee.com/Kould/KipDB/badge/fork.svg" alt="fork"/>
+  </a>
+  <a href="https://github.com/may-fly/mayfly-go" target="_blank">
+    <img src="https://img.shields.io/github/stars/KKould/KipDB.svg?style=social" alt="github star"/>
+    <img src="https://img.shields.io/github/forks/KKould/KipDB.svg?style=social" alt="github fork"/>
+  </a>
+  <a href="https://crates.io/crates/kip_db/" target="_blank">
+    <img src="https://img.shields.io/crates/v/kip_db.svg" alt="Crates.io"/>
+  </a>
+</p>
 
-[ci]: https://img.shields.io/crates/v/kip_db.svg
-[cl]: https://crates.io/crates/kip_db/
-
-[Kiss](https://zh.m.wikipedia.org/zh/KISS%E5%8E%9F%E5%88%99) First Data Base
+### [Kiss](https://zh.m.wikipedia.org/zh/KISS%E5%8E%9F%E5%88%99) First Data Base
 ## 快速上手 🤞
 ### 直接调用
 ```rust
