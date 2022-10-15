@@ -1,11 +1,11 @@
 # KipDB - Keep it Public DB
 
 <p align="left">
-  <a href="https://gitee.com/objs/mayfly-go" target="_blank">
+  <a href="https://gitee.com/Kould/KipDB" target="_blank">
     <img src="https://gitee.com/Kould/KipDB/badge/star.svg?theme=white" alt="star"/>
     <img src="https://gitee.com/Kould/KipDB/badge/fork.svg" alt="fork"/>
   </a>
-  <a href="https://github.com/may-fly/mayfly-go" target="_blank">
+  <a href="https://github.com/KKould/KipDB" target="_blank">
     <img src="https://img.shields.io/github/stars/KKould/KipDB.svg?style=social" alt="github star"/>
     <img src="https://img.shields.io/github/forks/KKould/KipDB.svg?style=social" alt="github fork"/>
   </a>
