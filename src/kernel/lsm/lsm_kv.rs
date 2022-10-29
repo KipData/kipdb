@@ -95,20 +95,25 @@ impl KVStore for LsmStore {
         if let Some(CommandData::Set { value, ..}) = self.mem_table.get_cmd_data(key).await {
             return Ok(Some(value));
         }
-        // 尝试从Wal获取数据
-        if let Some(value) = self.wal.get(key).await? {
-            warn!("[Command][reload_from_wal]{:?}", wal_cmd);
-            self.append_cmd_data(CommandData::Set { key: key.clone(), value: value.clone() }, false).await?;
-            return Ok(Some(value));
-        }
         // 读取前等待压缩完毕
         // 相对来说，消耗较小
         // 当压缩时长高时，说明数据量非常大
         // 此时直接去获取的话可能会既获取不到数据，也花费大量时间
         self.wait_for_compression_down().await?;
 
-        Ok(self.manifest.read().await
-            .get_data_for_ss_tables(key).await?)
+        if let Some(value) = self.manifest.write().await
+            .get_data_for_ss_tables(key).await? {
+            return Ok(Some(value));
+        }
+        // 尝试从Wal获取数据
+        if let Some(value) = self.wal.get(key).await? {
+            let wal_cmd = CommandData::Set { key: key.clone(), value: value.clone() };
+            warn!("[Command][reload_from_wal]{:?}", wal_cmd);
+            self.append_cmd_data(wal_cmd, false).await?;
+            return Ok(Some(value));
+        }
+
+        Ok(None)
     }
 
     async fn remove(&self, key: &Vec<u8>) -> Result<()> {
