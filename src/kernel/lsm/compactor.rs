@@ -9,7 +9,7 @@ use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
 use crate::kernel::lsm::{data_sharding, Manifest};
-use crate::kernel::lsm::ss_table::{Score, SsTable};
+use crate::kernel::lsm::ss_table::{Scope, SsTable};
 
 pub(crate) const LEVEL_0: usize = 0;
 
@@ -59,7 +59,7 @@ impl Compactor {
     /// Major压缩，负责将不同Level之间的数据向下层压缩转移
     /// 目前Major压缩的大体步骤是
     /// 1、获取manifest读锁，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
-    /// 2、vec_ss_table_l的每个SSTable中的Score属性进行融合，并以此获取下一Level与该Score相交的SSTable，命名为vec_ss_table_l_1
+    /// 2、vec_ss_table_l的每个SSTable中的scope属性进行融合，并以此获取下一Level与该scope相交的SSTable，命名为vec_ss_table_l_1
     /// 3、获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
     /// 4、vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<CommandData>
     /// 5、释放manifest读锁
@@ -123,12 +123,12 @@ impl Compactor {
         if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
             let start = Instant::now();
             let vec_ss_table_l_1 =
-                manifest.get_meet_score_ss_tables(next_level, &Score::fusion_from_vec_ss_table(&vec_ss_table)?);
+                manifest.get_meet_scope_ss_tables(next_level, &Scope::fusion_from_vec_ss_table(&vec_ss_table)?);
 
             let index = SsTable::first_index_with_level(&vec_ss_table_l_1, &manifest, next_level);
 
-            let vec_ss_table_final = match Score::fusion_from_vec_ss_table(&vec_ss_table_l_1) {
-                Ok(score) => manifest.get_meet_score_ss_tables(level, &score),
+            let vec_ss_table_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_l_1) {
+                Ok(scope) => manifest.get_meet_scope_ss_tables(level, &scope),
                 Err(_) => vec_ss_table
             }.into_iter()
                 .chain(vec_ss_table_l_1)

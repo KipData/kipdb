@@ -88,11 +88,17 @@ impl KVStore for LsmStore {
     }
 
     async fn set(&self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data(CommandData::Set { key: key.clone(), value }).await
+        self.append_cmd_data(CommandData::Set { key: key.clone(), value }, true).await
     }
 
     async fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
         if let Some(CommandData::Set { value, ..}) = self.mem_table.get_cmd_data(key).await {
+            return Ok(Some(value));
+        }
+        // 尝试从Wal获取数据
+        if let Some(value) = self.wal.get(key).await? {
+            warn!("[Command][reload_from_wal]{:?}", wal_cmd);
+            self.append_cmd_data(CommandData::Set { key: key.clone(), value: value.clone() }, false).await?;
             return Ok(Some(value));
         }
         // 读取前等待压缩完毕
@@ -107,7 +113,7 @@ impl KVStore for LsmStore {
 
     async fn remove(&self, key: &Vec<u8>) -> Result<()> {
         match self.get(key).await? {
-            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.clone() }).await }
+            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.clone() }, true).await }
             None => { Err(KvsError::KeyNotFound) }
         }
     }
@@ -130,13 +136,13 @@ impl KVStore for LsmStore {
 impl LsmStore {
 
     /// 追加数据
-    async fn append_cmd_data(&self, cmd: CommandData) -> Result<()> {
+    async fn append_cmd_data(&self, cmd: CommandData, wal_write: bool) -> Result<()> {
         let mem_table = &self.mem_table;
         let threshold_size = self.config.minor_threshold_with_data_size as usize;
 
         let key = cmd.get_key();
         // Wal与MemTable双写
-        if self.config.wal_enable { 
+        if self.config.wal_enable && wal_write {
             wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
         }
         mem_table.insert_data(key.clone(), cmd).await;

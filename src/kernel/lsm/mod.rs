@@ -11,7 +11,7 @@ use crate::kernel::{CommandData, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::{Config, LevelSlice, SsTableMap};
-use crate::kernel::lsm::ss_table::{Score, SsTable};
+use crate::kernel::lsm::ss_table::{Scope, SsTable};
 
 pub(crate) mod ss_table;
 pub mod lsm_kv;
@@ -36,7 +36,7 @@ struct MetaInfo {
 #[derive(Serialize, Deserialize)]
 struct ExtraInfo {
     sparse_index: BTreeMap<Vec<u8>, Position>,
-    score: Score,
+    scope: Scope,
     filter: GrowableBloom,
     size_of_data: usize,
 }
@@ -236,13 +236,13 @@ impl Manifest {
             .collect::<Option<Vec<&SsTable>>>()
     }
 
-    pub(crate) fn get_meet_score_ss_tables(&self, level: usize, score: &Score) -> Vec<&SsTable> {
+    pub(crate) fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<&SsTable> {
         self.get_level_vec(level).iter()
             .map(|gen| self.get_ss_table(gen))
             .filter(|option| option.is_some() && match option {
                 None => { false }
                 Some(ss_table) => {
-                    ss_table.get_score().meet(score) &&
+                    ss_table.get_scope().meet(scope) &&
                         self.sync_buffer_of_meet.lock().unwrap().remove(&ss_table.get_gen())
                 }
             })

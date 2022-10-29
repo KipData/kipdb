@@ -27,7 +27,7 @@ pub(crate) struct SsTable {
     // 文件路径
     gen: i64,
     // 数据范围索引
-    score: Score,
+    scope: Scope,
     // 过滤器
     filter: GrowableBloom,
     // 硬盘占有大小
@@ -42,7 +42,7 @@ pub(crate) struct SsTable {
 /// 用于缓存SSTable中所有数据的第一个和最后一个数据的Key
 /// 标明数据的范围以做到快速区域定位
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Score {
+pub(crate) struct Scope {
     start: Vec<u8>,
     end: Vec<u8>
 }
@@ -59,43 +59,43 @@ impl PartialOrd<Self> for SsTable {
     }
 }
 
-impl Score {
+impl Scope {
 
-    /// 由CommandData组成的Key构成Score
+    /// 由CommandData组成的Key构成scope
     pub(crate) fn from_cmd_data(first: &CommandData, last: &CommandData) -> Self {
-        Score {
+        Scope {
             start: first.get_key_clone(),
             end: last.get_key_clone()
         }
     }
 
-    /// 将多个Score重组融合成一个Score
-    pub(crate) fn fusion(vec_score :Vec<&Score>) -> Result<Self> {
-        if vec_score.len() > 0 {
-            let start = vec_score.iter()
-                .map(|score| &score.start)
+    /// 将多个scope重组融合成一个scope
+    pub(crate) fn fusion(vec_scope :Vec<&Scope>) -> Result<Self> {
+        if vec_scope.len() > 0 {
+            let start = vec_scope.iter()
+                .map(|scope| &scope.start)
                 .sorted()
                 .next().unwrap()
                 .clone();
-            let end = vec_score.iter()
-                .map(|score| &score.end)
+            let end = vec_scope.iter()
+                .map(|scope| &scope.end)
                 .sorted()
                 .last().unwrap()
                 .clone();
 
-            Ok(Score { start, end })
+            Ok(Scope { start, end })
         } else {
             Err(KvsError::DataEmpty)
         }
     }
 
-    /// 判断Score之间是否相交
-    pub(crate) fn meet(&self, target: &Score) -> bool {
-        (self.start.le(&target.start) && self.end.gt(&target.start)) ||
-            (self.start.lt(&target.end) && self.end.ge(&target.end))
+    /// 判断scope之间是否相交
+    pub(crate) fn meet(&self, target: &Scope) -> bool {
+        (self.start.le(&target.start) && self.end.ge(&target.start)) ||
+            (self.start.le(&target.end) && self.end.ge(&target.end))
     }
 
-    /// 由一组Command组成一个Score
+    /// 由一组Command组成一个scope
     pub(crate) fn from_vec_cmd_data(vec_mem_data: &Vec<CommandData>) -> Result<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => {
@@ -110,16 +110,16 @@ impl Score {
         }
     }
 
-    /// 由一组SSTable组成一组Score
-    pub(crate) fn get_vec_score<'a>(vec_ss_table :&'a Vec<&SsTable>) -> Vec<&'a Score> {
+    /// 由一组SSTable组成一组scope
+    pub(crate) fn get_vec_scope<'a>(vec_ss_table :&'a Vec<&SsTable>) -> Vec<&'a Scope> {
         vec_ss_table.iter()
-            .map(|ss_table| ss_table.get_score())
+            .map(|ss_table| ss_table.get_scope())
             .collect_vec()
     }
 
-    /// 由一组SSTable融合成一个Score
+    /// 由一组SSTable融合成一个scope
     pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&Vec<&SsTable>) -> Result<Self> {
-        Self::fusion(Self::get_vec_score(vec_ss_table))
+        Self::fusion(Self::get_vec_scope(vec_ss_table))
     }
 }
 
@@ -145,14 +145,14 @@ impl SsTable {
             match data {
                 CommandData::Get { key } => {
                     match rmp_serde::from_slice::<ExtraInfo>(&key)? {
-                        ExtraInfo { sparse_index, score, filter , size_of_data } => {
+                        ExtraInfo { sparse_index, scope, filter , size_of_data } => {
                             if crc_code_verification.eq(&meta_info.crc_code) {
                                 Ok(SsTable {
                                     meta_info,
                                     sparse_index,
                                     gen,
                                     io_handler,
-                                    score,
+                                    scope,
                                     filter,
                                     size_of_disk,
                                     size_of_data,
@@ -212,8 +212,8 @@ impl SsTable {
         self.gen
     }
 
-    pub(crate) fn get_score(&self) -> &Score {
-        &self.score
+    pub(crate) fn get_scope(&self) -> &Scope {
+        &self.scope
     }
 
     pub(crate) fn get_size_of_disk(&self) -> u64 {
@@ -290,7 +290,7 @@ impl SsTable {
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
     pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: Vec<CommandData>, level: usize) -> Result<Self> {
         // 获取数据的Key涵盖范围
-        let score = Score::from_vec_cmd_data(&vec_mem_data)?;
+        let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
         // 获取地址
         let part_size = config.part_size;
         let gen = io_handler.get_gen();
@@ -308,7 +308,7 @@ impl SsTable {
         
         let extra_info = ExtraInfo {
             sparse_index,
-            score,
+            scope,
             filter,
             size_of_data
         };
@@ -340,13 +340,13 @@ impl SsTable {
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
         match extra_info {
-            ExtraInfo { sparse_index, score, filter, size_of_data } => {
+            ExtraInfo { sparse_index, scope, filter, size_of_data } => {
                 Ok(SsTable {
                     meta_info,
                     sparse_index,
                     io_handler,
                     gen,
-                    score,
+                    scope,
                     filter,
                     size_of_disk,
                     size_of_data,
