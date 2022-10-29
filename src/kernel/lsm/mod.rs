@@ -1,10 +1,12 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use crate::kernel::{CommandData, log_path, Result};
@@ -12,6 +14,7 @@ use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::{Config, LevelSlice, SsTableMap};
 use crate::kernel::lsm::ss_table::{Scope, SsTable};
+use crate::KvsError;
 
 pub(crate) mod ss_table;
 pub mod lsm_kv;
@@ -59,6 +62,7 @@ pub(crate) struct Manifest {
     /// 内部会存储SSTable的Gen，
     /// 判定meet成功时移除对应Gen，避免收集重复SSTable
     sync_buffer_of_meet: Mutex<HashSet<i64>>,
+    read_cache: tokio::sync::Mutex<LruCache<Vec<u8>, Vec<u8>>>
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -130,7 +134,7 @@ impl MetaInfo {
 }
 
 impl Manifest {
-    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>) -> Self {
+    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>, cache_size: usize) -> Result<Self> {
         // 获取ss_table分级Vec
         let level_vec = Self::level_layered(&mut ss_tables_map);
 
@@ -142,7 +146,10 @@ impl Manifest {
             .map(|(_, ss_table)| ss_table.get_size_of_disk())
             .sum();
 
-        Self { _path: path, ss_tables_map, level_slice: level_vec, size_of_disk, sync_buffer_of_meet }
+        let read_cache = tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(cache_size)
+            .ok_or(KvsError::CacheSizeOverFlow)?));
+
+        Ok(Self { _path: path, ss_tables_map, level_slice: level_vec, size_of_disk, sync_buffer_of_meet, read_cache })
     }
 
     /// 使用ss_tables返回LevelVec
@@ -222,7 +229,7 @@ impl Manifest {
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) async fn get_data_for_ss_tables(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
         for (_, ss_table) in self.ss_tables_map.iter().rev() {
-            if let Some(cmd_data) = ss_table.query(key).await? {
+            if let Some(cmd_data) = ss_table.query(key, &self.read_cache).await? {
                 return Ok(cmd_data.get_value_owner());
             }
         }

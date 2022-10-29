@@ -29,6 +29,8 @@ pub enum KvsError {
     NotMatchCmd,
     #[fail(display = "CRC code does not match")]
     CrcMisMatch,
+    #[fail(display = "Cache size overflow")]
+    CacheSizeOverFlow,
     #[fail(display = "{}", _0)]
     Sled(#[cause] sled::Error),
 
