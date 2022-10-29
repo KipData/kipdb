@@ -106,11 +106,12 @@ impl KVStore for LsmStore {
             return Ok(Some(value));
         }
         // 尝试从Wal获取数据
-        if let Some(value) = self.wal.get(key).await? {
-            let wal_cmd = CommandData::Set { key: key.clone(), value: value.clone() };
+        if let Some(vec_cmd_u8) = self.wal.get(key).await? {
+            let wal_cmd = CommandPackage::decode(&vec_cmd_u8)?;
             warn!("[Command][reload_from_wal]{:?}", wal_cmd);
+            let option_value = wal_cmd.get_value_clone();
             self.append_cmd_data(wal_cmd, false).await?;
-            return Ok(Some(value));
+            return Ok(option_value);
         }
 
         Ok(None)
