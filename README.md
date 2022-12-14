@@ -66,9 +66,9 @@ client.batch(vec_batch_cmd, true).await?
 ```
 
 ## 内置多种持久化内核👍
-- LsmStore: 基于Lsm，使用Leveled Compaction策略(主要内核)
-- HashStore: 基于哈希
-- SledStore: 基于Sled数据库
+- LsmStore: LSM存储，使用Leveled Compaction策略(默认内核)
+- HashStore: 类Bitcask
+- SledStore: 基于Sled数据库进行封装
 
 ## 操作示例⌨️
 ### 服务端
@@ -144,18 +144,18 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
     - len ✅
     - ...
 - SSTable
-  - 校验和 ✅
-    - 用于校验数据是否正常
+  - CRC校验和 ✅
+    - 用于校验数据是否异常
   - 布隆过滤器 ✅
     - 加快获取键值的速度
   - MetaBlock区
     - 用于存储统计数据布隆过滤器的存放
   - 数据压缩
-- Read Cache ✅
+- Cache ✅
   - 加快数据读取，避免冗余硬盘读取IO
-- Manifest
-  - 多版本
-  - 持久化
+  - 块存取
+- MVCC单机事务
+  - Manifest多版本持久化
 - 分布式
   - TAS(Test And Set)与Master调度主机
   - 服务端作为Worker支持单机与集群
@@ -181,3 +181,6 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
     - 导出图片一般可使用 ``docker cp`` 和 ``docker exec`` 或挂载 volume，为方便预览和复制文件，容器内置了轻量网页服务，执行 ``thttpd -p <端口号>`` 即可。由于脚本中没有设置端口转发，需要 ``docker inspect <目标容器ID> | grep IPAdress`` 查看目标容器的 IP，然后在浏览器中访问即可。若需要更灵活的操作，可不用以上脚本手动添加参数运行容器。
 
 参考自：https://chinggg.github.io/post/docker-perf/
+
+### 如果你想参与我们的工作、提供更好的意见或抱着一起学习的心态，欢迎联系我以加入群聊
+![微信联系方式](./static/images/wechat.png)
