@@ -46,7 +46,7 @@ struct ExtraInfo {
 
 struct MemTable {
     // MemTable切片，管理MemTable和ImmutableMemTable
-    mem_table_slice: RwLock<[MemMap; 2]>
+    mem_table_slice: RwLock<[(MemMap, u64); 2]>
 }
 
 pub(crate) struct Manifest {
@@ -73,26 +73,30 @@ pub(crate) struct Position {
 
 impl MemTable {
     pub(crate) fn new(mem_map: MemMap) -> Self {
-        MemTable { mem_table_slice: RwLock::new([mem_map, MemMap::new()]) }
+        let mem_occupied = mem_map.iter()
+            .map(|(key, value)| {
+                (key.len() + value.get_data_len_for_rmp()) as u64
+            })
+            .sum();
+        MemTable { mem_table_slice: RwLock::new([(mem_map, mem_occupied), (MemMap::new(), 0)]) }
     }
 
     pub(crate) async fn insert_data(&self, key: Vec<u8>, value: CommandData) {
         let mut mem_table_slice = self.mem_table_slice.write().await;
 
-        mem_table_slice[0].insert(key, value);
+        mem_table_slice[0].1 += (key.len() + value.get_data_len_for_rmp()) as u64;
+        mem_table_slice[0].0.insert(key, value);
     }
 
     pub(crate) async fn mem_table_is_empty(&self) -> bool {
         let mem_table_slice = self.mem_table_slice.read().await;
 
-        mem_table_slice[0].is_empty()
+        mem_table_slice[0].0.is_empty()
     }
 
-    // TODO: 计算空间占用进行压缩触发而非数据数量
-    async fn is_threshold_exceeded_minor(&self, threshold_size: usize) -> bool {
+    async fn is_threshold_exceeded_minor(&self, threshold_size_with_mem_table: u64) -> bool {
         self.mem_table_slice.read()
-            .await[0]
-            .len() > threshold_size
+            .await[0].1 > threshold_size_with_mem_table
     }
 
     /// MemTable交换并分解
@@ -100,8 +104,9 @@ impl MemTable {
         let mut mem_table_slice = self.mem_table_slice.write().await;
 
         mem_table_slice.swap(0, 1);
-        mem_table_slice[0] = MemMap::new();
+        mem_table_slice[0] = (MemMap::new(), 0);
         mem_table_slice[1].clone()
+            .0
             .into_iter()
             .unzip()
     }
@@ -109,10 +114,10 @@ impl MemTable {
     async fn get_cmd_data(&self, key: &Vec<u8>) -> Option<CommandData> {
         let mem_table_slice = self.mem_table_slice.read().await;
 
-        if let Some(data) = mem_table_slice[0].get(key) {
+        if let Some(data) = mem_table_slice[0].0.get(key) {
             Some(data.clone())
         } else {
-            mem_table_slice[1].get(key).map(|cmd| cmd.clone())
+            mem_table_slice[1].0.get(key).map(|cmd| cmd.clone())
         }
     }
 }

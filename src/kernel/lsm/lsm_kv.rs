@@ -22,7 +22,7 @@ pub(crate) type SsTableMap = BTreeMap<i64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE: u64 = 50 * 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 5 * 1024 * 1024;
 
 pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
 
@@ -144,7 +144,7 @@ impl LsmStore {
     /// 追加数据
     async fn append_cmd_data(&self, cmd: CommandData, wal_write: bool) -> Result<()> {
         let mem_table = &self.mem_table;
-        let threshold_size = self.config.minor_threshold_with_data_size as usize;
+        let threshold_size = self.config.minor_threshold_with_data_size;
 
         let key = cmd.get_key();
         // Wal与MemTable双写
@@ -186,7 +186,7 @@ impl LsmStore {
                 }
                 Err(err) => {
                     error!("[LsmKVStore][Load SSTable][Error]: {:?}", err);
-                    //是否删除可能还是得根据用户选择
+                    // 是否删除可能还是得根据用户选择
                     // io_handler_factory.clean(*gen)?;
                     // 从wal将有问题的ss_table恢复到mem_table中
                     Self::reload_for_wal(&mut mem_map, &wal, *gen).await?;
@@ -335,7 +335,7 @@ pub struct Config {
     pub(crate) part_size: u64,
     /// SSTable文件大小
     pub(crate) sst_file_size: usize,
-    /// 持久化阈值
+    /// 持久化阈值(单位: 字节)
     pub(crate) minor_threshold_with_data_size: u64,
     /// Major压缩触发阈值
     pub(crate) major_threshold_with_sst_size: usize,
@@ -432,7 +432,7 @@ impl Config {
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
-            minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_SIZE,
+            minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
             part_size: DEFAULT_PART_SIZE,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
