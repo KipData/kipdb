@@ -62,11 +62,11 @@ pub(crate) struct Manifest {
     /// 内部会存储SSTable的Gen，
     /// 判定meet成功时移除对应Gen，避免收集重复SSTable
     sync_buffer_of_meet: Mutex<HashSet<i64>>,
-    read_cache: tokio::sync::Mutex<LruCache<Vec<u8>, Vec<u8>>>
+    position_cache: tokio::sync::Mutex<LruCache<(i64, Position), Vec<CommandData>>>
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct Position {
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Hash, PartialOrd, Eq)]
+pub(crate) struct Position {
     start: u64,
     len: usize
 }
@@ -88,6 +88,7 @@ impl MemTable {
         mem_table_slice[0].is_empty()
     }
 
+    // TODO: 计算空间占用进行压缩触发而非数据数量
     async fn is_threshold_exceeded_minor(&self, threshold_size: usize) -> bool {
         self.mem_table_slice.read()
             .await[0]
@@ -146,10 +147,10 @@ impl Manifest {
             .map(|(_, ss_table)| ss_table.get_size_of_disk())
             .sum();
 
-        let read_cache = tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(cache_size)
+        let position_cache = tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(cache_size)
             .ok_or(KvsError::CacheSizeOverFlow)?));
 
-        Ok(Self { _path: path, ss_tables_map, level_slice: level_vec, size_of_disk, sync_buffer_of_meet, read_cache })
+        Ok(Self { _path: path, ss_tables_map, level_slice: level_vec, size_of_disk, sync_buffer_of_meet, position_cache })
     }
 
     /// 使用ss_tables返回LevelVec
@@ -229,7 +230,7 @@ impl Manifest {
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) async fn get_data_for_ss_tables(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
         for (_, ss_table) in self.ss_tables_map.iter().rev() {
-            if let Some(cmd_data) = ss_table.query(key, &self.read_cache).await? {
+            if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
                 return Ok(cmd_data.get_value_owner());
             }
         }

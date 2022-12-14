@@ -298,7 +298,7 @@ impl LsmStore {
     async fn wait_for_compression_down(&self) -> Result<()> {
         // 监听异步任务是否执行完毕
         let mut vec_rev = self.vec_rev.lock().await;
-        for rev in vec_rev.pop() {
+        while let Some(rev) = vec_rev.pop() {
             rev.await?
         }
 
@@ -353,7 +353,8 @@ pub struct Config {
     pub(crate) buffer_i32: AtomicI32,
     /// 布隆过滤器 期望的错误概率
     pub(crate) desired_error_prob: f64,
-    /// 数据库数据缓存数量
+    /// 数据库全局Position段数据缓存的数量
+    /// 一个size大约为4kb(可能更少)
     pub(crate) cache_size: usize,
     /// 开启wal日志写入
     /// 在开启状态时，会在SSTable文件读取失败时生效，避免数据丢失

@@ -71,13 +71,11 @@ impl Scope {
         if vec_scope.len() > 0 {
             let start = vec_scope.iter()
                 .map(|scope| &scope.start)
-                .sorted()
-                .next().unwrap()
+                .min().unwrap()
                 .clone();
             let end = vec_scope.iter()
                 .map(|scope| &scope.end)
-                .sorted()
-                .last().unwrap()
+                .max().unwrap()
                 .clone();
 
             Ok(Scope { start, end })
@@ -220,29 +218,25 @@ impl SsTable {
         self.size_of_data
     }
 
-    /// 从该sstable中获取指定key对应的CommandData
-    pub(crate) async fn query(&self, key: &Vec<u8>, read_cache: &Mutex<LruCache<Vec<u8>, Vec<u8>>>) -> Result<Option<CommandData>> {
+    /// 从该sstable中获取指定key对应数据可能存在的CommandData段
+    pub(crate) async fn query_with_key(&self, key: &Vec<u8>, position_cache: &Mutex<LruCache<(i64, Position), Vec<CommandData>>>) -> Result<Option<CommandData>> {
         if self.filter.contains(key) {
-            let mut cache = read_cache.lock().await;
-            
-            if let Some(value_ref) = cache.get(key) {
-                return Ok(Some(command_data_from_kv_ref(key, value_ref)));
-            } else if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
+            let mut cache = position_cache.lock().await;
+
+            if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
                 info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
-                // 获取该区间段的数据
-                let zone = self.io_handler.read_with_pos(position.start, position.len).await?;
-                let mut result_option = None;
+                let key_position = (self.gen, position.clone());
+                // !!!Async closure cannot be used in get_or_insert
+                if !cache.contains(&key_position) {
+                    let bytes = self.io_handler.read_with_pos(position.start, position.len).await?;
+                    let _ignore = cache.put(key_position.clone(), CommandPackage::from_bytes_to_unpack_vec(&bytes)?);
+                }
 
-                CommandPackage::from_zone_to_vec(&zone).await?.into_iter()
-                    .for_each(|cmd_data| match cmd_data.unpack() {
-                        CommandData::Set { key: c_key, value: c_value } => {
-                            if c_key.eq(key) { result_option = Some(command_data_from_kv_ref(key, &c_value)) }
-                            cache.put(c_key, c_value);
-                        },
-                        _ => (),
-                    });
-
-                return Ok(result_option);
+                return Ok(cache.get(&key_position)
+                    .expect("When an error occurs here, it means that the empty data is not filled")
+                    .into_iter()
+                    .find(|cmd_data| cmd_data.get_key() == key)
+                    .map(CommandData::clone));
             }
         }
         Ok(None)
@@ -255,7 +249,7 @@ impl SsTable {
 
         let all_data_u8 = self.io_handler.read_with_pos(0, data_len as usize).await?;
         let vec_cmd_data =
-                    CommandPackage::from_zone_to_vec(all_data_u8.as_slice()).await?
+                    CommandPackage::from_bytes_to_vec(all_data_u8.as_slice()).await?
             .into_iter()
             .map(CommandPackage::unpack)
             .collect_vec();

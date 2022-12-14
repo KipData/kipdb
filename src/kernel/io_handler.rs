@@ -87,8 +87,6 @@ impl IOHandler {
     }
 
     /// 使用自身的gen读取执行起始位置的指定长度的二进制数据
-    ///
-    /// 通过Reader池与线程池进行多线程读取
     pub async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
         let mut reader = self.reader.lock().await;
 

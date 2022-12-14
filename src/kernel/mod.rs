@@ -201,10 +201,10 @@ impl CommandPackage {
         Ok(rmp_serde::decode::from_slice(cmd_u8.as_slice()).ok())
     }
 
-    /// 获取zone之中所有的Command
-    pub async fn from_zone_to_vec(zone: &[u8]) -> Result<Vec<CommandPackage>> {
+    /// 获取bytes之中所有的CommandPackage
+    pub async fn from_bytes_to_vec(zone: &[u8]) -> Result<Vec<CommandPackage>> {
         let mut vec: Vec<CommandPackage> = Vec::new();
-        let vec_u8 = Self::get_vec_bytes(zone).await;
+        let vec_u8 = Self::get_vec_bytes(zone);
         let mut pos = 4;
         for &cmd_u8 in vec_u8.iter() {
             let len = cmd_u8.len();
@@ -216,9 +216,23 @@ impl CommandPackage {
         Ok(vec)
     }
 
+    /// 获取bytes之中所有的CommandData
+    pub fn from_bytes_to_unpack_vec(zone: &[u8]) -> Result<Vec<CommandData>> {
+        let mut vec: Vec<CommandData> = Vec::new();
+        let vec_u8 = Self::get_vec_bytes(zone);
+        let mut _pos = 4;
+        for &cmd_u8 in vec_u8.iter() {
+            let len = cmd_u8.len();
+            vec.push(rmp_serde::decode::from_slice(cmd_u8)?);
+            // 对pos进行长度自增并对占位符进行跳过
+            _pos += len as u64 + 4;
+        }
+        Ok(vec)
+    }
+
     /// 从该数据区间中找到对应Key的CommandData
     pub async fn find_key_with_zone(zone: &[u8], key: &Vec<u8>) -> Result<Option<CommandPackage>> {
-        let vec_u8 = Self::get_vec_bytes(zone).await;
+        let vec_u8 = Self::get_vec_bytes(zone);
         let mut pos = 4;
         for &cmd_u8 in vec_u8.iter() {
             let len = cmd_u8.len();
@@ -236,12 +250,12 @@ impl CommandPackage {
     pub async fn from_read_to_vec(io_handler: &IOHandler) -> Result<Vec<CommandPackage>> {
         let len = io_handler.file_size().await? as usize;
         let zone = io_handler.read_with_pos(0, len).await?;
-        Self::from_zone_to_vec(zone.as_slice()).await
+        Self::from_bytes_to_vec(zone.as_slice()).await
     }
 
     /// 获取此reader的所有命令对应的字节数组段落
     /// 返回字节数组Vec与对应的字节数组长度Vec
-    pub async fn get_vec_bytes(zone: &[u8]) -> Vec<&[u8]> {
+    pub fn get_vec_bytes(zone: &[u8]) -> Vec<&[u8]> {
 
         let mut vec_cmd_u8 = Vec::new();
         let mut last_pos = 0;
