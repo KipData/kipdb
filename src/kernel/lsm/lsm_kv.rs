@@ -101,7 +101,7 @@ impl KVStore for LsmStore {
         // 此时直接去获取的话可能会既获取不到数据，也花费大量时间
         self.wait_for_compression_down().await?;
 
-        if let Some(value) = self.manifest.write().await
+        if let Some(value) = self.manifest.read().await
             .get_data_for_ss_tables(key).await? {
             return Ok(Some(value));
         }

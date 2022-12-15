@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -8,6 +8,7 @@ use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
+use skiplist::SkipMap;
 use tokio::sync::RwLock;
 use crate::kernel::{CommandData, log_path, Result};
 use crate::kernel::io_handler::IOHandler;
@@ -20,7 +21,7 @@ pub(crate) mod ss_table;
 pub mod lsm_kv;
 mod compactor;
 
-pub(crate) type MemMap = BTreeMap<Vec<u8>, CommandData>;
+pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
@@ -38,7 +39,7 @@ struct MetaInfo {
 
 #[derive(Serialize, Deserialize)]
 struct ExtraInfo {
-    sparse_index: BTreeMap<Vec<u8>, Position>,
+    vec_index: Vec<(Vec<u8>, Position)>,
     scope: Scope,
     filter: GrowableBloom,
     size_of_data: usize,
@@ -105,20 +106,19 @@ impl MemTable {
 
         mem_table_slice.swap(0, 1);
         mem_table_slice[0] = (MemMap::new(), 0);
-        mem_table_slice[1].clone()
-            .0
-            .into_iter()
+        mem_table_slice[1].0
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
             .unzip()
     }
 
     async fn get_cmd_data(&self, key: &Vec<u8>) -> Option<CommandData> {
         let mem_table_slice = self.mem_table_slice.read().await;
 
-        if let Some(data) = mem_table_slice[0].0.get(key) {
-            Some(data.clone())
-        } else {
-            mem_table_slice[1].0.get(key).map(|cmd| cmd.clone())
-        }
+
+        mem_table_slice[0].0.get(key)
+            .or_else(|| mem_table_slice[1].0.get(key))
+            .map(CommandData::clone)
     }
 }
 
@@ -142,7 +142,7 @@ impl MetaInfo {
 impl Manifest {
     pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>, cache_size: usize) -> Result<Self> {
         // 获取ss_table分级Vec
-        let level_vec = Self::level_layered(&mut ss_tables_map);
+        let level_slice = Self::level_layered(&mut ss_tables_map);
 
         let sync_buffer_of_meet = Mutex::new(ss_tables_map.iter()
             .map(|(gen, _)| gen.clone())
@@ -155,7 +155,7 @@ impl Manifest {
         let position_cache = tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(cache_size)
             .ok_or(KvsError::CacheSizeOverFlow)?));
 
-        Ok(Self { _path: path, ss_tables_map, level_slice: level_vec, size_of_disk, sync_buffer_of_meet, position_cache })
+        Ok(Self { _path: path, ss_tables_map, level_slice, size_of_disk, sync_buffer_of_meet, position_cache })
     }
 
     /// 使用ss_tables返回LevelVec
@@ -273,7 +273,7 @@ impl Manifest {
 
 impl Position {
     /// 通过稀疏索引与指定Key进行获取对应Position
-    pub(crate) fn from_sparse_index_with_key<'a>(sparse_index: &'a BTreeMap<Vec<u8>, Position>, key: &'a Vec<u8>) -> Option<&'a Self> {
+    pub(crate) fn from_sparse_index_with_key<'a>(sparse_index: &'a SkipMap<Vec<u8>, Position>, key: &'a Vec<u8>) -> Option<&'a Self> {
         sparse_index.into_iter()
             .rev()
             .find(|(key_item, _)| !key.cmp(key_item).eq(&Ordering::Less))

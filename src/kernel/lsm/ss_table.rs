@@ -1,11 +1,11 @@
 use std::cmp::Ordering;
-use std::collections::btree_map::BTreeMap;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use lru::LruCache;
 use tokio::sync::Mutex;
 use tracing::{info};
 use serde::{Deserialize, Serialize};
+use skiplist::SkipMap;
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::{data_sharding, ExtraInfo, Manifest, MetaInfo, Position};
@@ -20,10 +20,10 @@ pub(crate) struct SsTable {
     // 表索引信息
     meta_info: MetaInfo,
     // 字段稀疏索引
-    sparse_index: BTreeMap<Vec<u8>, Position>,
+    sparse_index: SkipMap<Vec<u8>, Position>,
     // 文件IO操作器
     io_handler: IOHandler,
-    // 文件路径
+    // 该SSTable的唯一编号(时间递增)
     gen: i64,
     // 数据范围索引
     scope: Scope,
@@ -105,16 +105,12 @@ impl Scope {
         }
     }
 
-    /// 由一组SSTable组成一组scope
-    pub(crate) fn get_vec_scope<'a>(vec_ss_table :&'a Vec<&SsTable>) -> Vec<&'a Scope> {
-        vec_ss_table.iter()
-            .map(|ss_table| ss_table.get_scope())
-            .collect_vec()
-    }
-
     /// 由一组SSTable融合成一个scope
     pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&Vec<&SsTable>) -> Result<Self> {
-        Self::fusion(Self::get_vec_scope(vec_ss_table))
+        let vec_scope = vec_ss_table.iter()
+            .map(|ss_table| ss_table.get_scope())
+            .collect_vec();
+        Self::fusion(vec_scope)
     }
 }
 
@@ -136,15 +132,15 @@ impl SsTable {
         let buffer = io_handler.read_with_pos(0, index_len + index_pos as usize).await?;
         let crc_code_verification = crc32fast::hash(buffer.as_slice()) as u64;
 
-        if let Some(data) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
-            match data {
-                CommandData::Get { key } => {
-                    match rmp_serde::from_slice::<ExtraInfo>(&key)? {
-                        ExtraInfo { sparse_index, scope, filter , size_of_data } => {
+        if let Some(extra_info_cmd) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
+            match extra_info_cmd {
+                CommandData::Get { key: extra_info_bytes } => {
+                    match rmp_serde::from_slice::<ExtraInfo>(&extra_info_bytes)? {
+                        ExtraInfo { vec_index, scope, filter , size_of_data } => {
                             if crc_code_verification.eq(&meta_info.crc_code) {
                                 Ok(SsTable {
                                     meta_info,
-                                    sparse_index,
+                                    sparse_index: SkipMap::from_iter(vec_index),
                                     gen,
                                     io_handler,
                                     scope,
@@ -166,8 +162,9 @@ impl SsTable {
     }
 
     /// 写入CommandData数据段
-    async fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, io_handler: &IOHandler) -> Result<BTreeMap<Vec<u8>, Position>> {
-        let (start_pos, batch_len, vec_sharding_len) = CommandPackage::write_batch_first_pos_with_sharding(io_handler, &vec_cmd_data).await?;
+    async fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, io_handler: &IOHandler) -> Result<Vec<(Vec<u8>, Position)>> {
+        let (start_pos, batch_len, vec_sharding_len) =
+            CommandPackage::write_batch_first_pos_with_sharding(io_handler, &vec_cmd_data).await?;
         info!("[SSTable][write_data_batch][data_zone]: start_pos: {}, batch_len: {}, vec_sharding_len: {:?}", start_pos, batch_len, vec_sharding_len);
 
         let keys = vec_cmd_data.into_iter()
@@ -224,7 +221,7 @@ impl SsTable {
             let mut cache = position_cache.lock().await;
 
             if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
-                info!("[SsTable: {}][query][data_zone]: {:?}", self.gen, position);
+                info!("[SsTable: {}][query_with_key][data_zone]: {:?}", self.gen, position);
                 let key_position = (self.gen, position.clone());
                 // !!!Async closure cannot be used in get_or_insert
                 if !cache.contains(&key_position) {
@@ -249,7 +246,7 @@ impl SsTable {
 
         let all_data_u8 = self.io_handler.read_with_pos(0, data_len as usize).await?;
         let vec_cmd_data =
-                    CommandPackage::from_bytes_to_vec(all_data_u8.as_slice()).await?
+            CommandPackage::from_bytes_to_vec(all_data_u8.as_slice()).await?
             .into_iter()
             .map(CommandPackage::unpack)
             .collect_vec();
@@ -293,10 +290,10 @@ impl SsTable {
             .into_iter()
             .map(|(_, sharding)| sharding)
             .collect();
-        let sparse_index =Self::write_data_batch(vec_sharding, &io_handler).await?;
+        let vec_index =Self::write_data_batch(vec_sharding, &io_handler).await?;
         
         let extra_info = ExtraInfo {
-            sparse_index,
+            vec_index,
             scope,
             filter,
             size_of_data
@@ -329,10 +326,10 @@ impl SsTable {
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
         match extra_info {
-            ExtraInfo { sparse_index, scope, filter, size_of_data } => {
+            ExtraInfo { vec_index, scope, filter, size_of_data } => {
                 Ok(SsTable {
                     meta_info,
-                    sparse_index,
+                    sparse_index: SkipMap::from_iter(vec_index),
                     io_handler,
                     gen,
                     scope,
