@@ -41,7 +41,12 @@ impl Compactor {
 
         // 将这些索引的key序列化后预先存入wal中作防灾准备
         // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
-        wal_put(&self.wal, CommandCodec::encode_gen(gen)?, CommandCodec::encode_keys(&vec_keys)?);
+        wal_put(
+            &self.wal,
+            CommandCodec::encode_gen(gen)?,
+            CommandCodec::encode_keys(&vec_keys)?,
+            !self.config.wal_async_put_enable
+        ).await;
         // 从内存表中将数据持久化为ss_table
         let ss_table = SsTable::create_for_immutable_table(&self.config
                                                            , io_handler

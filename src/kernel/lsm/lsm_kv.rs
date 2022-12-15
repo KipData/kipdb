@@ -149,7 +149,12 @@ impl LsmStore {
         let key = cmd.get_key();
         // Wal与MemTable双写
         if self.config.wal_enable && wal_write {
-            wal_put(&self.wal, key.clone(), CommandPackage::encode(&cmd)?);
+            wal_put(
+                &self.wal,
+                key.clone(),
+                CommandPackage::encode(&cmd)?,
+                !self.config.wal_async_put_enable
+            ).await;
         }
         mem_table.insert_data(key.clone(), cmd).await;
 
@@ -359,7 +364,10 @@ pub struct Config {
     /// 开启wal日志写入
     /// 在开启状态时，会在SSTable文件读取失败时生效，避免数据丢失
     /// 不过在设备IO容易成为瓶颈，或使用多节点冗余写入时，建议关闭以提高写入性能
-    pub(crate) wal_enable: bool
+    pub(crate) wal_enable: bool,
+    /// wal写入时开启异步写入
+    /// 可以提高写入响应速度，但可能会导致wal日志在某种情况下并落盘慢于LSM内核而导致该条wal日志无效
+    pub(crate) wal_async_put_enable: bool
 }
 
 impl Config {
@@ -429,6 +437,11 @@ impl Config {
         self
     }
 
+    pub fn wal_async_put_enable(mut self, wal_async_put_enable: bool) -> Self {
+        self.wal_async_put_enable = wal_async_put_enable;
+        self
+    }
+
     pub fn new() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
@@ -444,19 +457,26 @@ impl Config {
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
             cache_size: DEFAULT_CACHE_SIZE,
             wal_enable: true,
+            wal_async_put_enable: true,
         }
     }
 }
 
 /// 以Task类似的异步写数据，避免影响数据写入性能
 /// 当然，LevelDB的话虽然wal写入会提供是否同步的选项，此处先简化优先使用异步
-pub(crate) fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>) {
+pub(crate) async fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>, is_sync: bool) {
     let wal = Arc::clone(wal);
-    tokio::spawn(async move {
+    let wal_closure = async move {
         if let Err(err) = wal.set(&key, value).await {
             error!("[LsmStore][wal_put][error happen]: {:?}", err);
         }
-    });
+    };
+    if is_sync {
+        wal_closure.await;
+    } else {
+        tokio::spawn(wal_closure);
+    }
+
 }
 
 #[test]
