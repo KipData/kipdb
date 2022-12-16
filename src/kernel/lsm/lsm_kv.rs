@@ -22,9 +22,9 @@ pub(crate) type SsTableMap = BTreeMap<i64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 5 * 1024 * 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 4 * 1024 * 1024;
 
-pub(crate) const DEFAULT_PART_SIZE: u64 = 64;
+pub(crate) const DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE: u64 = 4;
 
 pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 32 * 1024 * 1024;
 
@@ -336,8 +336,8 @@ pub struct Config {
     pub(crate) dir_path: PathBuf,
     /// WAL持久化阈值
     pub(crate) wal_compaction_threshold: u64,
-    /// 数据分块大小
-    pub(crate) part_size: u64,
+    /// 稀疏索引间间隔的Block(4K字节大小)数量
+    pub(crate) sparse_index_interval_block_size: u64,
     /// SSTable文件大小
     pub(crate) sst_file_size: usize,
     /// 持久化阈值(单位: 字节)
@@ -387,8 +387,8 @@ impl Config {
         self
     }
 
-    pub fn part_size(mut self, part_size: u64) -> Self {
-        self.part_size = part_size;
+    pub fn sparse_index_interval_block_size(mut self, sparse_index_interval_block_size: u64) -> Self {
+        self.sparse_index_interval_block_size = sparse_index_interval_block_size;
         self
     }
 
@@ -447,7 +447,7 @@ impl Config {
             dir_path: DEFAULT_WAL_PATH.into(),
             minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
             wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
-            part_size: DEFAULT_PART_SIZE,
+            sparse_index_interval_block_size: DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,

@@ -278,7 +278,7 @@ impl SsTable {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
         // 获取地址
-        let part_size = config.part_size;
+        let interval_block_size = config.sparse_index_interval_block_size;
         let gen = io_handler.get_gen();
         let mut filter = GrowableBloom::new(config.desired_error_prob, vec_mem_data.len());
 
@@ -286,7 +286,12 @@ impl SsTable {
             filter.insert(data.get_key());
         }
         let size_of_data = vec_mem_data.len();
-        let vec_sharding = data_sharding(vec_mem_data, ALIGNMENT_4K, config, false).await
+        let vec_sharding = data_sharding(
+            vec_mem_data,
+            ALIGNMENT_4K * interval_block_size as usize,
+            config,
+            false
+        ).await
             .into_iter()
             .map(|(_, sharding)| sharding)
             .collect();
@@ -317,7 +322,7 @@ impl SsTable {
             version: 0,
             data_len: data_part_len as u64,
             index_len: sparse_index_len as u64,
-            part_size,
+            interval_block_size,
             crc_code
         };
         meta_info.write_to_file_and_flush(&io_handler).await?;
