@@ -245,12 +245,7 @@ impl SsTable {
         let data_len = info.data_len;
 
         let all_data_u8 = self.io_handler.read_with_pos(0, data_len as usize).await?;
-        let vec_cmd_data =
-            CommandPackage::from_bytes_to_vec(all_data_u8.as_slice()).await?
-            .into_iter()
-            .map(CommandPackage::unpack)
-            .collect_vec();
-        Ok(vec_cmd_data)
+        Ok(CommandPackage::from_bytes_to_unpack_vec(all_data_u8.as_slice())?)
     }
 
     /// 通过一组SSTable收集对应的Gen
@@ -346,8 +341,4 @@ impl SsTable {
         }
 
     }
-}
-
-fn command_data_from_kv_ref(key: &Vec<u8>, value_ref: &Vec<u8>) -> CommandData {
-    CommandData::Set { key: key.clone(), value: value_ref.clone() }
 }

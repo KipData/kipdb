@@ -24,7 +24,6 @@ impl IOHandlerFactory {
     }
 
     pub fn new(dir_path: impl Into<PathBuf>) -> Self {
-
         let dir_path = Arc::new(dir_path.into());
 
         Self { dir_path }
@@ -39,7 +38,7 @@ impl IOHandlerFactory {
 /// 对应gen文件的IO处理器
 ///
 /// Reader是通用共享的
-/// 这是因为可以重分利用共享的Reader资源避免每个IOHandler都占有一个线程池与读取器池
+/// 这是因为可以充分利用共享的Reader资源避免每个IOHandler都占有一个线程池与读取器池
 ///
 /// Writer是私有的
 /// 每个文件的写入是阻塞的
@@ -96,6 +95,13 @@ impl IOHandler {
         reader.read(buffer.as_mut_slice())?;
 
         Ok(buffer)
+    }
+
+    /// 使用自身的gen读取执行起始位置的指定长度的二进制数据
+    pub async fn read_to_end(&self) -> Result<Vec<u8>> {
+        let len = self.file_size().await?;
+
+        self.read_with_pos(0, len as usize).await
     }
 
     /// 写入并返回起始位置与写入长度

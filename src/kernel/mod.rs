@@ -124,17 +124,6 @@ impl CommandPackage {
         Ok(rmp_serde::from_slice(vec)?)
     }
 
-    pub fn unpack(self) -> CommandData {
-        self.cmd
-    }
-
-    /// 快进四位
-    /// 用于写入除CommandData时，分隔数据使前端CommandData能够被连续识别
-    pub async fn end_tag(io_handler: &IOHandler) -> Result<()> {
-        io_handler.write(vec![b'\0',4]).await?;
-        Ok(())
-    }
-
     /// 实例化一个Command
     pub fn new(cmd: CommandData, pos: u64, len: usize) -> Self {
         CommandPackage{ cmd, pos, len }
@@ -153,129 +142,94 @@ impl CommandPackage {
         Ok(io_handler.write(Self::trans_to_vec_u8(cmd)?).await?)
     }
 
-    pub async fn write_batch_first_pos(io_handler: &IOHandler, vec_cmd: &Vec<CommandData>) -> Result<(u64, usize)> {
-        let batch = vec_cmd.into_iter()
-            .map(|cmd_data| Self::trans_to_vec_u8(cmd_data).unwrap())
+    /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
+    pub async fn write_batch_first_pos_with_sharding(io_handler: &IOHandler, vec_sharding: &Vec<Vec<CommandData>>) -> Result<(u64, usize, Vec<usize>)> {
+        let mut vec_sharding_len = Vec::with_capacity(vec_sharding.len());
+
+        let vec_sharding_u8  = vec_sharding.into_iter()
+            .map(|sharding| {
+                let sharding_u8 = sharding.into_iter()
+                    .filter_map(|cmd_data| Self::trans_to_vec_u8(cmd_data).ok())
+                    .flatten()
+                    .collect_vec();
+                vec_sharding_len.push(sharding_u8.len());
+                sharding_u8
+            })
             .flatten()
             .collect_vec();
 
-        Ok(io_handler.write(batch).await?)
-    }
+        let (start_pos, batch_len) = io_handler.write(vec_sharding_u8).await?;
 
-    /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
-    pub async fn write_batch_first_pos_with_sharding(io_handler: &IOHandler, vec_sharding: &Vec<Vec<CommandData>>) -> Result<(u64, usize, Vec<usize>)> {
-        let (vec_len, vec_sharding_u8): (Vec<usize>, Vec<Vec<u8>>) = vec_sharding.into_iter()
-            .map(|sharding| sharding.into_iter()
-                .map(|cmd_data| Self::trans_to_vec_u8(cmd_data).unwrap())
-                .flatten()
-                .collect_vec())
-            .map(|sharding_u8| (sharding_u8.len(), sharding_u8))
-            .unzip();
-
-        let (start_pos, batch_len) = io_handler.write(vec_sharding_u8.into_iter().flatten().collect()).await?;
-
-        Ok((start_pos, batch_len, vec_len))
+        Ok((start_pos, batch_len, vec_sharding_len))
     }
 
     pub(crate) fn trans_to_vec_u8(cmd: &CommandData) -> Result<Vec<u8>> {
-        let vec = rmp_serde::to_vec(cmd)?;
+        let mut vec = rmp_serde::to_vec(cmd)?;
         let i = vec.len();
-        let vec_head = vec![(i >> 24) as u8,
+        let mut vec_head = vec![(i >> 24) as u8,
                                 (i >> 16) as u8,
                                 (i >> 8) as u8,
                                 i as u8];
-        Ok(vec_head.into_iter()
-            .chain(vec)
-            .collect_vec())
+        vec_head.append(&mut vec);
+        Ok(vec_head)
     }
 
-    /// IOHandler的对应Gen，以起始位置与长度使用的单个Command
-    pub async fn from_pos(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandPackage>> {
-        let option = Self::from_pos_unpack(io_handler, start, len).await?
-            .map(|cmd_data| CommandPackage::new(cmd_data, start, len));
-        Ok(option)
-    }
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub async fn from_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos(start, len).await?;
-        Ok(rmp_serde::decode::from_slice(cmd_u8.as_slice()).ok())
+        Ok(rmp_serde::from_slice(cmd_u8.as_slice()).ok())
     }
 
     /// 获取bytes之中所有的CommandPackage
-    pub async fn from_bytes_to_vec(zone: &[u8]) -> Result<Vec<CommandPackage>> {
-        let mut vec: Vec<CommandPackage> = Vec::new();
-        let vec_u8 = Self::get_vec_bytes(zone);
+    pub fn from_bytes_to_vec(bytes: &[u8]) -> Result<Vec<CommandPackage>> {
         let mut pos = 4;
-        for &cmd_u8 in vec_u8.iter() {
-            let len = cmd_u8.len();
-            let cmd: CommandData = rmp_serde::decode::from_slice(cmd_u8)?;
-            vec.push(CommandPackage::new(cmd, pos, len));
-            // 对pos进行长度自增并对占位符进行跳过
-            pos += len as u64 + 4;
-        }
-        Ok(vec)
+        Ok(Self::get_vec_bytes(bytes).into_iter()
+            .filter_map(|cmd_u8| {
+                let len = cmd_u8.len();
+                let option = rmp_serde::from_slice::<CommandData>(cmd_u8).ok()
+                    .map(|cmd_data| CommandPackage::new(cmd_data, pos, len));
+                // 对pos进行长度自增并对占位符进行跳过
+                pos += len as u64 + 4;
+                option
+            })
+            .collect_vec())
     }
 
     /// 获取bytes之中所有的CommandData
-    pub fn from_bytes_to_unpack_vec(zone: &[u8]) -> Result<Vec<CommandData>> {
-        let mut vec: Vec<CommandData> = Vec::new();
-        let vec_u8 = Self::get_vec_bytes(zone);
-        let mut _pos = 4;
-        for &cmd_u8 in vec_u8.iter() {
-            let len = cmd_u8.len();
-            vec.push(rmp_serde::decode::from_slice(cmd_u8)?);
-            // 对pos进行长度自增并对占位符进行跳过
-            _pos += len as u64 + 4;
-        }
-        Ok(vec)
-    }
-
-    /// 从该数据区间中找到对应Key的CommandData
-    pub async fn find_key_with_zone(zone: &[u8], key: &Vec<u8>) -> Result<Option<CommandPackage>> {
-        let vec_u8 = Self::get_vec_bytes(zone);
-        let mut pos = 4;
-        for &cmd_u8 in vec_u8.iter() {
-            let len = cmd_u8.len();
-            let cmd: CommandData = rmp_serde::from_slice(cmd_u8)?;
-            if cmd.get_key().eq(key) {
-                return Ok(Some(CommandPackage::new(cmd, pos, len)));
-            }
-            // 对pos进行长度自增并对占位符进行跳过
-            pos += len as u64 + 4;
-        }
-        Ok(None)
+    pub fn from_bytes_to_unpack_vec(bytes: &[u8]) -> Result<Vec<CommandData>> {
+        Ok(Self::get_vec_bytes(bytes).into_iter()
+            .filter_map(|cmd_u8| rmp_serde::from_slice(cmd_u8).ok())
+            .collect_vec())
     }
 
     /// 获取reader之中所有的Command
     pub async fn from_read_to_vec(io_handler: &IOHandler) -> Result<Vec<CommandPackage>> {
-        let len = io_handler.file_size().await? as usize;
-        let zone = io_handler.read_with_pos(0, len).await?;
-        Self::from_bytes_to_vec(zone.as_slice()).await
+        let bytes = io_handler.read_to_end().await?;
+        Self::from_bytes_to_vec(bytes.as_slice())
     }
 
     /// 获取此reader的所有命令对应的字节数组段落
     /// 返回字节数组Vec与对应的字节数组长度Vec
-    pub fn get_vec_bytes(zone: &[u8]) -> Vec<&[u8]> {
-
+    pub fn get_vec_bytes(bytes: &[u8]) -> Vec<&[u8]> {
         let mut vec_cmd_u8 = Vec::new();
         let mut last_pos = 0;
-        if zone.len() < 4 {
+        if bytes.len() < 4 {
             return vec_cmd_u8;
         }
 
         loop {
             let pos = last_pos + 4;
-            if pos >= zone.len() {
+            if pos >= bytes.len() {
                 break
             }
-            let len_u8 = &zone[last_pos..pos];
+            let len_u8 = &bytes[last_pos..pos];
             let len = Self::from_4_bit_with_start(len_u8);
-            if len < 1 || len > zone.len() {
+            if len < 1 || len > bytes.len() {
                 break
             }
 
             last_pos += len + 4;
-            vec_cmd_u8.push(&zone[pos..last_pos]);
+            vec_cmd_u8.push(&bytes[pos..last_pos]);
         }
 
         vec_cmd_u8
@@ -301,11 +255,7 @@ impl CommandData {
     }
 
     pub fn get_key_clone(&self) -> Vec<u8> {
-        match self {
-            CommandData::Set { key, .. } => { key }
-            CommandData::Remove { key } => { key }
-            CommandData::Get { key } => { key }
-        }.clone()
+        self.get_key().clone()
     }
 
     pub fn get_key_owner(self) -> Vec<u8> {
@@ -397,7 +347,7 @@ impl From<Option<Vec<u8>>> for CommandOption {
 }
 
 /// 现有日志文件序号排序
-async fn sorted_gen_list(path: &Path) -> Result<Vec<i64>> {
+fn sorted_gen_list(path: &Path) -> Result<Vec<i64>> {
     // 读取文件夹路径
     // 获取该文件夹内各个文件的地址
     // 判断是否为文件并判断拓展名是否为log

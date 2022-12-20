@@ -181,7 +181,7 @@ impl LsmStore {
         let io_handler_factory = Arc::new(IOHandlerFactory::new(path.clone()));
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
-        for gen in sorted_gen_list(&path).await?.iter().rev() {
+        for gen in sorted_gen_list(&path)?.iter().rev() {
             let io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
             match SsTable::restore_from_file(io_handler).await {
@@ -487,14 +487,15 @@ fn test_lsm_major_compactor() -> Result<()> {
 
     tokio_test::block_on(async move {
         let kv_store = LsmStore::open(temp_dir.path()).await?;
-        let mut vec_key: Vec<i32> = Vec::new();
+        let mut vec_key: Vec<Vec<u8>> = Vec::new();
 
         let start = Instant::now();
         for i in 0..300000 {
             let vec_u8 = rmp_serde::to_vec(&i).unwrap();
             kv_store.set(&vec_u8, vec_u8.clone()).await?;
-            vec_key.push(i);
+            vec_key.push(vec_u8);
         }
+        kv_store.set(&vec_key[0], vec![b'k']).await?;
         println!("[set_for][Time: {:?}]", start.elapsed());
 
         let start = Instant::now();
@@ -503,9 +504,9 @@ fn test_lsm_major_compactor() -> Result<()> {
 
         kv_store.flush().await?;
         let start = Instant::now();
-        for key in vec_key {
-            let vec_u8 = rmp_serde::to_vec(&key).unwrap();
-            assert_eq!(kv_store.get(&vec_u8).await?.unwrap(), vec_u8);
+        assert_eq!(kv_store.get(&vec_key[0]).await?.unwrap(), vec![b'k']);
+        for i in 1..300000 {
+            assert_eq!(kv_store.get(&vec_key[i]).await?.unwrap(), vec_key[i]);
         }
         println!("[get_for][Time: {:?}]", start.elapsed());
         kv_store.flush().await?;

@@ -63,7 +63,7 @@ impl HashStore {
         // 创建索引
         let mut index = HashMap::<Vec<u8>, CommandPos>::new();
         // 通过path获取有序的log序名Vec
-        let gen_list = sorted_gen_list(&path).await?;
+        let gen_list = sorted_gen_list(&path)?;
         // 创建IOHandlerFactory
         let io_handler_factory = IOHandlerFactory::new(path);
         // 初始化压缩阈值
