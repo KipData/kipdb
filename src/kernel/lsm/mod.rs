@@ -115,7 +115,6 @@ impl MemTable {
     async fn get_cmd_data(&self, key: &Vec<u8>) -> Option<CommandData> {
         let mem_table_slice = self.mem_table_slice.read().await;
 
-
         mem_table_slice[0].0.get(key)
             .or_else(|| mem_table_slice[1].0.get(key))
             .map(CommandData::clone)
@@ -181,8 +180,6 @@ impl Manifest {
     }
 
     pub(crate) async fn insert_ss_table_with_index_batch(&mut self, ss_tables: Vec<SsTable>, index: usize) {
-        let mut sync_buffer_of_meet = self.sync_buffer_of_meet.lock().unwrap();
-
         let vec_gen = ss_tables.into_iter()
             .map(|ss_table| {
                 let gen = ss_table.get_gen();
@@ -194,6 +191,8 @@ impl Manifest {
                 gen
             })
             .collect_vec();
+
+        let mut sync_buffer_of_meet = self.sync_buffer_of_meet.lock().unwrap();
 
         sync_buffer_of_meet.extend(vec_gen);
     }
@@ -224,6 +223,13 @@ impl Manifest {
         &self.level_slice[level]
     }
 
+    pub(crate) fn get_vec_ss_table_with_level(&self, level: usize) -> Vec<&SsTable> {
+        self.level_slice[level]
+            .iter()
+            .filter_map(|gen| self.ss_tables_map.get(&gen))
+            .collect_vec()
+    }
+
     pub(crate) fn get_ss_table(&self, gen: &i64) -> Option<&SsTable> {
         self.ss_tables_map.get(&gen)
     }
@@ -234,9 +240,11 @@ impl Manifest {
 
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) async fn get_data_for_ss_tables(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
-        for (_, ss_table) in self.ss_tables_map.iter().rev() {
-            if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
-                return Ok(cmd_data.get_value_owner());
+        for level in 0..7 {
+            for ss_table in self.get_vec_ss_table_with_level(level).iter().rev() {
+                if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
+                    return Ok(cmd_data.get_value_owner());
+                }
             }
         }
 
@@ -251,15 +259,9 @@ impl Manifest {
 
     pub(crate) fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<&SsTable> {
         self.get_level_vec(level).iter()
-            .map(|gen| self.get_ss_table(gen))
-            .filter(|option| option.is_some() && match option {
-                None => { false }
-                Some(ss_table) => {
-                    ss_table.get_scope().meet(scope) &&
-                        self.sync_buffer_of_meet.lock().unwrap().remove(&ss_table.get_gen())
-                }
-            })
-            .map(|option| option.unwrap())
+            .filter_map(|gen| self.get_ss_table(gen))
+            .filter(|ss_table| ss_table.get_scope().meet(scope) &&
+                self.sync_buffer_of_meet.lock().unwrap().remove(&ss_table.get_gen()))
             .collect_vec()
     }
 

@@ -125,18 +125,25 @@ impl Compactor {
             return Ok(None);
         }
 
-        if let Some(vec_ss_table) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
+        if let Some(vec_ss_table_l) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
             let start = Instant::now();
+
+            let scope_l = Scope::fusion_from_vec_ss_table(&vec_ss_table_l)?;
+
+            let vec_ss_table_ll =
+                manifest.get_meet_scope_ss_tables(next_level, &scope_l);
             let vec_ss_table_l_1 =
-                manifest.get_meet_scope_ss_tables(next_level, &Scope::fusion_from_vec_ss_table(&vec_ss_table)?);
+                manifest.get_meet_scope_ss_tables(level, &scope_l);
 
-            let index = SsTable::first_index_with_level(&vec_ss_table_l_1, &manifest, next_level);
+            let index = SsTable::first_index_with_level(&vec_ss_table_ll, &manifest, next_level);
 
-            let vec_ss_table_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_l_1) {
+            let vec_ss_table_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_ll) {
                 Ok(scope) => manifest.get_meet_scope_ss_tables(level, &scope),
-                Err(_) => vec_ss_table
+                Err(_) => vec_ss_table_l
             }.into_iter()
+                .chain(vec_ss_table_ll)
                 .chain(vec_ss_table_l_1)
+                .unique_by(|ss_table| ss_table.get_gen())
                 .collect_vec();
 
             // 数据合并并切片
@@ -166,7 +173,8 @@ impl Compactor {
             .await?
             .into_iter()
             .flatten()
-            .unique_by(|cmd| cmd.get_key_clone())
+            .rev()
+            .unique_by(CommandData::get_key_clone)
             .sorted_unstable()
             .collect();
         Ok(data_sharding(vec_cmd_data, config.sst_file_size, config, true).await)
