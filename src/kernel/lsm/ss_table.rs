@@ -66,6 +66,14 @@ impl Scope {
         }
     }
 
+    /// 由Key构成scope
+    pub(crate) fn from_key(key: &Vec<u8>) -> Self {
+        Scope {
+            start: key.clone(),
+            end: key.clone()
+        }
+    }
+
     /// 将多个scope重组融合成一个scope
     pub(crate) fn fusion(vec_scope :Vec<&Scope>) -> Result<Self> {
         if vec_scope.len() > 0 {

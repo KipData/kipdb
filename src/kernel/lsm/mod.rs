@@ -240,8 +240,19 @@ impl Manifest {
 
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) async fn get_data_for_ss_tables(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
-        for level in 0..7 {
-            for ss_table in self.get_vec_ss_table_with_level(level).iter().rev() {
+        // Level 0的SSTable是无序且SSTable间的数据是可能重复的
+        for ss_table in self.get_vec_ss_table_with_level(0).iter().rev() {
+            if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
+                return Ok(cmd_data.get_value_owner());
+            }
+        }
+        // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的SSTable
+        let key_scope = Scope::from_key(key);
+        for level in 1..7 {
+            if let Some(ss_table) = self.get_vec_ss_table_with_level(level)
+                .iter()
+                .rfind(|ss_table| ss_table.get_scope().meet(&key_scope))
+            {
                 if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
                     return Ok(cmd_data.get_value_owner());
                 }
