@@ -11,14 +11,14 @@ use crate::net::CommandOption;
 type CommandFramedStream = SplitStream<Framed<TcpStream, NetCommandCodec>>;
 type CommandFramedSink = SplitSink<Framed<TcpStream, NetCommandCodec>, CommandOption>;
 
-pub struct Connection {
+pub(crate) struct Connection {
     writer: CommandFramedSink,
     reader: CommandFramedStream
 }
 
 impl Connection {
     /// 新建连接
-    pub fn new(stream: TcpStream) -> Connection {
+    pub(crate) fn new(stream: TcpStream) -> Connection {
         let framed = Framed::new(stream, NetCommandCodec::new());
         let (writer, reader) = framed.split::<CommandOption>();
         Connection{
@@ -28,7 +28,7 @@ impl Connection {
     }
 
     /// 读取CommandOption
-    pub async fn read(&mut self) -> Result<CommandOption> {
+    pub(crate) async fn read(&mut self) -> Result<CommandOption> {
         match self.reader.next().await {
             None => {
                 Ok(CommandOption::None)
@@ -37,13 +37,13 @@ impl Connection {
                 Ok(option)
             }
             Some(Err(e)) => {
-                panic!("{:?}", e)
+                panic!("{e:?}")
             }
         }
     }
 
     /// 写入CommandOption
-    pub async fn write(&mut self, option: CommandOption) -> Result<()> {
+    pub(crate) async fn write(&mut self, option: CommandOption) -> Result<()> {
         if self.writer.send(option).await.is_err() {
             Err(ConnectionError::WriteFailed)
         } else {

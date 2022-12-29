@@ -7,11 +7,13 @@ mod connection;
 mod codec;
 pub mod client;
 pub mod server;
+mod shutdown;
 
 pub type Result<T> = std::result::Result<T, ConnectionError>;
 
 /// 用于TCP连接命令交互时的数据封装
-#[derive(Serialize,Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
+#[non_exhaustive]
 pub enum CommandOption {
     Cmd(CommandData),
     VecCmd(Vec<CommandData>, bool),
@@ -23,9 +25,10 @@ pub enum CommandOption {
     None
 }
 
-impl Into<Option<Vec<u8>>> for CommandOption {
-    fn into(self) -> Option<Vec<u8>> {
-        match self {
+impl From<CommandOption> for Option<Vec<u8>> {
+    #[inline]
+    fn from(value: CommandOption) -> Self {
+        match value {
             CommandOption::Value(value) => { Some(value) }
             _ => { None }
         }

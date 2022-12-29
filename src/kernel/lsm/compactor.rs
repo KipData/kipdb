@@ -91,12 +91,12 @@ impl Compactor {
                 let start = Instant::now();
                 // 并行创建SSTable
                 let ss_table_futures = vec_sharding.into_iter()
-                    .map(|(gen, sharding)| {
-                        let io_handler = self.io_handler_factory.create(gen.clone()).unwrap();
-                        SsTable::create_for_immutable_table(&config,
-                                                            io_handler,
-                                                            sharding,
-                                                            level + 1)
+                    .filter_map(|(gen, sharding)| {
+                        self.io_handler_factory.create(gen).ok()
+                            .map(|io_handler| SsTable::create_for_immutable_table(config,
+                                                                                  io_handler,
+                                                                                  sharding,
+                                                                                  level + 1))
                     });
                 let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
 
@@ -163,10 +163,10 @@ impl Compactor {
     /// 以SSTables的数据归并再排序后切片，获取以Command的Key值由小到大的切片排序
     /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
     /// 真他妈完美
-    async fn data_merge_and_sharding(vec_ss_table: &Vec<&SsTable>, config: &Config) -> Result<MergeShardingVec>{
+    async fn data_merge_and_sharding(vec_ss_table: &[&SsTable], config: &Config) -> Result<MergeShardingVec>{
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
         // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
-        let map_futures = vec_ss_table.into_iter()
+        let map_futures = vec_ss_table.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
             .map(|ss_table| ss_table.get_all_data());
         let vec_cmd_data = future::try_join_all(map_futures)
@@ -190,10 +190,10 @@ impl Compactor {
     }
 
     pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
-        let manifest = Arc::clone(&lsm_kv.manifest());
-        let config = Arc::clone(&lsm_kv.config());
-        let wal = Arc::clone(&lsm_kv.wal());
-        let io_handler_factory = Arc::clone(&lsm_kv.io_handler_factory());
+        let manifest = Arc::clone(lsm_kv.manifest());
+        let config = Arc::clone(lsm_kv.config());
+        let wal = Arc::clone(lsm_kv.wal());
+        let io_handler_factory = Arc::clone(lsm_kv.io_handler_factory());
 
         Compactor::new(manifest, config, io_handler_factory, wal)
     }

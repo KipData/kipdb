@@ -15,9 +15,9 @@ pub async fn main() -> Result<()> {
     let port = cli.port.unwrap_or(DEFAULT_PORT);
 
     // Bind a TCP listener
-    let listener = TcpListener::bind(&format!("{}:{}", ip, port)).await?;
+    let listener = TcpListener::bind(&format!("{ip}:{port}")).await?;
 
-    server::run(listener, quit()).await;
+    server::run(listener, quit()).await?;
 
     Ok(())
 }

@@ -7,6 +7,8 @@ description = "轻量级、异步 基于LSM Leveled Compaction K-V数据库"
 license = "Apache-2.0"
 repository = "https://github.com/KKould/KipDB"
 readme = "README.md"
+keywords = ["async", "KV-Store", "Persistence"]
+categories = ["development-tools", "database"]
 
 [[bin]]
 name = "cli"

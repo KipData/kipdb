@@ -3,12 +3,12 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::error::ConnectionError;
 use crate::net::CommandOption;
 
-pub struct NetCommandCodec;
+pub(crate) struct NetCommandCodec;
 
 /// CommandOption编码器
 /// 用于CommandOption网络传输解析抽象
 impl NetCommandCodec {
-    pub fn new() -> NetCommandCodec {
+    pub(crate) fn new() -> NetCommandCodec {
         NetCommandCodec { }
     }
 }
@@ -26,7 +26,7 @@ impl Decoder for NetCommandCodec {
     type Item = CommandOption;
     type Error = ConnectionError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<std::option::Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.is_empty() {
             return Ok(None)
         }

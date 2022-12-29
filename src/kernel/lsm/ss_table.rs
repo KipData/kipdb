@@ -3,9 +3,9 @@ use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use lru::LruCache;
 use tokio::sync::Mutex;
-use tracing::{info};
 use serde::{Deserialize, Serialize};
 use skiplist::SkipMap;
+use tracing::info;
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io_handler::IOHandler;
 use crate::kernel::lsm::{data_sharding, ExtraInfo, Manifest, MetaInfo, Position};
@@ -16,6 +16,7 @@ use crate::KvsError;
 const ALIGNMENT_4K: usize = 4096;
 
 /// SSTable
+#[derive(Debug)]
 pub(crate) struct SsTable {
     // 表索引信息
     meta_info: MetaInfo,
@@ -67,23 +68,23 @@ impl Scope {
     }
 
     /// 由Key构成scope
-    pub(crate) fn from_key(key: &Vec<u8>) -> Self {
+    pub(crate) fn from_key(key: &[u8]) -> Self {
         Scope {
-            start: key.clone(),
-            end: key.clone()
+            start: key.to_owned(),
+            end: key.to_owned()
         }
     }
 
     /// 将多个scope重组融合成一个scope
     pub(crate) fn fusion(vec_scope :Vec<&Scope>) -> Result<Self> {
-        if vec_scope.len() > 0 {
+        if !vec_scope.is_empty() {
             let start = vec_scope.iter()
                 .map(|scope| &scope.start)
-                .min().unwrap()
+                .min().ok_or(KvsError::DataEmpty)?
                 .clone();
             let end = vec_scope.iter()
                 .map(|scope| &scope.end)
-                .max().unwrap()
+                .max().ok_or(KvsError::DataEmpty)?
                 .clone();
 
             Ok(Scope { start, end })
@@ -99,6 +100,7 @@ impl Scope {
     }
 
     /// 由一组Command组成一个scope
+    #[allow(clippy::pattern_type_mismatch)]
     pub(crate) fn from_vec_cmd_data(vec_mem_data: &Vec<CommandData>) -> Result<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => {
@@ -114,7 +116,7 @@ impl Scope {
     }
 
     /// 由一组SSTable融合成一个scope
-    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&Vec<&SsTable>) -> Result<Self> {
+    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[&SsTable]) -> Result<Self> {
         let vec_scope = vec_ss_table.iter()
             .map(|ss_table| ss_table.get_scope())
             .collect_vec();
@@ -134,7 +136,7 @@ impl SsTable {
         let size_of_disk = io_handler.file_size().await?;
         info!("[SsTable: {}][restore_from_file][TableMetaInfo]: {:?}, Size of Disk: {}", gen, meta_info, &size_of_disk);
 
-        let index_pos = meta_info.data_len;
+        let index_pos = meta_info.data_part_len;
         let index_len = meta_info.index_len as usize;
 
         let buffer = io_handler.read_with_pos(0, index_len + index_pos as usize).await?;
@@ -143,26 +145,24 @@ impl SsTable {
         if let Some(extra_info_cmd) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
             match extra_info_cmd {
                 CommandData::Get { key: extra_info_bytes } => {
-                    match rmp_serde::from_slice::<ExtraInfo>(&extra_info_bytes)? {
-                        ExtraInfo { vec_index, scope, filter , size_of_data } => {
-                            if crc_code_verification.eq(&meta_info.crc_code) {
-                                Ok(SsTable {
-                                    meta_info,
-                                    sparse_index: SkipMap::from_iter(vec_index),
-                                    gen,
-                                    io_handler,
-                                    scope,
-                                    filter,
-                                    size_of_disk,
-                                    size_of_data,
-                                })
-                            } else {
-                                Err(KvsError::CrcMisMatch)
-                            }
-                        }
+                    let ExtraInfo { vec_index, scope, filter , size_of_data }
+                        = rmp_serde::from_slice::<ExtraInfo>(&extra_info_bytes)?;
+                    if crc_code_verification.eq(&meta_info.crc_code) {
+                        Ok(SsTable {
+                            meta_info,
+                            sparse_index: SkipMap::from_iter(vec_index),
+                            gen,
+                            io_handler,
+                            scope,
+                            filter,
+                            size_of_disk,
+                            size_of_data,
+                        })
+                    } else {
+                        Err(KvsError::CrcMisMatch)
                     }
                 }
-                _ => Err(KvsError::NotMatchCmd)
+                CommandData::Set{ .. } | CommandData::Remove{ .. } => Err(KvsError::NotMatchCmd)
             }
         } else {
             Err(KvsError::KeyNotFound)
@@ -170,6 +170,7 @@ impl SsTable {
     }
 
     /// 写入CommandData数据段
+    #[allow(clippy::pattern_type_mismatch)]
     async fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, io_handler: &IOHandler) -> Result<Vec<(Vec<u8>, Position)>> {
         let (start_pos, batch_len, vec_sharding_len) =
             CommandPackage::write_batch_first_pos_with_sharding(io_handler, &vec_cmd_data).await?;
@@ -195,6 +196,7 @@ impl SsTable {
             .collect())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn level(&mut self, level: u64) {
         self.meta_info.level = level;
     }
@@ -203,6 +205,7 @@ impl SsTable {
         self.meta_info.level as usize
     }
 
+    #[allow(dead_code)]
     pub(crate) fn get_version(&self) -> u64 {
         self.meta_info.version
     }
@@ -224,7 +227,8 @@ impl SsTable {
     }
 
     /// 从该sstable中获取指定key对应数据可能存在的CommandData段
-    pub(crate) async fn query_with_key(&self, key: &Vec<u8>, position_cache: &Mutex<LruCache<(i64, Position), Vec<CommandData>>>) -> Result<Option<CommandData>> {
+    #[allow(clippy::expect_used)]
+    pub(crate) async fn query_with_key(&self, key: &[u8], position_cache: &Mutex<LruCache<(i64, Position), Vec<CommandData>>>) -> Result<Option<CommandData>> {
         if self.filter.contains(key) {
             let mut cache = position_cache.lock().await;
 
@@ -239,7 +243,7 @@ impl SsTable {
 
                 return Ok(cache.get(&key_position)
                     .expect("When an error occurs here, it means that the empty data is not filled")
-                    .into_iter()
+                    .iter()
                     .find(|cmd_data| cmd_data.get_key() == key)
                     .map(CommandData::clone));
             }
@@ -250,10 +254,10 @@ impl SsTable {
     /// 获取SsTable内所有的正常数据
     pub(crate) async fn get_all_data(&self) -> Result<Vec<CommandData>> {
         let info = &self.meta_info;
-        let data_len = info.data_len;
+        let data_len = info.data_part_len;
 
         let all_data_u8 = self.io_handler.read_with_pos(0, data_len as usize).await?;
-        Ok(CommandPackage::from_bytes_to_unpack_vec(all_data_u8.as_slice())?)
+        CommandPackage::from_bytes_to_unpack_vec(all_data_u8.as_slice())
     }
 
     /// 通过一组SSTable收集对应的Gen
@@ -264,7 +268,7 @@ impl SsTable {
     }
 
     /// 获取一组SSTable中第一个SSTable的索引位置
-    pub(crate) fn first_index_with_level(vec_ss_table: &Vec<&SsTable>, manifest: &Manifest, level: usize) -> usize {
+    pub(crate) fn first_index_with_level(vec_ss_table: &[&SsTable], manifest: &Manifest, level: usize) -> usize {
         match vec_ss_table.first() {
             None => 0,
             Some(first_ss_table) => {
@@ -286,7 +290,7 @@ impl SsTable {
         let mut filter = GrowableBloom::new(config.desired_error_prob, vec_mem_data.len());
 
         for data in vec_mem_data.iter() {
-            filter.insert(data.get_key());
+            let _ignore = filter.insert(data.get_key());
         }
         let size_of_data = vec_mem_data.len();
         let vec_sharding = data_sharding(
@@ -298,8 +302,8 @@ impl SsTable {
             .into_iter()
             .map(|(_, sharding)| sharding)
             .collect();
-        let vec_index =Self::write_data_batch(vec_sharding, &io_handler).await?;
-        
+        let vec_index = Self::write_data_batch(vec_sharding, &io_handler).await?;
+
         let extra_info = ExtraInfo {
             vec_index,
             scope,
@@ -323,7 +327,7 @@ impl SsTable {
         let meta_info = MetaInfo{
             level: level as u64,
             version: 0,
-            data_len: data_part_len as u64,
+            data_part_len,
             index_len: sparse_index_len as u64,
             crc_code
         };
@@ -332,20 +336,17 @@ impl SsTable {
         let size_of_disk = io_handler.file_size().await?;
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
-        match extra_info {
-            ExtraInfo { vec_index, scope, filter, size_of_data } => {
-                Ok(SsTable {
-                    meta_info,
-                    sparse_index: SkipMap::from_iter(vec_index),
-                    io_handler,
-                    gen,
-                    scope,
-                    filter,
-                    size_of_disk,
-                    size_of_data,
-                })
-            }
-        }
+        let ExtraInfo { vec_index, scope, filter, size_of_data } = extra_info;
+        Ok(SsTable {
+            meta_info,
+            sparse_index: SkipMap::from_iter(vec_index),
+            io_handler,
+            gen,
+            scope,
+            filter,
+            size_of_disk,
+            size_of_data,
+        })
 
     }
 }

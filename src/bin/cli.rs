@@ -109,12 +109,13 @@ async fn main() -> Result<()> {
             client.flush().await?;
             info!("Done!");
         }
+        _ => {}
     }
 
     Ok(())
 }
 
-async fn batch_set(mut client: &mut Client, batch: Vec<String>, is_parallel: bool) -> Result<()> {
+async fn batch_set(client: &mut Client, batch: Vec<String>, is_parallel: bool) -> Result<()> {
     if batch.len() % 2 == 0 {
         let (keys, values) = batch.split_at(batch.len() / 2);
         let vec_batch_set = keys.iter().zip(values)
@@ -125,7 +126,7 @@ async fn batch_set(mut client: &mut Client, batch: Vec<String>, is_parallel: boo
                     value: encode(value)
                 }
             }).collect_vec();
-        batch_run_and_print(&mut client, vec_batch_set, "Done!", is_parallel).await?;
+        batch_run_and_print(client, vec_batch_set, "Done!", is_parallel).await?;
     } else {
         error!("BatchSet len is:{}, key-value cannot be aligned", batch.len())
     }
@@ -133,8 +134,8 @@ async fn batch_set(mut client: &mut Client, batch: Vec<String>, is_parallel: boo
     Ok(())
 }
 
-async fn batch_run_and_print(mut client: &mut Client, vec_batch: Vec<CommandData>, default_null: &str, is_parallel: bool) -> Result<()> {
-    let vec_result = batch_run(&mut client, vec_batch, is_parallel).await?
+async fn batch_run_and_print(client: &mut Client, vec_batch: Vec<CommandData>, default_null: &str, is_parallel: bool) -> Result<()> {
+    let vec_result = batch_run(client, vec_batch, is_parallel).await?
         .into_iter()
         .map(|option| match option {
             None => { default_null.to_string() }

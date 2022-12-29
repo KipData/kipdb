@@ -25,13 +25,13 @@ pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
-const TABLE_META_INFO_SIZE: usize = 48;
+const TABLE_META_INFO_SIZE: usize = 40;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct MetaInfo {
     level: u64,
     version: u64,
-    data_len: u64,
+    data_part_len: u64,
     index_len: u64,
     crc_code: u64
 }
@@ -44,11 +44,13 @@ struct ExtraInfo {
     size_of_data: usize,
 }
 
+#[derive(Debug)]
 struct MemTable {
     // MemTable切片，管理MemTable和ImmutableMemTable
     mem_table_slice: RwLock<[(MemMap, u64); 2]>
 }
 
+#[derive(Debug)]
 pub(crate) struct Manifest {
     _path: Arc<PathBuf>,
     /// SSTable有序存储集合
@@ -85,13 +87,19 @@ impl MemTable {
         let mut mem_table_slice = self.mem_table_slice.write().await;
 
         mem_table_slice[0].1 += (key.len() + value.get_data_len_for_rmp()) as u64;
-        mem_table_slice[0].0.insert(key, value);
+        let _ignore = mem_table_slice[0].0.insert(key, value);
     }
 
     pub(crate) async fn mem_table_is_empty(&self) -> bool {
         let mem_table_slice = self.mem_table_slice.read().await;
 
         mem_table_slice[0].0.is_empty()
+    }
+
+    pub(crate) async fn mem_table_len(&self) -> usize {
+        let mem_table_slice = self.mem_table_slice.read().await;
+
+        mem_table_slice[0].0.len()
     }
 
     async fn is_threshold_exceeded_minor(&self, threshold_size_with_mem_table: u64) -> bool {
@@ -111,7 +119,7 @@ impl MemTable {
             .unzip()
     }
 
-    async fn get_cmd_data(&self, key: &Vec<u8>) -> Option<CommandData> {
+    async fn get_cmd_data(&self, key: &[u8]) -> Option<CommandData> {
         let mem_table_slice = self.mem_table_slice.read().await;
 
         mem_table_slice[0].0.get(key)
@@ -123,7 +131,7 @@ impl MemTable {
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
     async fn write_to_file_and_flush(&self, io_handler: &IOHandler) -> Result<()> {
-        io_handler.write(bincode::serialize(&self)?).await?;
+        let _ignore = io_handler.write(bincode::serialize(&self)?).await?;
         io_handler.flush().await?;
         Ok(())
     }
@@ -142,12 +150,12 @@ impl Manifest {
         // 获取ss_table分级Vec
         let level_slice = Self::level_layered(&mut ss_tables_map);
 
-        let sync_buffer_of_meet = Mutex::new(ss_tables_map.iter()
-            .map(|(gen, _)| gen.clone())
+        let sync_buffer_of_meet = Mutex::new(ss_tables_map.keys()
+            .map(i64::clone)
             .collect());
 
-        let size_of_disk = ss_tables_map.iter()
-            .map(|(_, ss_table)| ss_table.get_size_of_disk())
+        let size_of_disk = ss_tables_map.values()
+            .map(SsTable::get_size_of_disk)
             .sum();
 
         let position_cache = tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(cache_size)
@@ -167,17 +175,19 @@ impl Manifest {
         level_slice
     }
 
+    #[allow(clippy::unwrap_used)]
     pub(crate) async fn insert_ss_table_with_index(&mut self, ss_table: SsTable, index: usize) {
         let gen = ss_table.get_gen();
         let level = ss_table.get_level();
 
         self.size_of_disk += ss_table.get_size_of_disk();
-        self.ss_tables_map.insert(gen, ss_table);
+        let _ignore = self.ss_tables_map.insert(gen, ss_table);
         self.level_slice[level].insert(index, gen);
-        self.sync_buffer_of_meet.lock().unwrap()
+        let _ignore1 = self.sync_buffer_of_meet.lock().unwrap()
             .insert(gen);
     }
 
+    #[allow(clippy::unwrap_used)]
     pub(crate) async fn insert_ss_table_with_index_batch(&mut self, ss_tables: Vec<SsTable>, index: usize) {
         let vec_gen = ss_tables.into_iter()
             .map(|ss_table| {
@@ -185,7 +195,7 @@ impl Manifest {
                 let level = ss_table.get_level();
 
                 self.size_of_disk += ss_table.get_size_of_disk();
-                self.ss_tables_map.insert(gen, ss_table);
+                let _ignore = self.ss_tables_map.insert(gen, ss_table);
                 self.level_slice[level].insert(index, gen);
                 gen
             })
@@ -197,14 +207,15 @@ impl Manifest {
     }
 
     /// 删除指定的过期gen
-    pub(crate) async fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &Vec<i64>) -> Result<()> {
+    #[allow(clippy::unwrap_used)]
+    pub(crate) async fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &[i64]) -> Result<()> {
         self.size_of_disk -= vec_expired_gen.iter()
             .map(|gen| self.get_ss_table(gen).map(SsTable::get_size_of_disk).unwrap_or(0))
             .sum::<u64>();
 
         // 遍历过期Vec对数据进行旧文件删除
         for expired_gen in vec_expired_gen.iter() {
-            self.ss_tables_map.remove(expired_gen);
+            let _ignore = self.ss_tables_map.remove(expired_gen);
             fs::remove_file(log_path(&self._path, *expired_gen))?;
         }
 
@@ -225,12 +236,12 @@ impl Manifest {
     pub(crate) fn get_vec_ss_table_with_level(&self, level: usize) -> Vec<&SsTable> {
         self.level_slice[level]
             .iter()
-            .filter_map(|gen| self.ss_tables_map.get(&gen))
+            .filter_map(|gen| self.ss_tables_map.get(gen))
             .collect_vec()
     }
 
     pub(crate) fn get_ss_table(&self, gen: &i64) -> Option<&SsTable> {
-        self.ss_tables_map.get(&gen)
+        self.ss_tables_map.get(gen)
     }
 
     fn is_threshold_exceeded_major(&self, sst_size: usize, level: usize, sst_magnification: usize) -> bool {
@@ -238,7 +249,7 @@ impl Manifest {
     }
 
     /// 使用Key从现有SSTables中获取对应的数据
-    pub(crate) async fn get_data_for_ss_tables(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
+    pub(crate) async fn get_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         // Level 0的SSTable是无序且SSTable间的数据是可能重复的
         for ss_table in self.get_vec_ss_table_with_level(0).iter().rev() {
             if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
@@ -261,12 +272,13 @@ impl Manifest {
         Ok(None)
     }
 
-    pub(crate) fn get_ss_table_batch(&self, vec_gen: &Vec<i64>) -> Option<Vec<&SsTable>> {
+    pub(crate) fn get_ss_table_batch(&self, vec_gen: &[i64]) -> Option<Vec<&SsTable>> {
         vec_gen.iter()
             .map(|gen| self.get_ss_table(gen))
             .collect::<Option<Vec<&SsTable>>>()
     }
 
+    #[allow(clippy::unwrap_used)]
     pub(crate) fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<&SsTable> {
         self.get_level_vec(level).iter()
             .filter_map(|gen| self.get_ss_table(gen))
@@ -285,7 +297,7 @@ impl Manifest {
 
 impl Position {
     /// 通过稀疏索引与指定Key进行获取对应Position
-    pub(crate) fn from_sparse_index_with_key<'a>(sparse_index: &'a SkipMap<Vec<u8>, Position>, key: &'a Vec<u8>) -> Option<&'a Self> {
+    pub(crate) fn from_sparse_index_with_key<'a>(sparse_index: &'a SkipMap<Vec<u8>, Position>, key: &'a [u8]) -> Option<&'a Self> {
         sparse_index.into_iter()
             .rev()
             .find(|(key_item, _)| !key.cmp(key_item).eq(&Ordering::Less))
@@ -316,14 +328,13 @@ async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config:
                 if data_len >= file_size && i < part_size - 1 {
                     slice[i + 1].1.push(cmd_data);
                     break
-                } else {
-                    slice[i].1.push(cmd_data);
                 }
+                slice[i].1.push(cmd_data);
             } else { break }
         }
     }
     // 过滤掉没有数据的切片
-    vec_sharding.retain(|(_, vec)| vec.len() > 0);
+    vec_sharding.retain(|(_, vec)| vec.is_empty());
     vec_sharding
 }
 
@@ -332,7 +343,7 @@ fn test_meta_info() -> Result<()> {
     let info = MetaInfo {
         level: 0,
         version: 0,
-        data_len: 0,
+        data_part_len: 0,
         index_len: 0,
         crc_code: 0
     };

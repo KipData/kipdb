@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -42,6 +42,9 @@ pub(crate) const DEFAULT_CACHE_SIZE: usize = 23333;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
+/// 基于LSM的KV Store存储内核
+/// Leveled Compaction压缩算法
+#[derive(Debug)]
 pub struct LsmStore {
     /// MemTable
     /// https://zhuanlan.zhihu.com/p/79064869
@@ -69,14 +72,17 @@ pub struct LsmStore {
 
 #[async_trait]
 impl KVStore for LsmStore {
+    #[inline]
     fn name() -> &'static str where Self: Sized {
         "LsmStore made in Kould"
     }
 
+    #[inline]
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
-        LsmStore::open_with_config(Config::new().dir_path(path.into())).await
+        LsmStore::open_with_config(Config::default().dir_path(path.into())).await
     }
 
+    #[inline]
     async fn flush(&self) -> Result<()> {
         self.wal.flush().await?;
         if !self.mem_table.mem_table_is_empty().await {
@@ -87,11 +93,13 @@ impl KVStore for LsmStore {
         Ok(())
     }
 
-    async fn set(&self, key: &Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data(CommandData::Set { key: key.clone(), value }, true).await
+    #[inline]
+    async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
+        self.append_cmd_data(CommandData::Set { key: key.to_vec(), value }, true).await
     }
 
-    async fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
+    #[inline]
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         if let Some(CommandData::Set { value, ..}) = self.mem_table.get_cmd_data(key).await {
             return Ok(Some(value));
         }
@@ -117,25 +125,36 @@ impl KVStore for LsmStore {
         Ok(None)
     }
 
-    async fn remove(&self, key: &Vec<u8>) -> Result<()> {
+    #[inline]
+    async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
-            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.clone() }, true).await }
+            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.to_vec() }, true).await }
             None => { Err(KvsError::KeyNotFound) }
         }
     }
 
+    #[inline]
     async fn size_of_disk(&self) -> Result<u64> {
         Ok(self.manifest.read().await
-            .ss_tables_map.iter()
-            .map(|(_, ss_table)| ss_table.get_size_of_disk())
+            .ss_tables_map.values()
+            .map(SsTable::get_size_of_disk)
             .sum::<u64>() + self.wal.size_of_disk().await?)
     }
 
+    #[inline]
     async fn len(&self) -> Result<usize> {
         Ok(self.manifest.read().await
-            .ss_tables_map.iter()
-            .map(|(_, ss_table)| ss_table.len())
-            .sum::<usize>() + self.wal.len().await?)
+            .ss_tables_map.values()
+            .map(SsTable::len)
+            .sum::<usize>()
+            + self.mem_table.mem_table_len().await)
+    }
+
+    #[inline]
+    async fn is_empty(&self) -> bool {
+        self.manifest.read().await
+            .ss_tables_map.is_empty()
+            && self.mem_table.mem_table_is_empty().await
     }
 }
 
@@ -166,6 +185,7 @@ impl LsmStore {
     }
 
     /// 使用Config进行LsmStore初始化
+    #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
         let path = config.dir_path.clone();
         let wal_compaction_threshold = config.wal_compaction_threshold;
@@ -187,19 +207,21 @@ impl LsmStore {
             match SsTable::restore_from_file(io_handler).await {
                 Ok(ss_table) => {
                     // 初始化成功时直接传入SSTable的索引中
-                    ss_tables.insert(*gen, ss_table);
+                    let _ignore = ss_tables.insert(*gen, ss_table);
                 }
                 Err(err) => {
-                    error!("[LsmKVStore][Load SSTable][Error]: {:?}", err);
+                    error!("[LsmKVStore][Load SSTable: {gen}][Error]: {err:?}");
                     // 是否删除可能还是得根据用户选择
                     // io_handler_factory.clean(*gen)?;
                     // 从wal将有问题的ss_table恢复到mem_table中
                     Self::reload_for_wal(&mut mem_map, &wal, *gen).await?;
+                    // 删除有问题的ss_table
+                    io_handler_factory.clean(*gen)?;
                 }
             }
         }
         // 构建SSTable信息集
-        let manifest = Manifest::new(ss_tables, Arc::new(path.clone()), config.cache_size)?;
+        let manifest = Manifest::new(ss_tables, Arc::new(path), config.cache_size)?;
 
         Ok(LsmStore {
             mem_table: MemTable::new(mem_map),
@@ -223,7 +245,7 @@ impl LsmStore {
                 if let Some(cmd_data_u8) = wal.get(&key).await? {
                     let cmd_data = CommandPackage::decode(&cmd_data_u8)?;
 
-                    mem_table.insert(cmd_data.get_key_clone(), cmd_data);
+                    let _ignore = mem_table.insert(cmd_data.get_key_clone(), cmd_data);
                 } else {
                     return Err(KvsError::WalLoadError);
                 }
@@ -235,13 +257,15 @@ impl LsmStore {
     }
 
     /// 异步持久化immutable_table为SSTable
+    #[inline]
+    #[allow(clippy::unwrap_used)]
     pub async fn minor_compaction(&self) -> Result<()> {
         let (keys, values) = self.mem_table.table_swap().await;
         if !keys.is_empty() && !values.is_empty() {
             let compactor = Compactor::from_lsm_kv(self);
             let sender = self.live_tag().await;
 
-            tokio::spawn(async move {
+            let _ignore = tokio::spawn(async move {
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
                 if let Err(err) = compactor.minor_compaction(keys, values).await {
@@ -255,22 +279,26 @@ impl LsmStore {
     }
 
     /// 同步持久化immutable_table为SSTable
+    #[inline]
     pub async fn minor_compaction_sync(&self) -> Result<()> {
         let (keys, values) = self.mem_table.table_swap().await;
-        Ok(Compactor::from_lsm_kv(self).minor_compaction(keys, values).await?)
+        Compactor::from_lsm_kv(self).minor_compaction(keys, values).await
     }
 
     /// 同步进行SSTable基于Level的层级压缩
+    #[inline]
     pub async fn major_compaction_sync(&self, level: usize) -> Result<()> {
-        Ok(Compactor::from_lsm_kv(self).major_compaction(level).await?)
+        Compactor::from_lsm_kv(self).major_compaction(level).await
     }
 
     /// 通过CommandData的引用解包并克隆出value值
+    #[allow(dead_code)]
     fn value_unpack(cmd_data: &CommandData) -> Option<Vec<u8>> {
         cmd_data.get_value_clone()
     }
 
     /// 通过CommandData的所有权直接返回value值的所有权
+    #[allow(dead_code)]
     fn value_unpack_with_owner(cmd_data: CommandData) -> Option<Vec<u8>> {
         cmd_data.get_value_owner()
     }
@@ -318,7 +346,8 @@ impl CommandCodec {
         Ok(bincode::serialize(&gen)?)
     }
 
-    pub(crate) fn decode_gen(key: &Vec<u8>) -> Result<i64> {
+    #[allow(dead_code)]
+    pub(crate) fn decode_gen(key: &[u8]) -> Result<i64> {
         Ok(bincode::deserialize(key)?)
     }
 
@@ -326,11 +355,11 @@ impl CommandCodec {
         Ok(bincode::serialize(value)?)
     }
 
-    pub(crate) fn decode_keys(vec_u8: &Vec<u8>) -> Result<Vec<Vec<u8>>> {
+    pub(crate) fn decode_keys(vec_u8: &[u8]) -> Result<Vec<Vec<u8>>> {
         Ok(bincode::deserialize(vec_u8)?)
     }
 }
-
+#[derive(Debug)]
 pub struct Config {
     /// 数据目录地址
     pub(crate) dir_path: PathBuf,
@@ -372,77 +401,94 @@ pub struct Config {
 
 impl Config {
 
+    #[inline]
     pub fn dir_path(mut self, dir_path: PathBuf) -> Self {
         self.dir_path = dir_path;
         self
     }
 
+    #[inline]
     pub fn minor_threshold_with_data_size(mut self, minor_threshold_with_data_size: u64) -> Self {
         self.minor_threshold_with_data_size = minor_threshold_with_data_size;
         self
     }
 
+    #[inline]
     pub fn wal_compaction_threshold(mut self, wal_compaction_threshold: u64) -> Self {
         self.wal_compaction_threshold = wal_compaction_threshold;
         self
     }
 
+    #[inline]
     pub fn sparse_index_interval_block_size(mut self, sparse_index_interval_block_size: u64) -> Self {
         self.sparse_index_interval_block_size = sparse_index_interval_block_size;
         self
     }
 
+    #[inline]
     pub fn sst_file_size(mut self, sst_file_size: usize) -> Self {
         self.sst_file_size = sst_file_size;
         self
     }
 
+    #[inline]
     pub fn major_threshold_with_sst_size(mut self, major_threshold_with_sst_size: usize) -> Self {
         self.major_threshold_with_sst_size = major_threshold_with_sst_size;
         self
     }
 
+    #[inline]
     pub fn major_select_file_size(mut self, major_select_file_size: usize) -> Self {
         self.major_select_file_size = major_select_file_size;
         self
     }
 
+    #[inline]
     pub fn node_id(mut self, node_id: i32) -> Self {
         self.node_id = node_id;
         self
     }
 
+    #[inline]
     pub fn level_sst_magnification(mut self, level_sst_magnification: usize) -> Self {
         self.level_sst_magnification = level_sst_magnification;
         self
     }
 
+    #[inline]
     pub fn desired_error_prob(mut self, desired_error_prob: f64) -> Self {
         self.desired_error_prob = desired_error_prob;
         self
     }
 
+    #[inline]
     pub fn cache_size(mut self, cache_size: usize) -> Self {
         self.cache_size = cache_size;
         self
     }
 
+    #[inline]
     pub fn create_gen(&self) -> i64 {
         SnowflakeIdBucket::new(self.node_id, self.buffer_i32
             .fetch_add(1, Ordering::SeqCst)).get_id()
     }
 
+    #[inline]
     pub fn wal_enable(mut self, wal_enable: bool) -> Self {
         self.wal_enable = wal_enable;
         self
     }
 
+    #[inline]
     pub fn wal_async_put_enable(mut self, wal_async_put_enable: bool) -> Self {
         self.wal_async_put_enable = wal_async_put_enable;
         self
     }
+}
 
-    pub fn new() -> Self {
+impl Default for Config {
+    #[inline]
+    fn default() -> Self {
         Self {
             dir_path: DEFAULT_WAL_PATH.into(),
             minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
@@ -474,7 +520,7 @@ pub(crate) async fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>, 
     if is_sync {
         wal_closure.await;
     } else {
-        tokio::spawn(wal_closure);
+        let _ignore = tokio::spawn(wal_closure);
     }
 
 }
@@ -499,7 +545,7 @@ fn test_lsm_major_compactor() -> Result<()> {
         println!("[set_for][Time: {:?}]", start.elapsed());
 
         let start = Instant::now();
-        kv_store.get(&rmp_serde::to_vec(&0).unwrap()).await?.unwrap();
+        let _ignore = kv_store.get(&rmp_serde::to_vec(&0).unwrap()).await?.unwrap();
         println!("[compaction_for][Time: {:?}]", start.elapsed());
 
         kv_store.flush().await?;
