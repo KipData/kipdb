@@ -36,12 +36,6 @@ impl IOHandlerFactory {
 }
 
 /// 对应gen文件的IO处理器
-///
-/// Reader是通用共享的
-/// 这是因为可以充分利用共享的Reader资源避免每个IOHandler都占有一个线程池与读取器池
-///
-/// Writer是私有的
-/// 每个文件的写入是阻塞的
 pub struct IOHandler {
     gen: i64,
     dir_path: Arc<PathBuf>,

@@ -325,7 +325,6 @@ impl SsTable {
             version: 0,
             data_len: data_part_len as u64,
             index_len: sparse_index_len as u64,
-            interval_block_size,
             crc_code
         };
         meta_info.write_to_file_and_flush(&io_handler).await?;

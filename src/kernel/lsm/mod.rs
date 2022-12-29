@@ -33,7 +33,6 @@ struct MetaInfo {
     version: u64,
     data_len: u64,
     index_len: u64,
-    interval_block_size: u64,
     crc_code: u64
 }
 
@@ -335,7 +334,6 @@ fn test_meta_info() -> Result<()> {
         version: 0,
         data_len: 0,
         index_len: 0,
-        interval_block_size: 0,
         crc_code: 0
     };
 
