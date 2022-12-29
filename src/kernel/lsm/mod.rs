@@ -334,7 +334,7 @@ async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config:
         }
     }
     // 过滤掉没有数据的切片
-    vec_sharding.retain(|(_, vec)| vec.is_empty());
+    vec_sharding.retain(|(_, vec)| !vec.is_empty());
     vec_sharding
 }
 

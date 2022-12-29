@@ -177,10 +177,9 @@ impl SsTable {
         info!("[SSTable][write_data_batch][data_zone]: start_pos: {}, batch_len: {}, vec_sharding_len: {:?}", start_pos, batch_len, vec_sharding_len);
 
         let keys = vec_cmd_data.into_iter()
-            .filter_map(|sharding| match sharding.as_slice() {
-                [first, ..] => Ok(first.get_key_clone()),
-                [] => Err(KvsError::DataEmpty)
-            }.ok())
+            .filter_map(|sharding| sharding
+                .first()
+                .map(CommandData::get_key_clone))
             .collect_vec();
 
         let mut start_len = 0;

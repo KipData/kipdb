@@ -532,7 +532,10 @@ fn test_lsm_major_compactor() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
-        let kv_store = LsmStore::open(temp_dir.path()).await?;
+        let config = Config::default()
+            .dir_path(temp_dir.into_path())
+            .wal_enable(false);
+        let kv_store = LsmStore::open_with_config(config).await?;
         let mut vec_key: Vec<Vec<u8>> = Vec::new();
 
         let start = Instant::now();
@@ -550,9 +553,9 @@ fn test_lsm_major_compactor() -> Result<()> {
 
         kv_store.flush().await?;
         let start = Instant::now();
-        assert_eq!(kv_store.get(&vec_key[0]).await?.unwrap(), vec![b'k']);
+        assert_eq!(kv_store.get(&vec_key[0]).await?, Some(vec![b'k']));
         for i in 1..300000 {
-            assert_eq!(kv_store.get(&vec_key[i]).await?.unwrap(), vec_key[i]);
+            assert_eq!(kv_store.get(&vec_key[i]).await?, Some(vec_key[i].clone()));
         }
         println!("[get_for][Time: {:?}]", start.elapsed());
         kv_store.flush().await?;
