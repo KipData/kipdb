@@ -19,6 +19,27 @@ pub mod io_handler;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 
+#[derive(Debug, Copy, Clone)]
+pub enum FileExtension {
+    Log,
+    SSTable,
+}
+
+impl FileExtension {
+    
+    pub(crate) fn extension_str(&self) -> &'static str {
+        match self {
+            FileExtension::Log => "log".into(),
+            FileExtension::SSTable => "sst".into()
+        }
+    }
+
+    /// 对文件夹路径填充日志文件名
+    pub(crate) fn path_with_gen(&self, dir: &Path, gen: i64) -> PathBuf {
+        dir.join(format!("{gen}.{}", self.extension_str()))
+    }
+}
+
 /// KV持久化内核 操作定义
 #[async_trait]
 pub trait KVStore: Send + 'static + Sized {
@@ -366,21 +387,14 @@ impl From<Option<Vec<u8>>> for CommandOption {
 }
 
 /// 现有日志文件序号排序
-fn sorted_gen_list(file_path: &Path) -> Result<Vec<i64>> {
-    // 读取文件夹路径
-    // 获取该文件夹内各个文件的地址
-    // 判断是否为文件并判断拓展名是否为log
-    //  对文件名进行字符串转换
-    //  去除.log后缀
-    //  将文件名转换为u64
-    // 对数组进行拷贝并收集
+fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64>> {
     let mut gen_list: Vec<i64> = fs::read_dir(file_path)?
         .flat_map(|res| -> Result<_> { Ok(res?.path()) })
-        .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
+        .filter(|path| path.is_file() && path.extension() == Some(extension.extension_str().as_ref()))
         .flat_map(|path| {
             path.file_name()
                 .and_then(OsStr::to_str)
-                .map(|s| s.trim_end_matches(".log"))
+                .map(|s| s.trim_end_matches(format!(".{}", extension.extension_str()).as_str()))
                 .map(str::parse::<i64>)
         })
         .flatten().collect();
@@ -388,11 +402,6 @@ fn sorted_gen_list(file_path: &Path) -> Result<Vec<i64>> {
     gen_list.sort_unstable();
     // 返回排序好的Vec
     Ok(gen_list)
-}
-
-/// 对文件夹路径填充日志文件名
-fn log_path(dir: &Path, gen: i64) -> PathBuf {
-    dir.join(format!("{gen}.log"))
 }
 
 // #[test]

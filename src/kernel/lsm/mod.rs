@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -10,8 +9,8 @@ use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use skiplist::SkipMap;
 use tokio::sync::RwLock;
-use crate::kernel::{CommandData, log_path, Result};
-use crate::kernel::io_handler::IOHandler;
+use crate::kernel::{CommandData, Result};
+use crate::kernel::io_handler::{IOHandler, IOHandlerFactory};
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::{Config, LevelSlice, SsTableMap};
 use crate::kernel::lsm::ss_table::{Scope, SsTable};
@@ -208,7 +207,11 @@ impl Manifest {
 
     /// 删除指定的过期gen
     #[allow(clippy::unwrap_used)]
-    pub(crate) async fn retain_with_vec_gen_and_level(&mut self, vec_expired_gen: &[i64]) -> Result<()> {
+    pub(crate) async fn retain_with_vec_gen_and_level(
+        &mut self,
+        vec_expired_gen: &[i64],
+        io_handler_factory: &IOHandlerFactory
+    ) -> Result<()> {
         self.size_of_disk -= vec_expired_gen.iter()
             .map(|gen| self.get_ss_table(gen).map(SsTable::get_size_of_disk).unwrap_or(0))
             .sum::<u64>();
@@ -216,7 +219,7 @@ impl Manifest {
         // 遍历过期Vec对数据进行旧文件删除
         for expired_gen in vec_expired_gen.iter() {
             let _ignore = self.ss_tables_map.remove(expired_gen);
-            fs::remove_file(log_path(&self._path, *expired_gen))?;
+            io_handler_factory.clean(*expired_gen)?;
         }
 
         // 将存储的Level表中含有该gen的SSTable一并删除

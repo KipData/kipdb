@@ -2,7 +2,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 use kip_db::kernel::hash_kv::HashStore;
 use kip_db::kernel::io_handler::IOHandlerFactory;
-use kip_db::kernel::KVStore;
+use kip_db::kernel::{FileExtension, KVStore};
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::Result;
 use kip_db::kernel::sled_kv::SledStore;
@@ -220,7 +220,7 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
 fn test_io() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     tokio_test::block_on(async move {
-        let factory = IOHandlerFactory::new(temp_dir.path());
+        let factory = IOHandlerFactory::new(temp_dir.path(), FileExtension::Log);
         let handler1 = factory.create(1)?;
         let data_write1 = vec![b'1', b'2', b'3'];
         let data_write2 = vec![b'4', b'5', b'6'];

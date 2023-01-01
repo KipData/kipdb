@@ -7,7 +7,7 @@ use futures::future;
 use tokio::sync::RwLock;
 use tracing::error;
 
-use crate::kernel::{CommandData, CommandPackage, CommandPos, KVStore, Result, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, CommandPos, FileExtension, KVStore, Result, sorted_gen_list};
 use crate::kernel::io_handler::{IOHandler, IOHandlerFactory};
 use crate::KvsError;
 
@@ -68,9 +68,10 @@ impl HashStore {
         // 创建索引
         let mut index = HashMap::<Vec<u8>, CommandPos>::new();
         // 通过path获取有序的log序名Vec
-        let gen_list = sorted_gen_list(&path)?;
+        let gen_list = sorted_gen_list(&path, FileExtension::Log)?;
         // 创建IOHandlerFactory
-        let io_handler_factory = IOHandlerFactory::new(path);
+        let io_handler_factory =
+            IOHandlerFactory::new(path, FileExtension::Log);
         // 初始化压缩阈值
         let mut un_compacted = 0;
         // 对读入其Map进行初始化并计算对应的压缩阈值

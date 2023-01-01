@@ -4,7 +4,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use crate::kernel::{log_path, Result};
+use crate::kernel::{FileExtension, Result};
 
 pub(crate) type SyncWriter = RwLock<BufWriterWithPos<File>>;
 
@@ -12,28 +12,33 @@ pub(crate) type SyncReader = Mutex<BufReaderWithPos<File>>;
 
 #[derive(Debug)]
 pub struct IOHandlerFactory {
-    dir_path: Arc<PathBuf>
+    dir_path: Arc<PathBuf>,
+    extension: Arc<FileExtension>,
 }
 
 impl IOHandlerFactory {
-
     #[inline]
     pub fn create(&self, gen: i64) -> Result<IOHandler> {
         let dir_path = Arc::clone(&self.dir_path);
+        let extension = Arc::clone(&self.extension);
 
-        IOHandler::new(dir_path, gen)
+        IOHandler::new(dir_path, gen, extension)
     }
 
     #[inline]
-    pub fn new(dir_path: impl Into<PathBuf>) -> Self {
+    pub fn new(dir_path: impl Into<PathBuf>, extension: FileExtension) -> Self {
         let dir_path = Arc::new(dir_path.into());
+        let extension = Arc::new(extension);
 
-        Self { dir_path }
+        Self { dir_path, extension }
     }
 
     #[inline]
     pub fn clean(&self, gen: i64) -> Result<()>{
-        fs::remove_file(log_path(&self.dir_path, gen))?;
+        fs::remove_file(
+            self.extension
+                .path_with_gen(&self.dir_path, gen)
+        )?;
         Ok(())
     }
 }
@@ -44,14 +49,15 @@ pub struct IOHandler {
     gen: i64,
     dir_path: Arc<PathBuf>,
     writer: SyncWriter,
-    reader: SyncReader
+    reader: SyncReader,
+    extension: Arc<FileExtension>,
 }
 
 impl IOHandler {
 
     #[inline]
-    pub fn new(dir_path: Arc<PathBuf>, gen: i64) -> Result<Self> {
-        let path = log_path(&dir_path, gen);
+    pub fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+        let path = extension.path_with_gen(&dir_path, gen);
 
         // 通过路径构造写入器
         let file = OpenOptions::new()
@@ -67,7 +73,8 @@ impl IOHandler {
             gen,
             dir_path,
             writer,
-            reader
+            reader,
+            extension,
         })
     }
 
@@ -83,8 +90,9 @@ impl IOHandler {
 
     #[inline]
     pub async fn file_size(&self) -> Result<u64> {
-        let path = log_path(&self.dir_path, self.gen);
-        Ok(fs::metadata(path)?.len())
+        let path_buf = self.extension
+            .path_with_gen(&self.dir_path, self.gen);
+        Ok(fs::metadata(path_buf)?.len())
     }
 
     /// 使用自身的gen读取执行起始位置的指定长度的二进制数据

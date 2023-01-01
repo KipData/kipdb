@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, oneshot, RwLock};
 use tokio::sync::oneshot::Sender;
 use tracing::{error, info, warn};
 use crate::{HashStore, KvsError};
-use crate::kernel::{CommandData, CommandPackage, KVStore, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, FileExtension, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::lsm::{Manifest, MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
@@ -198,10 +198,10 @@ impl LsmStore {
 
         // 初始化wal日志
         let wal = Arc::new(HashStore::open_with_compaction_threshold(&wal_path, wal_compaction_threshold).await?);
-        let io_handler_factory = Arc::new(IOHandlerFactory::new(path.clone()));
+        let io_handler_factory = Arc::new(IOHandlerFactory::new(path.clone(), FileExtension::SSTable));
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
-        for gen in sorted_gen_list(&path)?.iter().rev() {
+        for gen in sorted_gen_list(&path, FileExtension::SSTable)?.iter().rev() {
             let io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
             match SsTable::restore_from_file(io_handler).await {

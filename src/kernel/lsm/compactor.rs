@@ -102,7 +102,7 @@ impl Compactor {
 
                 let mut manifest = self.manifest.write().await;
                 manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index).await;
-                manifest.retain_with_vec_gen_and_level(&vec_expire_gen).await?;
+                manifest.retain_with_vec_gen_and_level(&vec_expire_gen, &self.io_handler_factory).await?;
 
                 info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
                 level += 1;
