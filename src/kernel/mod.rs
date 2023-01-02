@@ -8,7 +8,7 @@ use futures::future;
 use itertools::Itertools;
 
 use crate::KvsError;
-use crate::proto::net_pb::CommandOption;
+use crate::proto::net_pb::{CommandOption, KeyValue};
 
 pub mod hash_kv;
 
@@ -321,10 +321,10 @@ impl CommandData {
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                kv_store.set(&key, value).await.map(|_| CommandOption { r#type: 7, bytes: vec![] })
+                kv_store.set(&key, value).await.map(|_| options_none())
             }
             CommandData::Remove { key } => {
-                kv_store.remove(&key).await.map(|_| CommandOption { r#type: 7, bytes: vec![] })
+                kv_store.remove(&key).await.map(|_| options_none())
             }
             CommandData::Get { key } => {
                 kv_store.get(&key).await.map(CommandOption::from)
@@ -348,6 +348,43 @@ impl CommandData {
     }
 }
 
+pub(crate) fn options_none() -> CommandOption {
+    CommandOption { r#type: 7, bytes: vec![], value: 0 }
+}
+
+impl From<KeyValue> for CommandData {
+    fn from(key_value: KeyValue) -> Self {
+        let KeyValue { r#type, key, value } = key_value;
+        match r#type {
+            1 => CommandData::Get { key },
+            2 => CommandData::Remove { key },
+            _ => CommandData::Set { key, value }
+        }
+    }
+}
+
+impl From<CommandData> for KeyValue {
+    fn from(cmd_data: CommandData) -> Self {
+        match cmd_data {
+            CommandData::Set { key, value } => KeyValue {
+                key,
+                value,
+                r#type: 0,
+            },
+            CommandData::Remove { key } => KeyValue {
+                key,
+                value: vec![],
+                r#type: 2,
+            },
+            CommandData::Get { key } => KeyValue {
+                key,
+                value: vec![],
+                r#type: 1,
+            },
+        }
+    }
+}
+
 /// Option<String>与CommandOption的转换方法
 /// 能够与CommandOption::None或CommandOption::Value进行转换
 impl From<CommandOption> for Option<Vec<u8>> {
@@ -365,8 +402,8 @@ impl From<Option<Vec<u8>>> for CommandOption {
     #[inline]
     fn from(item: Option<Vec<u8>>) -> Self {
         match item {
-            Some(bytes) => CommandOption { r#type: 2, bytes },
-            None => CommandOption { r#type: 7, bytes: vec![] }
+            Some(bytes) => CommandOption { r#type: 2, bytes, value: 0 },
+            None => options_none()
         }
     }
 }

@@ -1,11 +1,12 @@
 use itertools::Itertools;
 use tokio::net::{TcpStream, ToSocketAddrs};
+use prost::Message;
 use crate::error::ConnectionError;
 use crate::kernel::{CommandData, CommandPackage};
 use crate::KvsError;
 use crate::net::connection::Connection;
-use crate::net::{option_from_data, Result};
-use crate::proto::net_pb::CommandOption;
+use crate::net::{kv_encode_with_len, option_from_key_value, Result};
+use crate::proto::net_pb::{CommandOption, KeyValue};
 
 #[allow(missing_debug_implementations)]
 pub struct Client {
@@ -28,27 +29,27 @@ impl Client {
     /// 存入数据
     #[inline]
     pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()>{
-        let cmd = &CommandData::set(key, value);
+        let key_value = KeyValue { key, value, r#type: 0 };
         
-        let _ignore = self.send_cmd(option_from_data(cmd)?).await?;
+        let _ignore = self.send_cmd(option_from_key_value(&key_value)?).await?;
         Ok(())
     }
 
     /// 删除数据
     #[inline]
     pub async fn remove(&mut self, key: Vec<u8>) -> Result<()>{
-        let cmd = &CommandData::remove(key);
+        let key_value = KeyValue { key, value: vec![], r#type: 2 };
         
-        let _ignore = self.send_cmd(option_from_data(cmd)?).await?;
+        let _ignore = self.send_cmd(option_from_key_value(&key_value)?).await?;
         Ok(())
     }
 
     /// 获取数据
     #[inline]
     pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>>{
-        let cmd = &CommandData::get(key);
+        let key_value = KeyValue { key, value: vec![], r#type: 1 };
 
-        Ok(self.send_cmd(option_from_data(cmd)?)
+        Ok(self.send_cmd(option_from_key_value(&key_value)?)
             .await?
             .into())
     }
@@ -59,6 +60,7 @@ impl Client {
         let option = CommandOption {
             r#type: 6,
             bytes: vec![],
+            value: 0,
         };
 
         if self.send_cmd(option).await?.r#type == 6 {
@@ -69,29 +71,29 @@ impl Client {
     /// 批量处理
     #[inline]
     pub async fn batch(&mut self, batch_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>>{
+        // 将KeyValue序列化后合并以传递给服务端
         let bytes = batch_cmd
-            .iter()
-            .filter_map(|data| CommandPackage::trans_to_vec_u8(data).ok())
+            .into_iter()
+            .map(KeyValue::from)
+            .filter_map(|key_value|
+                kv_encode_with_len(&key_value).ok())
             .flatten()
             .collect_vec();
 
         let send_option = CommandOption {
             r#type: 1,
             bytes,
+            value: 0,
         };
 
         let result_option = self.send_cmd(send_option).await?;
 
         if result_option.r#type == 1 {
-            Ok(CommandPackage::from_bytes_to_unpack_vec(&result_option.bytes)?
+            Ok(CommandPackage::get_vec_bytes(&result_option.bytes)
                 .into_iter()
-                .map(|cmd_data| {
-                    let key = cmd_data.get_key_owner();
-                    if key.is_empty() {
-                        None
-                    } else {
-                        Some(key)
-                    }
+                .map(|vec_u8| {
+                    KeyValue::decode(vec_u8).ok()
+                        .map(|key_value| key_value.value)
                 })
                 .collect())
         } else {
@@ -118,13 +120,14 @@ impl Client {
         let send_option = CommandOption {
             r#type: type_num,
             bytes: vec![],
+            value: 0,
         };
 
         let result_option = self.send_cmd(send_option).await?;
 
+        // 此处与服务端呼应使用value进行数据传递
         if result_option.r#type == type_num {
-            Ok(bincode::deserialize(&result_option.bytes)
-                .map_err(|_| ConnectionError::DecodeError)?)
+            Ok(result_option.value)
         } else {
             Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
         }

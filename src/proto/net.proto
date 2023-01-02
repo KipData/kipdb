@@ -12,7 +12,21 @@ enum OptionType {
   None = 7;
 }
 
+enum KeyValueType {
+  Set = 0;
+  Get = 1;
+  Remove = 2;
+}
+
 message CommandOption {
   OptionType type = 1;
   bytes bytes = 2;
+  // 仅作为数值指令的结果表示
+  uint64 value = 3;
+}
+
+message KeyValue {
+  bytes key = 1;
+  bytes value = 2;
+  KeyValueType type = 3;
 }

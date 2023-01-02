@@ -4,6 +4,7 @@ use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 use crate::error::ConnectionError;
+use crate::kernel::options_none;
 use crate::net::codec::NetCommandCodec;
 use crate::net::Result;
 use crate::proto::net_pb::CommandOption;
@@ -31,10 +32,7 @@ impl Connection {
     pub(crate) async fn read(&mut self) -> Result<CommandOption> {
         match self.reader.next().await {
             None => {
-                Ok(CommandOption {
-                    r#type: 7,
-                    bytes: vec![],
-                })
+                Ok(options_none())
             }
             Some(Ok(option)) => {
                 Ok(option)

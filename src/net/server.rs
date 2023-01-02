@@ -7,13 +7,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
 use tracing::{error, info};
-use crate::error::ConnectionError;
+use prost::Message;
 use crate::kernel::{CommandData, CommandPackage, KVStore};
 use crate::kernel::lsm::lsm_kv::LsmStore;
 use crate::net::connection::Connection;
-use crate::net::{data_from_option, Result};
+use crate::net::{key_value_from_option, kv_encode_with_len, Result};
 use crate::net::shutdown::Shutdown;
-use crate::proto::net_pb::CommandOption;
+use crate::proto::net_pb::{CommandOption, KeyValue};
 
 const MAX_CONNECTIONS: usize = 250;
 
@@ -163,24 +163,33 @@ impl Handler {
 
             match client_option.r#type {
                 0 => {
-                    let res_option = data_from_option(&client_option)?
+                    let res_option =
+                        CommandData::from(key_value_from_option(&client_option)?)
                         .apply(&*self.kv_store).await?;
 
                     self.connection.write(res_option).await?;
                 }
                 1 => {
-                    let vec_cmd = CommandPackage::from_bytes_to_unpack_vec(&client_option.bytes)?;
+                    let vec_cmd = CommandPackage::get_vec_bytes(&client_option.bytes)
+                        .into_iter()
+                        .filter_map(|vec_u8| {
+                            KeyValue::decode(vec_u8).ok()
+                                .map(CommandData::from)
+                        })
+                        .collect();
                     let bytes = self.kv_store.batch(vec_cmd).await?
                         .into_iter()
                         .filter_map(|value_option| {
-                            let command_data = CommandData::get(
-                                value_option.map_or(vec![], |value| value)
-                            );
-                            CommandPackage::trans_to_vec_u8(&command_data).ok()
+                            let key_value = KeyValue {
+                                key: vec![],
+                                value: value_option.map_or(vec![], |value| value),
+                                r#type: 0,
+                            };
+                            kv_encode_with_len(&key_value).ok()
                         })
                         .flatten()
                         .collect_vec();
-                    self.connection.write(CommandOption { r#type: 1, bytes }).await?;
+                    self.connection.write(CommandOption { r#type: 1, bytes, value: 0 }).await?;
                 }
                 4 => {
                     let size_of_disk = self.kv_store.size_of_disk().await?;
@@ -192,7 +201,7 @@ impl Handler {
                 }
                 6 => {
                     self.kv_store.flush().await?;
-                    self.connection.write(CommandOption { r#type: 6, bytes: vec![] }).await?;
+                    self.connection.write(CommandOption { r#type: 6, bytes: vec![], value: 0 }).await?;
                 }
                 7 => {
                     break;
@@ -204,10 +213,12 @@ impl Handler {
         Ok(())
     }
 
-    async fn value_options(&mut self, size_of_disk: u64, type_num: i32) -> Result<()> {
-        let bytes = bincode::serialize(&size_of_disk)
-            .map_err(|_| ConnectionError::EncodeError)?;
-        self.connection.write(CommandOption { r#type: type_num, bytes }).await?;
+    async fn value_options(&mut self, value: u64, type_num: i32) -> Result<()> {
+        self.connection.write(CommandOption {
+            r#type: type_num,
+            bytes: vec![],
+            value
+        }).await?;
 
         Ok(())
     }
