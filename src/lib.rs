@@ -99,6 +99,7 @@ pub mod error;
 pub mod config;
 pub mod net;
 pub mod cmd;
+pub mod proto;
 
 pub use crate::kernel::hash_kv::HashStore;
 pub use error::KvsError;

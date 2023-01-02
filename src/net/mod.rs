@@ -1,7 +1,8 @@
 use crate::error::ConnectionError;
 
-use serde::{Deserialize, Serialize};
 use crate::kernel::CommandData;
+use crate::KvsError;
+use crate::proto::net_pb::CommandOption;
 
 mod connection;
 mod codec;
@@ -11,26 +12,19 @@ mod shutdown;
 
 pub type Result<T> = std::result::Result<T, ConnectionError>;
 
-/// 用于TCP连接命令交互时的数据封装
-#[derive(Serialize, Deserialize, Debug)]
-#[non_exhaustive]
-pub enum CommandOption {
-    Cmd(CommandData),
-    VecCmd(Vec<CommandData>, bool),
-    Value(Vec<u8>),
-    ValueVec(Vec<Option<Vec<u8>>>),
-    SizeOfDisk(u64),
-    Len(usize),
-    Flush,
-    None
+fn option_from_data(data: &CommandData) -> Result<CommandOption> {
+    Ok(CommandOption {
+        r#type: 0,
+        bytes: bincode::serialize(data)
+            .map_err(|_| ConnectionError::EncodeError)?,
+    })
 }
 
-impl From<CommandOption> for Option<Vec<u8>> {
-    #[inline]
-    fn from(value: CommandOption) -> Self {
-        match value {
-            CommandOption::Value(value) => { Some(value) }
-            _ => { None }
-        }
+fn data_from_option(option: &CommandOption) -> Result<CommandData> {
+    if option.r#type != 0 {
+        Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
+    } else {
+        Ok(bincode::deserialize(&option.bytes)
+            .map_err(|_| ConnectionError::DecodeError)?)
     }
 }

@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package net_pb;
+
+enum OptionType {
+  Cmd = 0;
+  BatchCmd = 1;
+  Bytes = 2;
+  SizeOfDisk = 4;
+  Len = 5;
+  Flush = 6;
+  None = 7;
+}
+
+message CommandOption {
+  OptionType type = 1;
+  bytes bytes = 2;
+}

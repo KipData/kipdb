@@ -6,7 +6,7 @@ use tokio_util::codec::Framed;
 use crate::error::ConnectionError;
 use crate::net::codec::NetCommandCodec;
 use crate::net::Result;
-use crate::net::CommandOption;
+use crate::proto::net_pb::CommandOption;
 
 type CommandFramedStream = SplitStream<Framed<TcpStream, NetCommandCodec>>;
 type CommandFramedSink = SplitSink<Framed<TcpStream, NetCommandCodec>, CommandOption>;
@@ -31,7 +31,10 @@ impl Connection {
     pub(crate) async fn read(&mut self) -> Result<CommandOption> {
         match self.reader.next().await {
             None => {
-                Ok(CommandOption::None)
+                Ok(CommandOption {
+                    r#type: 7,
+                    bytes: vec![],
+                })
             }
             Some(Ok(option)) => {
                 Ok(option)

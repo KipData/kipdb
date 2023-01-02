@@ -1,5 +1,4 @@
 use std::{path::PathBuf, fs};
-use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
@@ -9,7 +8,7 @@ use futures::future;
 use itertools::Itertools;
 
 use crate::KvsError;
-use crate::net::CommandOption;
+use crate::proto::net_pb::CommandOption;
 
 pub mod hash_kv;
 
@@ -61,20 +60,9 @@ pub trait KVStore: Send + 'static + Sized {
     /// 通过键删除键值对
     async fn remove(&self, key: &[u8]) -> Result<()>;
 
-    /// 顺序批量执行
-    #[inline]
-    async fn batch_order(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
-        let mut vec_result = Vec::new();
-        for cmd in vec_cmd {
-            vec_result.push(cmd.apply(self).await?.into())
-        }
-
-        Ok(vec_result)
-    }
-
     /// 并行批量执行
     #[inline]
-    async fn batch_parallel(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
+    async fn batch(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
         let map_cmd = vec_cmd.into_iter()
             .map(|cmd| cmd.apply(self));
         Ok(future::try_join_all(map_cmd)
@@ -93,7 +81,7 @@ pub trait KVStore: Send + 'static + Sized {
 
 /// 用于包装Command交予持久化核心实现使用的操作类
 #[derive(Debug)]
-struct CommandPackage {
+pub(crate) struct CommandPackage {
     cmd: CommandData,
     pos: u64,
     len: usize
@@ -125,20 +113,6 @@ impl CommandPos {
         self.gen = file_gen;
         self.pos = pos;
         self.len = len;
-    }
-}
-
-impl PartialOrd<Self> for CommandData {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Option::from(self.get_key().cmp(other.get_key()))
-    }
-}
-
-impl Ord for CommandData {
-    #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.get_key().cmp(other.get_key())
     }
 }
 
@@ -347,10 +321,10 @@ impl CommandData {
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                kv_store.set(&key, value).await.map(|_| CommandOption::None)
+                kv_store.set(&key, value).await.map(|_| CommandOption { r#type: 7, bytes: vec![] })
             }
             CommandData::Remove { key } => {
-                kv_store.remove(&key).await.map(|_| CommandOption::None)
+                kv_store.remove(&key).await.map(|_| CommandOption { r#type: 7, bytes: vec![] })
             }
             CommandData::Get { key } => {
                 kv_store.get(&key).await.map(CommandOption::from)
@@ -376,12 +350,23 @@ impl CommandData {
 
 /// Option<String>与CommandOption的转换方法
 /// 能够与CommandOption::None或CommandOption::Value进行转换
+impl From<CommandOption> for Option<Vec<u8>> {
+    #[inline]
+    fn from(item: CommandOption) -> Self {
+        if item.r#type == 2 {
+            Some(item.bytes)
+        } else {
+            None
+        }
+    }
+}
+
 impl From<Option<Vec<u8>>> for CommandOption {
     #[inline]
     fn from(item: Option<Vec<u8>>) -> Self {
         match item {
-            None => CommandOption::None,
-            Some(vec) => CommandOption::Value(vec)
+            Some(bytes) => CommandOption { r#type: 2, bytes },
+            None => CommandOption { r#type: 7, bytes: vec![] }
         }
     }
 }

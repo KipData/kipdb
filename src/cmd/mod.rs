@@ -11,12 +11,8 @@ pub enum Command {
 
     #[clap(help = "cli.exe batch-set [keys]... [values]...")]
     BatchSet { batch: Vec<String> },
-    #[clap(help = "cli.exe batch-set-parallel [keys]... [values]...")]
-    BatchSetParallel { batch: Vec<String> },
     BatchRemove { keys: Vec<String> },
-    BatchRemoveParallel { keys: Vec<String> },
     BatchGet { keys: Vec<String> },
-    BatchGetParallel { keys: Vec<String> },
     SizeOfDisk,
     Len
 }
@@ -55,21 +51,6 @@ impl Command {
     #[inline]
     pub fn batch_get(keys: Vec<String>) -> Command {
         Command::BatchGet { keys }
-    }
-
-    #[inline]
-    pub fn batch_set_parallel(batch: Vec<String>) -> Command {
-        Command::BatchSetParallel { batch }
-    }
-
-    #[inline]
-    pub fn batch_remove_parallel(keys: Vec<String>) -> Command {
-        Command::BatchRemoveParallel { keys }
-    }
-
-    #[inline]
-    pub fn batch_get_parallel(keys: Vec<String>) -> Command {
-        Command::BatchGetParallel { keys }
     }
 }
 

@@ -2,16 +2,18 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use chrono::Local;
+use itertools::Itertools;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
 use tracing::{error, info};
-use crate::kernel::KVStore;
+use crate::error::ConnectionError;
+use crate::kernel::{CommandData, CommandPackage, KVStore};
 use crate::kernel::lsm::lsm_kv::LsmStore;
 use crate::net::connection::Connection;
-use crate::net::Result;
-use crate::net::CommandOption;
+use crate::net::{data_from_option, Result};
 use crate::net::shutdown::Shutdown;
+use crate::proto::net_pb::CommandOption;
 
 const MAX_CONNECTIONS: usize = 250;
 
@@ -150,47 +152,62 @@ impl Listener {
 impl Handler {
     async fn run(&mut self) -> Result<()> {
         while !self.shutdown.is_shutdown() {
-
-            match tokio::select! {
+            let client_option: CommandOption = tokio::select! {
                 res = self.connection.read() => res?,
                 _ = self.shutdown.recv() => {
                     // If a shutdown signal is received, return from `run`.
                     // This will result in the task terminating.
                     return Ok(());
                 }
-            } {
-                CommandOption::Cmd(cmd) => {
-                    let res_option = cmd.apply(&*self.kv_store).await?;
+            };
+
+            match client_option.r#type {
+                0 => {
+                    let res_option = data_from_option(&client_option)?
+                        .apply(&*self.kv_store).await?;
 
                     self.connection.write(res_option).await?;
                 }
-                CommandOption::VecCmd(vec_cmd, is_parallel) => {
-                    let vec_value = match is_parallel {
-                        true => { self.kv_store.batch_parallel(vec_cmd).await? }
-                        false => { self.kv_store.batch_order(vec_cmd).await? }
-                    };
-                    let res_option = CommandOption::ValueVec(vec_value);
-                    self.connection.write(res_option).await?;
+                1 => {
+                    let vec_cmd = CommandPackage::from_bytes_to_unpack_vec(&client_option.bytes)?;
+                    let bytes = self.kv_store.batch(vec_cmd).await?
+                        .into_iter()
+                        .filter_map(|value_option| {
+                            let command_data = CommandData::get(
+                                value_option.map_or(vec![], |value| value)
+                            );
+                            CommandPackage::trans_to_vec_u8(&command_data).ok()
+                        })
+                        .flatten()
+                        .collect_vec();
+                    self.connection.write(CommandOption { r#type: 1, bytes }).await?;
                 }
-                CommandOption::SizeOfDisk(_) => {
+                4 => {
                     let size_of_disk = self.kv_store.size_of_disk().await?;
-                    self.connection.write(CommandOption::SizeOfDisk(size_of_disk)).await?;
+                    self.value_options(size_of_disk, 4).await?;
                 }
-                CommandOption::Len(_) => {
-                    let len = self.kv_store.len().await?;
-                    self.connection.write(CommandOption::Len(len)).await?;
-
+                5 => {
+                    let len = self.kv_store.len().await? as u64;
+                    self.value_options(len, 5).await?;
                 }
-                CommandOption::Flush => {
+                6 => {
                     self.kv_store.flush().await?;
-                    self.connection.write(CommandOption::Flush).await?;
+                    self.connection.write(CommandOption { r#type: 6, bytes: vec![] }).await?;
                 }
-                CommandOption::None => {
+                7 => {
                     break;
                 }
                 _ => {}
             }
         }
+
+        Ok(())
+    }
+
+    async fn value_options(&mut self, size_of_disk: u64, type_num: i32) -> Result<()> {
+        let bytes = bincode::serialize(&size_of_disk)
+            .map_err(|_| ConnectionError::EncodeError)?;
+        self.connection.write(CommandOption { r#type: type_num, bytes }).await?;
 
         Ok(())
     }

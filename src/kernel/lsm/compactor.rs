@@ -175,7 +175,7 @@ impl Compactor {
             .flatten()
             .rev()
             .unique_by(CommandData::get_key_clone)
-            .sorted_unstable()
+            .sorted_unstable_by_key(CommandData::get_key_clone)
             .collect();
         Ok(data_sharding(vec_cmd_data, config.sst_file_size, config, true).await)
     }

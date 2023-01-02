@@ -1,7 +1,8 @@
 use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
+use prost::Message;
 use crate::error::ConnectionError;
-use crate::net::CommandOption;
+use crate::proto::net_pb::CommandOption;
 
 pub(crate) struct NetCommandCodec;
 
@@ -17,7 +18,11 @@ impl Encoder<CommandOption> for NetCommandCodec {
     type Error = ConnectionError;
 
     fn encode(&mut self, item: CommandOption, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        dst.extend(bincode::serialize(&item)?);
+        let mut buf = vec![];
+        item
+            .encode(&mut buf)
+            .map_err(|_| ConnectionError::EncodeError)?;
+        dst.extend(buf);
         Ok(())
     }
 }
@@ -30,9 +35,9 @@ impl Decoder for NetCommandCodec {
         if src.is_empty() {
             return Ok(None)
         }
-
-        let data = src.split();
-
-        Ok(Some(bincode::deserialize(&data[..])?))
+        Ok(Some(
+            CommandOption::decode(src.split())
+                .map_err(|_| ConnectionError::DecodeError)?
+        ))
     }
 }

@@ -57,20 +57,18 @@ pub enum KvsError {
 pub enum ConnectionError {
     #[fail(display = "{}", _0)]
     Io(#[cause] io::Error),
-    #[fail(display = "{}", _0)]
-    Serde(#[cause] Box<bincode::ErrorKind>),
     #[fail(display = "disconnected")]
     Disconnected,
     #[fail(display = "write failed")]
     WriteFailed,
     #[fail(display = "wrong instruction")]
     WrongInstruction,
-    #[fail(display = "{}", _0)]
-    SerdeMPEncode(#[cause] rmp_serde::encode::Error),
-    #[fail(display = "{}", _0)]
-    SerdeMPDecode(#[cause] rmp_serde::decode::Error),
+    #[fail(display = "encode error")]
+    EncodeError,
+    #[fail(display = "decode error")]
+    DecodeError,
     #[fail(display = "server flush error")]
-    RemoteFlushError,
+    FlushError,
     #[fail(display = "{}", _0)]
     KvStoreError(#[cause] KvsError),
 }
@@ -114,27 +112,6 @@ impl From<rmp_serde::decode::Error> for KvsError {
     #[inline]
     fn from(err: rmp_serde::decode::Error) -> Self {
         KvsError::SerdeMPDecode(err)
-    }
-}
-
-impl From<rmp_serde::encode::Error> for ConnectionError {
-    #[inline]
-    fn from(err: rmp_serde::encode::Error) -> Self {
-        ConnectionError::SerdeMPEncode(err)
-    }
-}
-
-impl From<rmp_serde::decode::Error> for ConnectionError {
-    #[inline]
-    fn from(err: rmp_serde::decode::Error) -> Self {
-        ConnectionError::SerdeMPDecode(err)
-    }
-}
-
-impl From<Box<bincode::ErrorKind>> for ConnectionError {
-    #[inline]
-    fn from(err: Box<bincode::ErrorKind>) -> Self {
-        ConnectionError::Serde(err)
     }
 }
 
