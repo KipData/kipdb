@@ -28,8 +28,8 @@ impl FileExtension {
     
     pub(crate) fn extension_str(&self) -> &'static str {
         match self {
-            FileExtension::Log => "log".into(),
-            FileExtension::SSTable => "sst".into()
+            FileExtension::Log => "log",
+            FileExtension::SSTable => "sst"
         }
     }
 
@@ -353,6 +353,7 @@ pub(crate) fn options_none() -> CommandOption {
 }
 
 impl From<KeyValue> for CommandData {
+    #[inline]
     fn from(key_value: KeyValue) -> Self {
         let KeyValue { r#type, key, value } = key_value;
         match r#type {
@@ -364,6 +365,7 @@ impl From<KeyValue> for CommandData {
 }
 
 impl From<CommandData> for KeyValue {
+    #[inline]
     fn from(cmd_data: CommandData) -> Self {
         match cmd_data {
             CommandData::Set { key, value } => KeyValue {
@@ -390,11 +392,7 @@ impl From<CommandData> for KeyValue {
 impl From<CommandOption> for Option<Vec<u8>> {
     #[inline]
     fn from(item: CommandOption) -> Self {
-        if item.r#type == 2 {
-            Some(item.bytes)
-        } else {
-            None
-        }
+        (item.r#type == 2).then_some(item.bytes)
     }
 }
 
