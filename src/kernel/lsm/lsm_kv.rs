@@ -100,8 +100,8 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        if let Some(CommandData::Set { value, ..}) = self.mem_table.get_cmd_data(key).await {
-            return Ok(Some(value));
+        if let Some(cmd_data) = self.mem_table.get_cmd_data(key).await {
+            return Ok(cmd_data.get_value_owner());
         }
         // 读取前等待压缩完毕
         // 相对来说，消耗较小
