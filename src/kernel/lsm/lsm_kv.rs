@@ -230,7 +230,7 @@ impl LsmStore {
         for gen in sorted_gen_list(&path, FileExtension::SSTable)?.iter().rev() {
             let io_handler = io_handler_factory.create(*gen)?;
             // 尝试初始化Table
-            match SsTable::restore_from_file(io_handler).await {
+            match SsTable::load_from_file(io_handler).await {
                 Ok(ss_table) => {
                     // 初始化成功时直接传入SSTable的索引中
                     let _ignore = ss_tables.insert(*gen, ss_table);

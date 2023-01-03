@@ -24,7 +24,7 @@ pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
-const TABLE_META_INFO_SIZE: usize = 40;
+const TABLE_META_INFO_SIZE: usize = 36;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct MetaInfo {
@@ -32,7 +32,7 @@ struct MetaInfo {
     version: u64,
     data_part_len: u64,
     index_len: u64,
-    crc_code: u64
+    crc_code: u32
 }
 
 #[derive(Serialize, Deserialize)]

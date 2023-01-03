@@ -37,21 +37,25 @@ impl Compactor {
         let mut manifest = self.manifest.write().await;
         let gen = self.config.create_gen();
 
-        let io_handler = self.io_handler_factory.create(gen)?;
-
         // 将这些索引的key序列化后预先存入wal中作防灾准备
         // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
-        wal_put(
-            &self.wal,
-            CommandCodec::encode_gen(gen)?,
-            CommandCodec::encode_keys(&vec_keys)?,
-            !self.config.wal_async_put_enable
-        ).await;
+        // 此处通过config.wal_enable重复判断以提前避免序列化开销
+        if self.config.wal_enable {
+            wal_put(
+                &self.wal,
+                CommandCodec::encode_gen(gen)?,
+                CommandCodec::encode_keys(&vec_keys)?,
+                !self.config.wal_async_put_enable
+            ).await;
+        }
         // 从内存表中将数据持久化为ss_table
-        let ss_table = SsTable::create_for_immutable_table(&self.config
-                                                           , io_handler
-                                                           , vec_values
-                                                           , LEVEL_0).await?;
+        let ss_table = SsTable::create_for_immutable_table(
+            &self.config,
+            gen,
+            &self.io_handler_factory,
+            vec_values,
+            LEVEL_0
+        ).await?;
         manifest.insert_ss_table_with_index(ss_table, 0).await;
 
         drop(manifest);
@@ -91,12 +95,14 @@ impl Compactor {
                 let start = Instant::now();
                 // 并行创建SSTable
                 let ss_table_futures = vec_sharding.into_iter()
-                    .filter_map(|(gen, sharding)| {
-                        self.io_handler_factory.create(gen).ok()
-                            .map(|io_handler| SsTable::create_for_immutable_table(config,
-                                                                                  io_handler,
-                                                                                  sharding,
-                                                                                  level + 1))
+                    .map(|(gen, sharding)| {
+                        SsTable::create_for_immutable_table(
+                            config,
+                            gen,
+                            &self.io_handler_factory,
+                            sharding,
+                            level + 1
+                        )
                     });
                 let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
 

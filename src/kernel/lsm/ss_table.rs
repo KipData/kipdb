@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use skiplist::SkipMap;
 use tracing::info;
 use crate::kernel::{CommandData, CommandPackage};
-use crate::kernel::io_handler::IOHandler;
+use crate::kernel::io_handler::{IOHandler, IOHandlerFactory};
 use crate::kernel::lsm::{data_sharding, ExtraInfo, Manifest, MetaInfo, Position};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
@@ -129,25 +129,29 @@ impl SsTable {
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
-    pub(crate) async fn restore_from_file(io_handler: IOHandler) -> Result<Self>{
+    pub(crate) async fn load_from_file(io_handler: IOHandler) -> Result<Self>{
         let gen = io_handler.get_gen();
 
         let meta_info = MetaInfo::read_to_file(&io_handler).await?;
         let size_of_disk = io_handler.file_size().await?;
-        info!("[SsTable: {}][restore_from_file][TableMetaInfo]: {:?}, Size of Disk: {}", gen, meta_info, &size_of_disk);
+        info!(
+            "[SsTable: {gen}][load_from_file][TableMetaInfo]: {meta_info:?}, Size of Disk: {size_of_disk}"
+        );
 
-        let index_pos = meta_info.data_part_len;
+        // 需要手动对len + 4以跳过len_head
+        let index_pos = meta_info.data_part_len + 4;
         let index_len = meta_info.index_len as usize;
 
-        let buffer = io_handler.read_with_pos(0, index_len + index_pos as usize).await?;
-        let crc_code_verification = crc32fast::hash(buffer.as_slice()) as u64;
+        let buffer = io_handler.read_with_pos(0, meta_info.data_part_len as usize).await?;
+        let loaded_crc_code = crc32fast::hash(buffer.as_slice());
 
         if let Some(extra_info_cmd) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
             match extra_info_cmd {
                 CommandData::Get { key: extra_info_bytes } => {
                     let ExtraInfo { vec_index, scope, filter , size_of_data }
                         = rmp_serde::from_slice::<ExtraInfo>(&extra_info_bytes)?;
-                    if crc_code_verification.eq(&meta_info.crc_code) {
+                    let info_crc_code = meta_info.crc_code;
+                    if loaded_crc_code.eq(&info_crc_code) {
                         Ok(SsTable {
                             meta_info,
                             sparse_index: SkipMap::from_iter(vec_index),
@@ -171,8 +175,8 @@ impl SsTable {
 
     /// 写入CommandData数据段
     #[allow(clippy::pattern_type_mismatch)]
-    async fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, io_handler: &IOHandler) -> Result<Vec<(Vec<u8>, Position)>> {
-        let (start_pos, batch_len, vec_sharding_len) =
+    async fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, io_handler: &IOHandler) -> Result<(Vec<(Vec<u8>, Position)>, u32)> {
+        let (start_pos, batch_len, vec_sharding_len, crc_code) =
             CommandPackage::write_batch_first_pos_with_sharding(io_handler, &vec_cmd_data).await?;
         info!("[SSTable][write_data_batch][data_zone]: start_pos: {}, batch_len: {}, vec_sharding_len: {:?}", start_pos, batch_len, vec_sharding_len);
 
@@ -190,9 +194,12 @@ impl SsTable {
                 start_len += sharding_len as u64;
                 position
             }).collect_vec();
-        Ok(keys.into_iter()
-            .zip(vec_position)
-            .collect())
+        Ok((
+            keys.into_iter()
+                .zip(vec_position)
+                .collect(),
+            crc_code
+            ))
     }
 
     #[allow(dead_code)]
@@ -280,12 +287,18 @@ impl SsTable {
     /// 通过内存表构建持久化并构建SSTable
     ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) async fn create_for_immutable_table(config: &Config, io_handler: IOHandler, vec_mem_data: Vec<CommandData>, level: usize) -> Result<Self> {
+    pub(crate) async fn create_for_immutable_table(
+        config: &Config,
+        gen: i64,
+        io_handler_factory: &IOHandlerFactory,
+        vec_mem_data: Vec<CommandData>,
+        level: usize
+    ) -> Result<Self> {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
         // 获取地址
         let interval_block_size = config.sparse_index_interval_block_size;
-        let gen = io_handler.get_gen();
+        let io_handler = io_handler_factory.create(gen)?;
         let mut filter = GrowableBloom::new(config.desired_error_prob, vec_mem_data.len());
 
         for data in vec_mem_data.iter() {
@@ -301,7 +314,7 @@ impl SsTable {
             .into_iter()
             .map(|(_, sharding)| sharding)
             .collect();
-        let vec_index = Self::write_data_batch(vec_sharding, &io_handler).await?;
+        let (vec_index, crc_code) = Self::write_data_batch(vec_sharding, &io_handler).await?;
 
         let extra_info = ExtraInfo {
             vec_index,
@@ -315,18 +328,14 @@ impl SsTable {
         // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
         let cmd_sparse_index = CommandData::Get { key: rmp_serde::to_vec(&extra_info)?};
         // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
-        let (data_part_len, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
-
-        // 数据刷入以获取crc_code
-        io_handler.flush().await?;
-
-        let crc_code = io_handler.get_crc_code().await? as u64;
+        let (sparse_index_pos, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
 
         // 将以上持久化信息封装为MetaInfo
-        let meta_info = MetaInfo{
+        // data_part_len跳过sparse_index_pos的len_head所以-4
+        let meta_info = MetaInfo {
             level: level as u64,
             version: 0,
-            data_part_len,
+            data_part_len: sparse_index_pos - 4,
             index_len: sparse_index_len as u64,
             crc_code
         };

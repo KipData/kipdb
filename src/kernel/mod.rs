@@ -147,7 +147,10 @@ impl CommandPackage {
     }
 
     /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
-    pub(crate) async fn write_batch_first_pos_with_sharding(io_handler: &IOHandler, vec_sharding: &Vec<Vec<CommandData>>) -> Result<(u64, usize, Vec<usize>)> {
+    pub(crate) async fn write_batch_first_pos_with_sharding(
+        io_handler: &IOHandler,
+        vec_sharding: &Vec<Vec<CommandData>>
+    ) -> Result<(u64, usize, Vec<usize>, u32)> {
         let mut vec_sharding_len = Vec::with_capacity(vec_sharding.len());
 
         let vec_sharding_u8  = vec_sharding.iter()
@@ -161,9 +164,11 @@ impl CommandPackage {
             })
             .collect_vec();
 
+        let crc_code = crc32fast::hash(vec_sharding_u8.as_slice());
+
         let (start_pos, batch_len) = io_handler.write(vec_sharding_u8).await?;
 
-        Ok((start_pos, batch_len, vec_sharding_len))
+        Ok((start_pos, batch_len, vec_sharding_len, crc_code))
     }
 
     pub(crate) fn trans_to_vec_u8(cmd: &CommandData) -> Result<Vec<u8>> {
