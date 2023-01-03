@@ -50,6 +50,8 @@ pub enum KvsError {
     #[fail(display = "Unexpected command type")]
     UnexpectedCommandType,
 
+    #[fail(display = "Process already exists")]
+    ProcessExistsError,
 }
 
 #[derive(Fail, Debug)]

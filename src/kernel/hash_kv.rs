@@ -3,11 +3,12 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use itertools::Itertools;
 use async_trait::async_trait;
+use fslock::LockFile;
 use futures::future;
 use tokio::sync::RwLock;
 use tracing::error;
 
-use crate::kernel::{CommandData, CommandPackage, CommandPos, FileExtension, KVStore, Result, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_LOCK_FILE, FileExtension, KVStore, Result, sorted_gen_list};
 use crate::kernel::io_handler::{IOHandler, IOHandlerFactory};
 use crate::KvsError;
 
@@ -18,7 +19,10 @@ pub(crate) const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 64;
 #[derive(Debug)]
 pub struct HashStore {
     io_handler_factory: IOHandlerFactory,
-    manifest: RwLock<Manifest>
+    manifest: RwLock<Manifest>,
+    /// 多进程文件锁
+    /// 避免多进程进行数据读写
+    lock_file: LockFile,
 }
 /// 用于状态方面的管理
 #[derive(Debug)]
@@ -64,6 +68,13 @@ impl HashStore {
         let path = path.into();
         // 创建文件夹（如果他们缺失）
         fs::create_dir_all(&path)?;
+
+        let mut lock_file = LockFile::open(&path.join(DEFAULT_LOCK_FILE))?;
+
+        if !lock_file.try_lock()? {
+            return Err(KvsError::ProcessExistsError);
+        }
+
         let mut io_handler_index = BTreeMap::new();
         // 创建索引
         let mut index = HashMap::<Vec<u8>, CommandPos>::new();
@@ -96,7 +107,8 @@ impl HashStore {
 
         let store = HashStore {
             io_handler_factory,
-            manifest
+            manifest,
+            lock_file,
         };
         store.compact().await?;
 
@@ -161,6 +173,13 @@ impl HashStore {
             }
         }
         0
+    }
+}
+
+impl Drop for HashStore {
+    fn drop(&mut self) {
+        self.lock_file.unlock()
+            .expect("LockFile unlock failed!");
     }
 }
 

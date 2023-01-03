@@ -18,6 +18,8 @@ pub mod io_handler;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 
+pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
+
 #[derive(Debug, Copy, Clone)]
 pub enum FileExtension {
     Log,

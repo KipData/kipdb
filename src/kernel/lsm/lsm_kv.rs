@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Instant;
 use async_trait::async_trait;
+use fslock::LockFile;
 use snowflake::SnowflakeIdBucket;
 use tokio::sync::{Mutex, oneshot, RwLock};
 use tokio::sync::oneshot::Sender;
 use tracing::{error, info, warn};
 use crate::{HashStore, KvsError};
-use crate::kernel::{CommandData, CommandPackage, FileExtension, KVStore, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, FileExtension, KVStore, sorted_gen_list};
 use crate::kernel::io_handler::IOHandlerFactory;
 use crate::kernel::lsm::{Manifest, MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
@@ -68,6 +70,9 @@ pub struct LsmStore {
     wal: Arc<HashStore>,
     /// 异步任务阻塞监听器
     vec_rev: Mutex<Vec<oneshot::Receiver<()>>>,
+    /// 多进程文件锁
+    /// 避免多进程进行数据读写
+    lock_file: LockFile,
 }
 
 #[async_trait]
@@ -158,6 +163,13 @@ impl KVStore for LsmStore {
     }
 }
 
+impl Drop for LsmStore {
+    fn drop(&mut self) {
+        self.lock_file.unlock()
+            .expect("LockFile unlock failed!");
+    }
+}
+
 impl LsmStore {
 
     /// 追加数据
@@ -188,17 +200,31 @@ impl LsmStore {
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
         let path = config.dir_path.clone();
+        // 创建文件夹（如果他们缺失）
+        fs::create_dir_all(&path)?;
         let wal_compaction_threshold = config.wal_compaction_threshold;
 
         let mut mem_map = MemMap::new();
         let mut ss_tables = BTreeMap::new();
 
-        let mut wal_path = path.clone();
-        wal_path.push(DEFAULT_WAL_PATH);
+        let mut lock_file = LockFile::open(&path.join(DEFAULT_LOCK_FILE))?;
 
+        if !lock_file.try_lock()? {
+            return Err(KvsError::ProcessExistsError);
+        }
         // 初始化wal日志
-        let wal = Arc::new(HashStore::open_with_compaction_threshold(&wal_path, wal_compaction_threshold).await?);
-        let io_handler_factory = Arc::new(IOHandlerFactory::new(path.clone(), FileExtension::SSTable));
+        let wal = Arc::new(
+            HashStore::open_with_compaction_threshold(
+                &path.join(DEFAULT_WAL_PATH),
+                wal_compaction_threshold
+            ).await?
+        );
+        let io_handler_factory = Arc::new(
+            IOHandlerFactory::new(
+                path.clone(),
+                FileExtension::SSTable
+            )
+        );
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
         for gen in sorted_gen_list(&path, FileExtension::SSTable)?.iter().rev() {
@@ -229,7 +255,8 @@ impl LsmStore {
             config: Arc::new(config),
             io_handler_factory,
             wal,
-            vec_rev: Mutex::new(Vec::new())
+            vec_rev: Mutex::new(Vec::new()),
+            lock_file,
         })
     }
 

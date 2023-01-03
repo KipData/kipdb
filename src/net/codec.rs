@@ -32,12 +32,11 @@ impl Decoder for NetCommandCodec {
     type Error = ConnectionError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.is_empty() {
-            return Ok(None)
-        }
-        Ok(Some(
-            CommandOption::decode(src.split())
-                .map_err(|_| ConnectionError::DecodeError)?
-        ))
+        Ok(if src.is_empty() {
+            None
+        } else {
+            Some(CommandOption::decode(src.split())
+                .map_err(|_| ConnectionError::DecodeError)?)
+        })
     }
 }
