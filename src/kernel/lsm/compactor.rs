@@ -5,7 +5,7 @@ use itertools::Itertools;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 use crate::{HashStore, KvsError};
-use crate::kernel::io_handler::IOHandlerFactory;
+use crate::kernel::io::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
 use crate::kernel::lsm::{data_sharding, Manifest};
@@ -169,7 +169,10 @@ impl Compactor {
     /// 以SSTables的数据归并再排序后切片，获取以Command的Key值由小到大的切片排序
     /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
     /// 真他妈完美
-    async fn data_merge_and_sharding(vec_ss_table: &[&SsTable], config: &Config) -> Result<MergeShardingVec>{
+    async fn data_merge_and_sharding(
+        vec_ss_table: &[&SsTable],
+        config: &Config
+    ) -> Result<MergeShardingVec> {
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
         // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
         let map_futures = vec_ss_table.iter()
@@ -187,7 +190,11 @@ impl Compactor {
     }
 
     /// 获取对应Level的开头指定数量的SSTable
-    pub(crate) fn get_first_vec_ss_table(manifest: &Manifest, level: usize, size: usize) -> Option<Vec<&SsTable>> {
+    pub(crate) fn get_first_vec_ss_table(
+        manifest: &Manifest,
+        level: usize,
+        size: usize
+    ) -> Option<Vec<&SsTable>>{
         let level_vec = manifest.get_level_vec(level).iter()
             .take(size)
             .cloned()

@@ -1,7 +1,7 @@
 use tempfile::TempDir;
 use walkdir::WalkDir;
 use kip_db::kernel::hash_kv::HashStore;
-use kip_db::kernel::io_handler::IOHandlerFactory;
+use kip_db::kernel::io::{IOHandlerFactory, IOType};
 use kip_db::kernel::{FileExtension, KVStore};
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::Result;
@@ -218,27 +218,36 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
 
 #[test]
 fn test_io() -> Result<()> {
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let temp_dir = TempDir::new()
+        .expect("unable to create temporary working directory");
     tokio_test::block_on(async move {
         let factory = IOHandlerFactory::new(temp_dir.path(), FileExtension::Log);
-        let handler1 = factory.create(1)?;
-        let data_write1 = vec![b'1', b'2', b'3'];
-        let data_write2 = vec![b'4', b'5', b'6'];
-        let (pos_1, len_1) = handler1.write(data_write1).await?;
-        let (pos_2, len_2) = handler1.write(data_write2).await?;
-        handler1.flush().await?;
-        let data_read = handler1.read_with_pos(0, 6).await?;
 
-        assert_eq!(vec![b'1', b'2', b'3',b'4', b'5', b'6'], data_read);
-        assert_eq!(pos_1, 0);
-        assert_eq!(pos_2, 3);
-        assert_eq!(len_1, 3);
-        assert_eq!(len_2, 3);
-
-        assert_eq!(handler1.file_size().await?, 6);
+        io_type_test(&factory, IOType::Buf).await?;
+        io_type_test(&factory, IOType::MMap).await?;
 
         Ok(())
     })
+}
+
+async fn io_type_test(factory: &IOHandlerFactory, io_type: IOType) -> Result<()> {
+    let handler1 = factory.create(1, io_type)?;
+    let data_write1 = vec![b'1', b'2', b'3'];
+    let data_write2 = vec![b'4', b'5', b'6'];
+    let (pos_1, len_1) = handler1.write(data_write1).await?;
+    let (pos_2, len_2) = handler1.write(data_write2).await?;
+    handler1.flush().await?;
+    let data_read = handler1.read_with_pos(0, 6).await?;
+
+    assert_eq!(vec![b'1', b'2', b'3', b'4', b'5', b'6'], data_read);
+    assert_eq!(pos_1, 0);
+    assert_eq!(pos_2, 3);
+    assert_eq!(len_1, 3);
+    assert_eq!(len_2, 3);
+
+    assert_eq!(handler1.file_size()?, 6);
+
+    Ok(())
 }
 
 fn encode_key(key: &str) -> Result<Vec<u8>>{

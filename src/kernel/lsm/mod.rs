@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use skiplist::SkipMap;
 use tokio::sync::RwLock;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::io_handler::{IOHandler, IOHandlerFactory};
+use crate::kernel::io::{IOHandler, IOHandlerFactory};
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::{Config, LevelSlice, SsTableMap};
 use crate::kernel::lsm::ss_table::{Scope, SsTable};
@@ -36,7 +36,7 @@ struct MetaInfo {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ExtraInfo {
+struct MetaBlock {
     vec_index: Vec<(Vec<u8>, Position)>,
     scope: Scope,
     filter: GrowableBloom,
@@ -49,7 +49,6 @@ struct MemTable {
     mem_table_slice: RwLock<[(MemMap, u64); 2]>
 }
 
-#[derive(Debug)]
 pub(crate) struct Manifest {
     _path: Arc<PathBuf>,
     /// SSTable有序存储集合
@@ -129,15 +128,15 @@ impl MemTable {
 
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
-    async fn write_to_file_and_flush(&self, io_handler: &IOHandler) -> Result<()> {
+    async fn write_to_file_and_flush(&self, io_handler: &Box<dyn IOHandler>) -> Result<()>{
         let _ignore = io_handler.write(bincode::serialize(&self)?).await?;
         io_handler.flush().await?;
         Ok(())
     }
 
     /// 从对应文件的IOHandler中将MetaInfo读取出来
-    async fn read_to_file(io_handler: &IOHandler) -> Result<Self> {
-        let start_pos = io_handler.file_size().await? - TABLE_META_INFO_SIZE as u64;
+    async fn read_to_file(io_handler: &Box<dyn IOHandler>) -> Result<Self> {
+        let start_pos = io_handler.file_size()? - TABLE_META_INFO_SIZE as u64;
         let table_meta_info = io_handler.read_with_pos(start_pos, TABLE_META_INFO_SIZE).await?;
 
         Ok(bincode::deserialize(table_meta_info.as_slice())?)
@@ -175,7 +174,11 @@ impl Manifest {
     }
 
     #[allow(clippy::unwrap_used)]
-    pub(crate) async fn insert_ss_table_with_index(&mut self, ss_table: SsTable, index: usize) {
+    pub(crate) async fn insert_ss_table_with_index(
+        &mut self,
+        ss_table: SsTable,
+        index: usize
+    ) {
         let gen = ss_table.get_gen();
         let level = ss_table.get_level();
 
@@ -187,7 +190,11 @@ impl Manifest {
     }
 
     #[allow(clippy::unwrap_used)]
-    pub(crate) async fn insert_ss_table_with_index_batch(&mut self, ss_tables: Vec<SsTable>, index: usize) {
+    pub(crate) async fn insert_ss_table_with_index_batch(
+        &mut self,
+        ss_tables: Vec<SsTable>,
+        index: usize
+    ) {
         let vec_gen = ss_tables.into_iter()
             .map(|ss_table| {
                 let gen = ss_table.get_gen();
@@ -213,7 +220,12 @@ impl Manifest {
         io_handler_factory: &IOHandlerFactory
     ) -> Result<()> {
         self.size_of_disk -= vec_expired_gen.iter()
-            .map(|gen| self.get_ss_table(gen).map(SsTable::get_size_of_disk).unwrap_or(0))
+            .map(|gen|
+                self.get_ss_table(gen)
+                    .map(
+                        SsTable::get_size_of_disk)
+                        .unwrap_or(0)
+                    )
             .sum::<u64>();
 
         // 遍历过期Vec对数据进行旧文件删除

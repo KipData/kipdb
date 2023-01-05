@@ -12,7 +12,7 @@ use tokio::sync::oneshot::Sender;
 use tracing::{error, info, warn};
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, FileExtension, KVStore, sorted_gen_list};
-use crate::kernel::io_handler::IOHandlerFactory;
+use crate::kernel::io::{IOHandlerFactory, IOType};
 use crate::kernel::lsm::{Manifest, MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
 use crate::kernel::lsm::ss_table::SsTable;
@@ -46,7 +46,6 @@ pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv:
 
 /// 基于LSM的KV Store存储内核
 /// Leveled Compaction压缩算法
-#[derive(Debug)]
 pub struct LsmStore {
     /// MemTable
     /// https://zhuanlan.zhihu.com/p/79064869
@@ -228,7 +227,7 @@ impl LsmStore {
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
         for gen in sorted_gen_list(&path, FileExtension::SSTable)?.iter().rev() {
-            let io_handler = io_handler_factory.create(*gen)?;
+            let io_handler = io_handler_factory.create(*gen, IOType::Buf)?;
             // 尝试初始化Table
             match SsTable::load_from_file(io_handler).await {
                 Ok(ss_table) => {

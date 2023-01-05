@@ -19,7 +19,6 @@ const MAX_CONNECTIONS: usize = 250;
 
 /// 服务器监听器
 /// 用于监听端口的连接并分发给Handler进行多线程处理连接
-#[derive(Debug)]
 pub struct Listener {
     kv_store_root: Arc<LsmStore>,
     listener: TcpListener,

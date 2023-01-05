@@ -2,19 +2,18 @@ use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use crate::kernel::io_handler::IOHandler;
 use async_trait::async_trait;
 use futures::future;
 use itertools::Itertools;
 
+use crate::kernel::io::IOHandler;
 use crate::KvsError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
 pub mod hash_kv;
-
 pub mod sled_kv;
 pub mod lsm;
-pub mod io_handler;
+pub mod io;
 
 pub type Result<T> = std::result::Result<T, KvsError>;
 
@@ -135,22 +134,22 @@ impl CommandPackage {
 
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
-    pub(crate) async fn write(io_handler: &IOHandler, cmd: &CommandData) -> Result<(u64, usize)> {
+    pub(crate) async fn write(io_handler: &Box<dyn IOHandler>, cmd: &CommandData) -> Result<(u64, usize)> {
         let (start, len) = Self::write_back_real_pos(io_handler, cmd).await?;
         Ok((start + 4, len - 4))
     }
 
     /// 写入一个Command
     /// 写入完成后该cmd的真实写入起始位置与长度
-    pub(crate) async fn write_back_real_pos(io_handler: &IOHandler, cmd: &CommandData) -> Result<(u64, usize)> {
+    pub(crate) async fn write_back_real_pos(io_handler: &Box<dyn IOHandler>, cmd: &CommandData) -> Result<(u64, usize)> {
         io_handler.write(Self::trans_to_vec_u8(cmd)?).await
     }
 
     /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
     pub(crate) async fn write_batch_first_pos_with_sharding(
-        io_handler: &IOHandler,
+        io_handler: &Box<dyn IOHandler>,
         vec_sharding: &Vec<Vec<CommandData>>
-    ) -> Result<(u64, usize, Vec<usize>, u32)> {
+    ) -> Result<(u64, usize, Vec<usize>, u32)>{
         let mut vec_sharding_len = Vec::with_capacity(vec_sharding.len());
 
         let vec_sharding_u8  = vec_sharding.iter()
@@ -183,7 +182,7 @@ impl CommandPackage {
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
-    pub(crate) async fn from_pos_unpack(io_handler: &IOHandler, start: u64, len: usize) -> Result<Option<CommandData>> {
+    pub(crate) async fn from_pos_unpack(io_handler: &Box<dyn IOHandler>, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos(start, len).await?;
         Ok(rmp_serde::from_slice(cmd_u8.as_slice()).ok())
     }
@@ -211,8 +210,10 @@ impl CommandPackage {
     }
 
     /// 获取reader之中所有的Command
-    pub(crate) async fn from_read_to_vec(io_handler: &IOHandler) -> Result<Vec<CommandPackage>> {
-        let bytes = io_handler.read_to_end().await?;
+    pub(crate) async fn from_read_to_vec(io_handler: &Box<dyn IOHandler>) -> Result<Vec<CommandPackage>> {
+        let len = io_handler.file_size()?;
+
+        let bytes = io_handler.read_with_pos(0, len as usize).await?;
         Self::from_bytes_to_vec(bytes.as_slice())
     }
 
