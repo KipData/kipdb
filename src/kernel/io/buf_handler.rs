@@ -12,6 +12,9 @@ type SyncWriter = Mutex<BufWriterWithPos<File>>;
 
 type SyncReader = Mutex<BufReaderWithPos<File>>;
 
+/// 使用BufReade和BufWriter实现的IOHandler
+/// 目前是使用了Mutex实现其线程安全
+/// 读方面可能有优化空间
 #[derive(Debug)]
 pub(crate) struct BufHandler {
     gen: i64,

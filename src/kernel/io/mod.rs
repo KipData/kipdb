@@ -9,7 +9,6 @@ use crate::kernel::FileExtension;
 use crate::kernel::io::buf_handler::BufHandler;
 use crate::kernel::io::mmap_handler::MMapHandler;
 use crate::kernel::Result;
-use crate::KvsError;
 
 #[derive(Debug)]
 pub struct IOHandlerFactory {
@@ -17,7 +16,7 @@ pub struct IOHandlerFactory {
     extension: Arc<FileExtension>,
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub enum IOType {
     Buf,
     MMap,
@@ -30,13 +29,10 @@ impl IOHandlerFactory {
         let dir_path = Arc::clone(&self.dir_path);
         let extension = Arc::clone(&self.extension);
 
-        if io_type == IOType::Buf {
-            Ok(Box::new(BufHandler::new(dir_path, gen, extension)?))
-        } else if io_type == IOType::MMap {
-            Ok(Box::new(MMapHandler::new(dir_path, gen, extension)?))
-        } else {
-            Err(KvsError::NotMatchIO)
-        }
+        Ok(match io_type {
+                IOType::Buf => Box::new(BufHandler::new(dir_path, gen, extension)?),
+                IOType::MMap => Box::new(MMapHandler::new(dir_path, gen, extension)?),
+            })
     }
 
     #[inline]

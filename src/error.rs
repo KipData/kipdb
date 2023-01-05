@@ -28,8 +28,6 @@ pub enum KvsError {
     LevelOver,
     #[fail(display = "Not the correct type of Cmd")]
     NotMatchCmd,
-    #[fail(display = "Not the correct type of IO Type")]
-    NotMatchIO,
     #[fail(display = "CRC code does not match")]
     CrcMisMatch,
     #[fail(display = "Cache size overflow")]

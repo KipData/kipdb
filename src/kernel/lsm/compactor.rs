@@ -9,7 +9,7 @@ use crate::kernel::io::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
 use crate::kernel::lsm::{data_sharding, Manifest};
-use crate::kernel::lsm::ss_table::{Scope, SsTable};
+use crate::kernel::lsm::ss_table::{Scope, SSTable};
 
 pub(crate) const LEVEL_0: usize = 0;
 
@@ -49,7 +49,7 @@ impl Compactor {
             ).await;
         }
         // 从内存表中将数据持久化为ss_table
-        let ss_table = SsTable::create_for_immutable_table(
+        let ss_table = SSTable::create_for_immutable_table(
             &self.config,
             gen,
             &self.io_handler_factory,
@@ -96,7 +96,7 @@ impl Compactor {
                 // 并行创建SSTable
                 let ss_table_futures = vec_sharding.into_iter()
                     .map(|(gen, sharding)| {
-                        SsTable::create_for_immutable_table(
+                        SSTable::create_for_immutable_table(
                             config,
                             gen,
                             &self.io_handler_factory,
@@ -104,7 +104,7 @@ impl Compactor {
                             level + 1
                         )
                     });
-                let vec_new_ss_table: Vec<SsTable> = future::try_join_all(ss_table_futures).await?;
+                let vec_new_ss_table: Vec<SSTable> = future::try_join_all(ss_table_futures).await?;
 
                 let mut manifest = self.manifest.write().await;
                 manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index).await;
@@ -141,7 +141,7 @@ impl Compactor {
             let vec_ss_table_l_1 =
                 manifest.get_meet_scope_ss_tables(level, &scope_l);
 
-            let index = SsTable::first_index_with_level(&vec_ss_table_ll, &manifest, next_level);
+            let index = SSTable::first_index_with_level(&vec_ss_table_ll, &manifest, next_level);
 
             let vec_ss_table_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_ll) {
                 Ok(scope) => manifest.get_meet_scope_ss_tables(level, &scope),
@@ -157,7 +157,7 @@ impl Compactor {
                 Self::data_merge_and_sharding(&vec_ss_table_final, &self.config).await?;
 
             // 收集需要清除的SSTable
-            let vec_expire_gen = SsTable::collect_gen(vec_ss_table_final)?;
+            let vec_expire_gen = SSTable::collect_gen(vec_ss_table_final)?;
             info!("[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]", start.elapsed());
 
             Ok(Some((index, vec_expire_gen, vec_merge_sharding)))
@@ -170,7 +170,7 @@ impl Compactor {
     /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
     /// 真他妈完美
     async fn data_merge_and_sharding(
-        vec_ss_table: &[&SsTable],
+        vec_ss_table: &[&SSTable],
         config: &Config
     ) -> Result<MergeShardingVec> {
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
@@ -194,7 +194,7 @@ impl Compactor {
         manifest: &Manifest,
         level: usize,
         size: usize
-    ) -> Option<Vec<&SsTable>>{
+    ) -> Option<Vec<&SSTable>>{
         let level_vec = manifest.get_level_vec(level).iter()
             .take(size)
             .cloned()

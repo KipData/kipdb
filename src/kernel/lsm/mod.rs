@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::io::{IOHandler, IOHandlerFactory};
 use crate::kernel::lsm::compactor::MergeShardingVec;
-use crate::kernel::lsm::lsm_kv::{Config, LevelSlice, SsTableMap};
-use crate::kernel::lsm::ss_table::{Scope, SsTable};
+use crate::kernel::lsm::lsm_kv::{Config, LevelSlice};
+use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::KvsError;
 
 pub(crate) mod ss_table;
@@ -21,6 +21,8 @@ pub mod lsm_kv;
 mod compactor;
 
 pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
+
+pub(crate) type SSTableMap = BTreeMap<i64, SSTable>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
@@ -52,7 +54,7 @@ struct MemTable {
 pub(crate) struct Manifest {
     _path: Arc<PathBuf>,
     /// SSTable有序存储集合
-    ss_tables_map: SsTableMap,
+    ss_tables_map: SSTableMap,
     /// Level层级Vec
     /// 以索引0为level-0这样的递推，存储文件的gen值
     level_slice: LevelSlice,
@@ -62,7 +64,7 @@ pub(crate) struct Manifest {
     /// 内部会存储SSTable的Gen，
     /// 判定meet成功时移除对应Gen，避免收集重复SSTable
     sync_buffer_of_meet: Mutex<HashSet<i64>>,
-    position_cache: tokio::sync::Mutex<LruCache<(i64, Position), Vec<CommandData>>>
+    block_cache: tokio::sync::Mutex<LruCache<(i64, Position), Vec<CommandData>>>
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Hash, PartialOrd, Eq)]
@@ -144,27 +146,29 @@ impl MetaInfo {
 }
 
 impl Manifest {
-    pub(crate) fn new(mut ss_tables_map: SsTableMap, path: Arc<PathBuf>, cache_size: usize) -> Result<Self> {
+    pub(crate) fn new(ss_tables_map: SSTableMap, path: Arc<PathBuf>, cache_size: usize) -> Result<Self> {
         // 获取ss_table分级Vec
-        let level_slice = Self::level_layered(&mut ss_tables_map);
+        let level_slice = Self::level_layered(&ss_tables_map);
 
         let sync_buffer_of_meet = Mutex::new(ss_tables_map.keys()
             .map(i64::clone)
             .collect());
 
         let size_of_disk = ss_tables_map.values()
-            .map(SsTable::get_size_of_disk)
+            .map(SSTable::get_size_of_disk)
             .sum();
 
-        let position_cache = tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(cache_size)
-            .ok_or(KvsError::CacheSizeOverFlow)?));
+        let block_cache = tokio::sync::Mutex::new(
+            LruCache::new(NonZeroUsize::new(cache_size)
+                .ok_or(KvsError::CacheSizeOverFlow)?)
+        );
 
-        Ok(Self { _path: path, ss_tables_map, level_slice, size_of_disk, sync_buffer_of_meet, position_cache })
+        Ok(Self { _path: path, ss_tables_map, level_slice, size_of_disk, sync_buffer_of_meet, block_cache })
     }
 
     /// 使用ss_tables返回LevelVec
     /// 由于ss_tables是有序的，level_vec的内容应当是从L0->LN，旧->新
-    fn level_layered(ss_tables: &mut SsTableMap) -> LevelSlice {
+    fn level_layered(ss_tables: &SSTableMap) -> LevelSlice {
         let mut level_slice = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for ss_table in ss_tables.values() {
             let level = ss_table.get_level();
@@ -173,10 +177,11 @@ impl Manifest {
         level_slice
     }
 
+    /// 通过SSTable的level以及指定的Index将SSTable插入到Manifest中
     #[allow(clippy::unwrap_used)]
     pub(crate) async fn insert_ss_table_with_index(
         &mut self,
-        ss_table: SsTable,
+        ss_table: SSTable,
         index: usize
     ) {
         let gen = ss_table.get_gen();
@@ -192,7 +197,7 @@ impl Manifest {
     #[allow(clippy::unwrap_used)]
     pub(crate) async fn insert_ss_table_with_index_batch(
         &mut self,
-        ss_tables: Vec<SsTable>,
+        ss_tables: Vec<SSTable>,
         index: usize
     ) {
         let vec_gen = ss_tables.into_iter()
@@ -222,10 +227,8 @@ impl Manifest {
         self.size_of_disk -= vec_expired_gen.iter()
             .map(|gen|
                 self.get_ss_table(gen)
-                    .map(
-                        SsTable::get_size_of_disk)
-                        .unwrap_or(0)
-                    )
+                    .map(SSTable::get_size_of_disk)
+                        .unwrap_or(0))
             .sum::<u64>();
 
         // 遍历过期Vec对数据进行旧文件删除
@@ -248,14 +251,14 @@ impl Manifest {
         &self.level_slice[level]
     }
 
-    pub(crate) fn get_vec_ss_table_with_level(&self, level: usize) -> Vec<&SsTable> {
+    pub(crate) fn get_vec_ss_table_with_level(&self, level: usize) -> Vec<&SSTable> {
         self.level_slice[level]
             .iter()
             .filter_map(|gen| self.ss_tables_map.get(gen))
             .collect_vec()
     }
 
-    pub(crate) fn get_ss_table(&self, gen: &i64) -> Option<&SsTable> {
+    pub(crate) fn get_ss_table(&self, gen: &i64) -> Option<&SSTable> {
         self.ss_tables_map.get(gen)
     }
 
@@ -264,10 +267,13 @@ impl Manifest {
     }
 
     /// 使用Key从现有SSTables中获取对应的数据
-    pub(crate) async fn get_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(crate) async fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         // Level 0的SSTable是无序且SSTable间的数据是可能重复的
         for ss_table in self.get_vec_ss_table_with_level(0).iter().rev() {
-            if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
+            if let Some(cmd_data) = ss_table
+                .query_with_key(key, &self.block_cache)
+                .await?
+            {
                 return Ok(cmd_data.get_value_owner());
             }
         }
@@ -278,7 +284,10 @@ impl Manifest {
                 .iter()
                 .rfind(|ss_table| ss_table.get_scope().meet(&key_scope))
             {
-                if let Some(cmd_data) = ss_table.query_with_key(key, &self.position_cache).await? {
+                if let Some(cmd_data) = ss_table
+                    .query_with_key(key, &self.block_cache)
+                    .await?
+                {
                     return Ok(cmd_data.get_value_owner());
                 }
             }
@@ -287,18 +296,21 @@ impl Manifest {
         Ok(None)
     }
 
-    pub(crate) fn get_ss_table_batch(&self, vec_gen: &[i64]) -> Option<Vec<&SsTable>> {
+    pub(crate) fn get_ss_table_batch(&self, vec_gen: &[i64]) -> Option<Vec<&SSTable>> {
         vec_gen.iter()
             .map(|gen| self.get_ss_table(gen))
-            .collect::<Option<Vec<&SsTable>>>()
+            .collect::<Option<Vec<&SSTable>>>()
     }
 
     #[allow(clippy::unwrap_used)]
-    pub(crate) fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<&SsTable> {
+    pub(crate) fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<&SSTable> {
         self.get_level_vec(level).iter()
             .filter_map(|gen| self.get_ss_table(gen))
             .filter(|ss_table| ss_table.get_scope().meet(scope) &&
-                self.sync_buffer_of_meet.lock().unwrap().remove(&ss_table.get_gen()))
+                self.sync_buffer_of_meet
+                    .lock()
+                    .unwrap()
+                    .remove(&ss_table.get_gen()))
             .collect_vec()
     }
 

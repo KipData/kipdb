@@ -15,12 +15,10 @@ use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, FileExtensio
 use crate::kernel::io::{IOHandlerFactory, IOType};
 use crate::kernel::lsm::{Manifest, MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
-use crate::kernel::lsm::ss_table::SsTable;
+use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 
 pub(crate) type LevelSlice = [Vec<i64>; 7];
-
-pub(crate) type SsTableMap = BTreeMap<i64, SsTable>;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
@@ -40,7 +38,9 @@ pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
-pub(crate) const DEFAULT_CACHE_SIZE: usize = 23333;
+pub(crate) const DEFAULT_BLOCK_CACHE_SIZE: usize = 2333;
+
+pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 15;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
@@ -114,7 +114,7 @@ impl KVStore for LsmStore {
         self.wait_for_compression_down().await?;
 
         if let Some(value) = self.manifest.read().await
-            .get_data_for_ss_tables(key).await? {
+            .find_data_for_ss_tables(key).await? {
             return Ok(Some(value));
         }
         // 尝试从Wal获取数据
@@ -141,7 +141,7 @@ impl KVStore for LsmStore {
     async fn size_of_disk(&self) -> Result<u64> {
         Ok(self.manifest.read().await
             .ss_tables_map.values()
-            .map(SsTable::get_size_of_disk)
+            .map(SSTable::get_size_of_disk)
             .sum::<u64>() + self.wal.size_of_disk().await?)
     }
 
@@ -149,7 +149,7 @@ impl KVStore for LsmStore {
     async fn len(&self) -> Result<usize> {
         Ok(self.manifest.read().await
             .ss_tables_map.values()
-            .map(SsTable::len)
+            .map(SSTable::len)
             .sum::<usize>()
             + self.mem_table.mem_table_len().await)
     }
@@ -229,7 +229,7 @@ impl LsmStore {
         for gen in sorted_gen_list(&path, FileExtension::SSTable)?.iter().rev() {
             let io_handler = io_handler_factory.create(*gen, IOType::Buf)?;
             // 尝试初始化Table
-            match SsTable::load_from_file(io_handler).await {
+            match SSTable::load_from_file(io_handler).await {
                 Ok(ss_table) => {
                     // 初始化成功时直接传入SSTable的索引中
                     let _ignore = ss_tables.insert(*gen, ss_table);
@@ -246,7 +246,7 @@ impl LsmStore {
             }
         }
         // 构建SSTable信息集
-        let manifest = Manifest::new(ss_tables, Arc::new(path), config.cache_size)?;
+        let manifest = Manifest::new(ss_tables, Arc::new(path), config.block_cache_size)?;
 
         Ok(LsmStore {
             mem_table: MemTable::new(mem_map),
@@ -415,7 +415,9 @@ pub struct Config {
     pub(crate) desired_error_prob: f64,
     /// 数据库全局Position段数据缓存的数量
     /// 一个size大约为4kb(可能更少)
-    pub(crate) cache_size: usize,
+    pub(crate) block_cache_size: usize,
+    /// 用于缓存SSTable
+    pub(crate) table_cache_size: usize,
     /// 开启wal日志写入
     /// 在开启状态时，会在SSTable文件读取失败时生效，避免数据丢失
     /// 不过在设备IO容易成为瓶颈，或使用多节点冗余写入时，建议关闭以提高写入性能
@@ -488,8 +490,14 @@ impl Config {
     }
 
     #[inline]
-    pub fn cache_size(mut self, cache_size: usize) -> Self {
-        self.cache_size = cache_size;
+    pub fn block_cache_size(mut self, cache_size: usize) -> Self {
+        self.block_cache_size = cache_size;
+        self
+    }
+
+    #[inline]
+    pub fn table_cache_size(mut self, cache_size: usize) -> Self {
+        self.table_cache_size = cache_size;
         self
     }
 
@@ -527,7 +535,8 @@ impl Default for Config {
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
             buffer_i32: AtomicI32::new(0),
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
-            cache_size: DEFAULT_CACHE_SIZE,
+            block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
+            table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
             wal_enable: true,
             wal_async_put_enable: true,
         }

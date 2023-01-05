@@ -16,7 +16,7 @@ use crate::KvsError;
 const ALIGNMENT_4K: usize = 4096;
 
 /// SSTable
-pub(crate) struct SsTable {
+pub(crate) struct SSTable {
     // 表索引信息
     meta_info: MetaInfo,
     // 字段稀疏索引
@@ -44,13 +44,13 @@ pub(crate) struct Scope {
     end: Vec<u8>
 }
 
-impl PartialEq<Self> for SsTable {
+impl PartialEq<Self> for SSTable {
     fn eq(&self, other: &Self) -> bool {
         self.meta_info.eq(&other.meta_info)
     }
 }
 
-impl PartialOrd<Self> for SsTable {
+impl PartialOrd<Self> for SSTable {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Option::from(self.get_gen().cmp(&other.get_gen()))
     }
@@ -115,7 +115,7 @@ impl Scope {
     }
 
     /// 由一组SSTable融合成一个scope
-    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[&SsTable]) -> Result<Self>
+    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[&SSTable]) -> Result<Self>
     {
         let vec_scope = vec_ss_table.iter()
             .map(|ss_table| ss_table.get_scope())
@@ -124,7 +124,7 @@ impl Scope {
     }
 }
 
-impl SsTable {
+impl SSTable {
 
     /// 通过已经存在的文件构建SSTable
     ///
@@ -135,7 +135,8 @@ impl SsTable {
         let meta_info = MetaInfo::read_to_file(&io_handler).await?;
         let size_of_disk = io_handler.file_size()?;
         info!(
-            "[SsTable: {gen}][load_from_file][TableMetaInfo]: {meta_info:?}, Size of Disk: {size_of_disk}"
+            "[SsTable: {gen}][load_from_file][TableMetaInfo]: {meta_info:?}, Size of Disk: {size_of_disk}, IO Type: {:?}"
+            , io_handler.get_type()
         );
 
         // 需要手动对len + 4以跳过len_head
@@ -152,7 +153,7 @@ impl SsTable {
                         = rmp_serde::from_slice::<MetaBlock>(&meta_block_bytes)?;
                     let info_crc_code = meta_info.crc_code;
                     if loaded_crc_code.eq(&info_crc_code) {
-                        Ok(SsTable {
+                        Ok(SSTable {
                             meta_info,
                             sparse_index: SkipMap::from_iter(vec_index),
                             gen,
@@ -247,7 +248,10 @@ impl SsTable {
                 let key_position = (self.gen, position.clone());
                 // !!!Async closure cannot be used in get_or_insert
                 if !cache.contains(&key_position) {
-                    let bytes = self.io_handler.read_with_pos(position.start, position.len).await?;
+                    let bytes = self
+                        .io_handler
+                        .read_with_pos(position.start, position.len)
+                        .await?;
                     let _ignore = cache.put(
                         key_position.clone(),
                         CommandPackage::from_bytes_to_unpack_vec(&bytes)?
@@ -274,14 +278,14 @@ impl SsTable {
     }
 
     /// 通过一组SSTable收集对应的Gen
-    pub(crate) fn collect_gen(vec_ss_table: Vec<&SsTable>) -> Result<Vec<i64>> {
+    pub(crate) fn collect_gen(vec_ss_table: Vec<&SSTable>) -> Result<Vec<i64>> {
         Ok(vec_ss_table.into_iter()
-            .map(SsTable::get_gen)
+            .map(SSTable::get_gen)
             .collect())
     }
 
     /// 获取一组SSTable中第一个SSTable的索引位置
-    pub(crate) fn first_index_with_level(vec_ss_table: &[&SsTable], manifest: &Manifest, level: usize) -> usize {
+    pub(crate) fn first_index_with_level(vec_ss_table: &[&SSTable], manifest: &Manifest, level: usize) -> usize {
         match vec_ss_table.first() {
             None => 0,
             Some(first_ss_table) => {
@@ -300,7 +304,7 @@ impl SsTable {
         io_handler_factory: &IOHandlerFactory,
         vec_mem_data: Vec<CommandData>,
         level: usize
-    ) -> Result<SsTable>{
+    ) -> Result<SSTable>{
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
         // 获取地址
@@ -352,7 +356,7 @@ impl SsTable {
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
         let MetaBlock { vec_index, scope, filter, size_of_data } = meta_block;
-        Ok(SsTable {
+        Ok(SSTable {
             meta_info,
             sparse_index: SkipMap::from_iter(vec_index),
             io_handler,

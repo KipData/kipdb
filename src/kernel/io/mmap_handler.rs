@@ -9,6 +9,10 @@ use async_trait::async_trait;
 use crate::kernel::{FileExtension, Result};
 use crate::kernel::io::{IOHandler, IOType};
 
+/// 使用MMap作为实现的IOHandler
+/// 目前主要用途是作为缓存读取器，尽可能减少磁盘IO弥补BufHandler读取性能上的不足
+/// 不建议用于写数据，原因:
+/// https://zhuanlan.zhihu.com/p/470109297
 #[derive(Debug)]
 pub(crate) struct MMapHandler {
     gen: i64,

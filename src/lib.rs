@@ -32,7 +32,6 @@ unused_import_braces,
 unused_lifetimes,
 unused_qualifications,
 unused_results,
-variant_size_differences,
 warnings, // treat all wanings as errors
 clippy::all,
 clippy::cargo,
