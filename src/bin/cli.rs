@@ -115,15 +115,20 @@ async fn batch_set(client: &mut Client, batch: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-async fn batch_run_and_print(client: &mut Client, vec_batch: Vec<CommandData>, default_null: &str) -> Result<()> {
-    let vec_result = batch_run(client, vec_batch).await?
+async fn batch_run_and_print(
+    client: &mut Client,
+    vec_batch: Vec<CommandData>,
+    default_null: &str
+) -> Result<()> {
+    let vec_result = batch_run(client, vec_batch, )
+        .await?
         .into_iter()
         .map(|option| match option {
-            None => { default_null.to_string() }
-            Some(value) => { value }
+            None => default_null.to_string(),
+            Some(value) => value
         })
         .collect_vec();
-    info!("{:?}", vec_result);
+    info!("{vec_result:?}");
 
     Ok(())
 }
@@ -131,7 +136,14 @@ async fn batch_run_and_print(client: &mut Client, vec_batch: Vec<CommandData>, d
 async fn batch_run(client: &mut Client, vec_batch: Vec<CommandData>) -> Result<Vec<Option<String>>> {
     Ok(client.batch(vec_batch).await?
         .into_iter()
-        .map(|option_vec_u8| option_vec_u8.map(decode))
+        .map(|option_vec_u8: Option<Vec<u8>>| option_vec_u8
+            .map_or(None, |bytes| {
+                if bytes.is_empty() {
+                    None
+                } else {
+                    Some(decode(bytes))
+                }
+            }))
         .collect_vec())
 }
 

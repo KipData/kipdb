@@ -7,7 +7,7 @@ use memmap2::{Mmap, MmapMut};
 use tokio::sync::Mutex;
 use async_trait::async_trait;
 use crate::kernel::{FileExtension, Result};
-use crate::kernel::io::IOHandler;
+use crate::kernel::io::{IOHandler, IOType};
 
 #[derive(Debug)]
 pub(crate) struct MMapHandler {
@@ -75,6 +75,10 @@ impl IOHandler for MMapHandler {
             .await
             .flush()?;
         Ok(())
+    }
+
+    fn get_type(&self) -> IOType {
+        IOType::MMap
     }
 }
 

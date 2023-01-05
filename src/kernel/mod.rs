@@ -365,7 +365,7 @@ impl From<KeyValue> for CommandData {
     fn from(key_value: KeyValue) -> Self {
         let KeyValue { r#type, key, value } = key_value;
         match r#type {
-            1 => CommandData::Get { key },
+            0 => CommandData::Get { key },
             2 => CommandData::Remove { key },
             _ => CommandData::Set { key, value }
         }
@@ -379,7 +379,7 @@ impl From<CommandData> for KeyValue {
             CommandData::Set { key, value } => KeyValue {
                 key,
                 value,
-                r#type: 0,
+                r#type: 1,
             },
             CommandData::Remove { key } => KeyValue {
                 key,
@@ -389,7 +389,7 @@ impl From<CommandData> for KeyValue {
             CommandData::Get { key } => KeyValue {
                 key,
                 value: vec![],
-                r#type: 1,
+                r#type: 0,
             },
         }
     }

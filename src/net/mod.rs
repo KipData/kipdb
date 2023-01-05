@@ -43,11 +43,15 @@ fn kv_encode_with_len(key_value: &KeyValue) -> Result<Vec<u8>> {
         .encode(&mut vec)
         .map_err(|_| ConnectionError::EncodeError)?;
 
-    let i = vec.len();
-    let mut vec_head = vec![(i >> 24) as u8,
-                            (i >> 16) as u8,
-                            (i >> 8) as u8,
-                            i as u8];
-    vec_head.append(&mut vec);
-    Ok(vec_head)
+    if !vec.is_empty() {
+        let i = vec.len();
+        let mut vec_head = vec![(i >> 24) as u8,
+                                (i >> 16) as u8,
+                                (i >> 8) as u8,
+                                i as u8];
+        vec_head.append(&mut vec);
+        Ok(vec_head)
+    } else {
+        Err(ConnectionError::KvStoreError(KvsError::DataEmpty))
+    }
 }

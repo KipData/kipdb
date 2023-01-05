@@ -13,8 +13,9 @@ enum OptionType {
 }
 
 enum KeyValueType {
-  Set = 0;
-  Get = 1;
+  Get = 0;
+  // Set不允许设置为0，否则空值时会导致`CommandPackage::get_vec_bytes`解析中断
+  Set = 1;
   Remove = 2;
 }
 

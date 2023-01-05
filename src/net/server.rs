@@ -182,7 +182,7 @@ impl Handler {
                             let key_value = KeyValue {
                                 key: vec![],
                                 value: value_option.map_or(vec![], |value| value),
-                                r#type: 0,
+                                r#type: 1,
                             };
                             kv_encode_with_len(&key_value).ok()
                         })

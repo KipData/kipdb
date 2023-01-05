@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use async_trait::async_trait;
-use crate::kernel::io::IOHandler;
+use crate::kernel::io::{IOHandler, IOType};
 use crate::kernel::{FileExtension, Result};
 
 type SyncWriter = Mutex<BufWriterWithPos<File>>;
@@ -83,6 +83,10 @@ impl IOHandler for BufHandler {
             .await
             .flush()?;
         Ok(())
+    }
+
+    fn get_type(&self) -> IOType {
+        IOType::Buf
     }
 }
 

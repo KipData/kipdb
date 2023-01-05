@@ -29,7 +29,7 @@ impl Client {
     /// 存入数据
     #[inline]
     pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()>{
-        let key_value = KeyValue { key, value, r#type: 0 };
+        let key_value = KeyValue { key, value, r#type: 1 };
         
         let _ignore = self.send_cmd(option_from_key_value(&key_value)?).await?;
         Ok(())
@@ -47,7 +47,7 @@ impl Client {
     /// 获取数据
     #[inline]
     pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>>{
-        let key_value = KeyValue { key, value: vec![], r#type: 1 };
+        let key_value = KeyValue { key, value: vec![], r#type: 0 };
 
         Ok(self.send_cmd(option_from_key_value(&key_value)?)
             .await?

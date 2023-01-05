@@ -234,17 +234,24 @@ impl SsTable {
 
     /// 从该sstable中获取指定key对应数据可能存在的CommandData段
     #[allow(clippy::expect_used)]
-    pub(crate) async fn query_with_key(&self, key: &[u8], position_cache: &Mutex<LruCache<(i64, Position), Vec<CommandData>>>) -> Result<Option<CommandData>> {
+    pub(crate) async fn query_with_key(
+        &self,
+        key: &[u8],
+        position_cache: &Mutex<LruCache<(i64, Position), Vec<CommandData>>>
+    ) -> Result<Option<CommandData>> {
         if self.filter.contains(key) {
             let mut cache = position_cache.lock().await;
 
             if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
-                info!("[SsTable: {}][query_with_key][data_zone]: {:?}", self.gen, position);
+                info!("[SsTable: {}][query_with_key]: {:?}", self.gen, position);
                 let key_position = (self.gen, position.clone());
                 // !!!Async closure cannot be used in get_or_insert
                 if !cache.contains(&key_position) {
                     let bytes = self.io_handler.read_with_pos(position.start, position.len).await?;
-                    let _ignore = cache.put(key_position.clone(), CommandPackage::from_bytes_to_unpack_vec(&bytes)?);
+                    let _ignore = cache.put(
+                        key_position.clone(),
+                        CommandPackage::from_bytes_to_unpack_vec(&bytes)?
+                    );
                 }
 
                 return Ok(cache.get(&key_position)

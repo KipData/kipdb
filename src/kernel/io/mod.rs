@@ -74,4 +74,6 @@ pub trait IOHandler: Send + Sync + 'static {
     async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)>;
 
     async fn flush(&self) -> Result<()>;
+
+    fn get_type(&self) -> IOType;
 }
