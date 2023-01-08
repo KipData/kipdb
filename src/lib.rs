@@ -23,7 +23,6 @@ single_use_lifetimes,
 trivial_casts,
 trivial_numeric_casts,
 unreachable_pub,
-unsafe_code,
 unsafe_op_in_unsafe_fn,
 unstable_features,
 // unused_crate_dependencies, the false positive case blocks us

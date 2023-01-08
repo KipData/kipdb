@@ -36,7 +36,6 @@ pub enum KvsError {
     Sled(#[cause] sled::Error),
     #[fail(display = "File not found")]
     FileNotFound,
-
     /// 正常情况wal在内存中存在索引则表示硬盘中存在有对应的数据
     /// 而错误则是内存存在索引却在硬盘中不存在这个数据
     #[fail(display = "WAL log load error")]
@@ -58,7 +57,7 @@ pub enum KvsError {
 #[non_exhaustive]
 pub enum ConnectionError {
     #[fail(display = "{}", _0)]
-    Io(#[cause] io::Error),
+    IO(#[cause] io::Error),
     #[fail(display = "disconnected")]
     Disconnected,
     #[fail(display = "write failed")]
@@ -75,10 +74,20 @@ pub enum ConnectionError {
     KvStoreError(#[cause] KvsError),
 }
 
+#[derive(Fail, Debug)]
+#[non_exhaustive]
+#[allow(missing_copy_implementations)]
+pub enum CacheError {
+    #[fail(display = "The number of caches cannot be divisible by the number of shards")]
+    ShardingNotAlign,
+    #[fail(display = "Cache size overflow")]
+    CacheSizeOverFlow,
+}
+
 impl From<io::Error> for ConnectionError {
     #[inline]
     fn from(err: io::Error) -> Self {
-        ConnectionError::Io(err)
+        ConnectionError::IO(err)
     }
 }
 
