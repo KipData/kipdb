@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +12,7 @@ use tracing::{error, info, warn};
 use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, FileExtension, KVStore, sorted_gen_list};
 use crate::kernel::io::{IOHandlerFactory, IOType};
-use crate::kernel::lsm::{Manifest, MemMap, MemTable};
+use crate::kernel::lsm::{Manifest, MemMap, MemTable, SSTableMap};
 use crate::kernel::lsm::compactor::Compactor;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
@@ -40,7 +39,7 @@ pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
 pub(crate) const DEFAULT_BLOCK_CACHE_SIZE: usize = 3200;
 
-pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 15;
+pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 160;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
@@ -56,7 +55,7 @@ pub struct LsmStore {
     manifest: Arc<RwLock<Manifest>>,
     /// LSM全局参数配置
     config: Arc<Config>,
-    io_handler_factory: Arc<IOHandlerFactory>,
+    factory: Arc<IOHandlerFactory>,
     /// WAL存储器
     ///
     /// SSTable持久化前会将gen写入
@@ -204,7 +203,7 @@ impl LsmStore {
         let wal_compaction_threshold = config.wal_compaction_threshold;
 
         let mut mem_map = MemMap::new();
-        let mut ss_tables = HashMap::new();
+        let mut ss_tables = SSTableMap::new(&config)?;
 
         let mut lock_file = LockFile::open(&path.join(DEFAULT_LOCK_FILE))?;
 
@@ -218,7 +217,7 @@ impl LsmStore {
                 wal_compaction_threshold
             ).await?
         );
-        let io_handler_factory = Arc::new(
+        let factory = Arc::new(
             IOHandlerFactory::new(
                 path.clone(),
                 FileExtension::SSTable
@@ -227,7 +226,7 @@ impl LsmStore {
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
         for gen in sorted_gen_list(&path, FileExtension::SSTable)?.iter().rev() {
-            let io_handler = io_handler_factory.create(*gen, IOType::Buf)?;
+            let io_handler = factory.create(*gen, IOType::Buf)?;
             // 尝试初始化Table
             match SSTable::load_from_file(io_handler).await {
                 Ok(ss_table) => {
@@ -241,7 +240,7 @@ impl LsmStore {
                     // 从wal将有问题的ss_table恢复到mem_table中
                     Self::reload_for_wal(&mut mem_map, &wal, *gen).await?;
                     // 删除有问题的ss_table
-                    io_handler_factory.clean(*gen)?;
+                    factory.clean(*gen)?;
                 }
             }
         }
@@ -252,7 +251,7 @@ impl LsmStore {
             mem_table: MemTable::new(mem_map),
             manifest: Arc::new(RwLock::new(manifest)),
             config: Arc::new(config),
-            io_handler_factory,
+            factory,
             wal,
             vec_rev: Mutex::new(Vec::new()),
             lock_file,
@@ -335,7 +334,7 @@ impl LsmStore {
         &self.config
     }
     pub(crate) fn io_handler_factory(&self) -> &Arc<IOHandlerFactory> {
-        &self.io_handler_factory
+        &self.factory
     }
     pub(crate) fn wal(&self) -> &Arc<HashStore> {
         &self.wal

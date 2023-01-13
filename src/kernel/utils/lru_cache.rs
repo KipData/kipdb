@@ -153,6 +153,14 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
             .put(key, value)
     }
 
+    #[allow(dead_code)]
+    pub(crate) async fn remove(&self, key: &K) -> Option<V> {
+        self.shard(&key)
+            .write()
+            .await
+            .remove(key)
+    }
+
     pub(crate) async fn get_or_insert_async(
         &self,
         key: K,
@@ -290,6 +298,17 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         } else {
             None
         }
+    }
+
+    pub(crate) fn remove(&mut self, key: &K) -> Option<V> {
+        self.inner.remove(key)
+            .map(|node| {
+                self.detach(node);
+                unsafe {
+                    let node: Box<Node<K, V>> = Box::from_raw(node.as_ptr());
+                    node.value
+                }
+            })
     }
 
     async fn get_or_insert_async_node(

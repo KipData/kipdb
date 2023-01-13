@@ -56,7 +56,7 @@ impl Compactor {
             vec_values,
             LEVEL_0
         ).await?;
-        manifest.insert_ss_table_with_index(ss_table, 0).await;
+        manifest.insert_ss_table_with_index(ss_table, 0, &self.io_handler_factory).await?;
 
         drop(manifest);
         if let Err(err) = self.major_compaction(LEVEL_0).await {
@@ -131,20 +131,20 @@ impl Compactor {
             return Ok(None);
         }
 
-        if let Some(vec_ss_table_l) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size) {
+        if let Some(vec_ss_table_l) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size).await {
             let start = Instant::now();
 
             let scope_l = Scope::fusion_from_vec_ss_table(&vec_ss_table_l)?;
 
             let vec_ss_table_ll =
-                manifest.get_meet_scope_ss_tables(next_level, &scope_l);
+                manifest.get_meet_scope_ss_tables(next_level, &scope_l).await;
             let vec_ss_table_l_1 =
-                manifest.get_meet_scope_ss_tables(level, &scope_l);
+                manifest.get_meet_scope_ss_tables(level, &scope_l).await;
 
             let index = SSTable::first_index_with_level(&vec_ss_table_ll, &manifest, next_level);
 
             let vec_ss_table_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_ll) {
-                Ok(scope) => manifest.get_meet_scope_ss_tables(level, &scope),
+                Ok(scope) => manifest.get_meet_scope_ss_tables(level, &scope).await,
                 Err(_) => vec_ss_table_l
             }.into_iter()
                 .chain(vec_ss_table_ll)
@@ -190,7 +190,7 @@ impl Compactor {
     }
 
     /// 获取对应Level的开头指定数量的SSTable
-    pub(crate) fn get_first_vec_ss_table(
+    pub(crate) async fn get_first_vec_ss_table(
         manifest: &Manifest,
         level: usize,
         size: usize
@@ -199,7 +199,7 @@ impl Compactor {
             .take(size)
             .cloned()
             .collect_vec();
-        manifest.get_ss_table_batch(&level_vec.to_vec())
+        manifest.get_ss_table_batch(&level_vec.to_vec()).await
     }
 
     pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
