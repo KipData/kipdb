@@ -332,7 +332,6 @@ impl Manifest {
                 vec.push(ss_table);
             }
         }
-
         vec
     }
 

@@ -48,7 +48,6 @@ impl<K, V> DerefMut for NodeReadPtr<K, V> {
 unsafe impl<K: Send, V: Send, S: Send> Send for ShardingLruCache<K, V, S> {}
 unsafe impl<K: Sync, V: Sync, S: Sync> Sync for ShardingLruCache<K, V, S> {}
 
-// pub(crate) const DEFAULT_SHARDING_SIZE: usize = 16;
 pub(crate) struct ShardingLruCache<K, V, S = RandomState> {
     sharding_vec: Vec<Arc<RwLock<LruCache<K, V>>>>,
     hasher: S,

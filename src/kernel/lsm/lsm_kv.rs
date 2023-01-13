@@ -39,7 +39,7 @@ pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
 pub(crate) const DEFAULT_BLOCK_CACHE_SIZE: usize = 3200;
 
-pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 160;
+pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 112;
 
 pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
 
@@ -230,8 +230,12 @@ impl LsmStore {
             // 尝试初始化Table
             match SSTable::load_from_file(io_handler).await {
                 Ok(ss_table) => {
+                    // 对Level 0的SSTable进行MMap映射
+                    if ss_table.get_level() == 0 {
+                        let _ignore = ss_tables.caching(*gen, &factory).await?;
+                    }
                     // 初始化成功时直接传入SSTable的索引中
-                    let _ignore = ss_tables.insert(*gen, ss_table);
+                    let _ignore1 = ss_tables.insert(*gen, ss_table).await;
                 }
                 Err(err) => {
                     error!("[LsmKVStore][Load SSTable: {gen}][Error]: {err:?}");
