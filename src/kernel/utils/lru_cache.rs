@@ -5,15 +5,50 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
-use std::pin::Pin;
+use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use crate::error::CacheError;
 
 pub type Result<T> = std::result::Result<T, CacheError>;
 
-// pub(crate) const DEFAULT_SHARDING_SIZE: usize = 16;
+// 只读Node操作裸指针
+// https://course.rs/advance/concurrency-with-threads/send-sync.html#:~:text=%E5%AE%89%E5%85%A8%E7%9A%84%E4%BD%BF%E7%94%A8%E3%80%82-,%E4%B8%BA%E8%A3%B8%E6%8C%87%E9%92%88%E5%AE%9E%E7%8E%B0Send,-%E4%B8%8A%E9%9D%A2%E6%88%91%E4%BB%AC%E6%8F%90%E5%88%B0
+// 通过只读数据已保证线程安全
+struct NodeReadPtr<K, V>(NonNull<Node<K, V>>);
 
+unsafe impl<K: Send, V: Send> Send for NodeReadPtr<K, V> {}
+unsafe impl<K: Sync, V: Sync> Sync for NodeReadPtr<K, V> {}
+
+impl<K, V> Clone for NodeReadPtr<K, V> {
+    fn clone(&self) -> Self {
+        NodeReadPtr(self.0.clone())
+    }
+}
+
+impl<K, V> Copy for NodeReadPtr<K, V> {
+
+}
+
+impl<K, V> Deref for NodeReadPtr<K, V> {
+    type Target = NonNull<Node<K, V>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<K, V> DerefMut for NodeReadPtr<K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+unsafe impl<K: Send, V: Send, S: Send> Send for ShardingLruCache<K, V, S> {}
+unsafe impl<K: Sync, V: Sync, S: Sync> Sync for ShardingLruCache<K, V, S> {}
+
+// pub(crate) const DEFAULT_SHARDING_SIZE: usize = 16;
 pub(crate) struct ShardingLruCache<K, V, S = RandomState> {
     sharding_vec: Vec<Arc<RwLock<LruCache<K, V>>>>,
     hasher: S,
@@ -22,11 +57,11 @@ pub(crate) struct ShardingLruCache<K, V, S = RandomState> {
 struct Node<K, V> {
     key: K,
     value: V,
-    prev: Option<NonNull<Node<K, V>>>,
-    next: Option<NonNull<Node<K, V>>>,
+    prev: Option<NodeReadPtr<K, V>>,
+    next: Option<NodeReadPtr<K, V>>,
 }
 
-struct KeyRef<K, V>(NonNull<Node<K, V>>);
+struct KeyRef<K, V>(NodeReadPtr<K, V>);
 
 impl<K: Hash + Eq, V> Borrow<K> for KeyRef<K, V> {
     fn borrow(&self) -> &K {
@@ -64,9 +99,9 @@ impl<K: Ord, V> Ord for KeyRef<K, V>  {
 /// 参考知乎中此文章的实现：
 /// https://zhuanlan.zhihu.com/p/466409120
 pub(crate) struct LruCache<K, V> {
-    head: Option<NonNull<Node<K, V>>>,
-    tail: Option<NonNull<Node<K, V>>>,
-    inner: HashMap<KeyRef<K, V>, NonNull<Node<K, V>>>,
+    head: Option<NodeReadPtr<K, V>>,
+    tail: Option<NodeReadPtr<K, V>>,
+    inner: HashMap<KeyRef<K, V>, NodeReadPtr<K, V>>,
     cap: usize,
     marker: PhantomData<Node<K, V>>,
 }
@@ -99,55 +134,36 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         })
     }
 
-    pub(crate) fn get(&self, key: &K) -> Option<&V> {
+    #[allow(dead_code)]
+    pub(crate) async fn get(&self, key: &K) -> Option<&V> {
         self.shard(key)
             .write()
-            .unwrap()
+            .await
             .get_node(key)
             .map(|node| {
                 unsafe { &node.as_ref().value }
             })
     }
 
-    pub(crate) fn put(&mut self, key: K, value: V) -> Option<V> {
+    #[allow(dead_code)]
+    pub(crate) async fn put(&self, key: K, value: V) -> Option<V> {
         self.shard(&key)
             .write()
-            .unwrap()
+            .await
             .put(key, value)
     }
 
     pub(crate) async fn get_or_insert_async(
-        &mut self,
+        &self,
         key: K,
-        future: Pin<Box<dyn Future<Output = Result<V>>>>
+        future: impl Future<Output = Result<V>>
     ) -> Result<&V> {
         self.shard(&key)
             .write()
-            .unwrap()
+            .await
             .get_or_insert_async_node(key, future)
             .await
             .map(|node| unsafe { &node.as_ref().value })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
-        self.sharding_vec
-            .iter()
-            .map(|cache: &Arc<RwLock<LruCache<K, V>>>| {
-                cache.read().unwrap()
-                    .len()
-            })
-            .sum()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.sharding_vec
-            .iter()
-            .map(|cache: &Arc<RwLock<LruCache<K, V>>>| {
-                cache.read().unwrap()
-                    .is_empty()
-            })
-            .any(|is_empty| is_empty)
     }
 
     fn sharding_size(&self) -> usize {
@@ -180,7 +196,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     /// 移除节点
-    fn detach(&mut self, mut node: NonNull<Node<K, V>>) {
+    fn detach(&mut self, mut node: NodeReadPtr<K, V>) {
         unsafe {
             match node.as_mut().prev {
                 Some(mut prev) => {
@@ -205,7 +221,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     /// 添加节点至头部
-    fn attach(&mut self, mut node: NonNull<Node<K, V>>) {
+    fn attach(&mut self, mut node: NodeReadPtr<K, V>) {
         match self.head {
             Some(mut head) => {
                 unsafe {
@@ -235,8 +251,9 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn put(&mut self, key: K, value: V) -> Option<V> {
-        let node = Box::leak(Box::new(Node::new(key, value))).into();
+        let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
         let old_node = self.inner.remove(&KeyRef(node))
             .map(|node| {
                 self.detach(node);
@@ -251,7 +268,8 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         })
     }
 
-    fn get_node(&mut self, key: &K) -> Option<NonNull<Node<K, V>>> {
+    #[allow(dead_code)]
+    fn get_node(&mut self, key: &K) -> Option<NodeReadPtr<K, V>> {
         if let Some(node) = self.inner.get(key) {
             let node = *node;
             self.detach(node);
@@ -262,6 +280,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn get(&mut self, key: &K) -> Option<&V> {
         if let Some(node) = self.inner.get(key) {
             let node = *node;
@@ -276,8 +295,8 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     async fn get_or_insert_async_node(
         &mut self,
         key: K,
-        future: Pin<Box<dyn Future<Output = Result<V>>>>
-    ) -> Result<NonNull<Node<K, V>>> {
+        future: impl Future<Output = Result<V>>
+    ) -> Result<NodeReadPtr<K, V>> {
         if let Some(node) = self.inner.get(&key) {
             let node = *node;
             self.detach(node);
@@ -285,7 +304,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             Ok(node)
         } else {
             let value = future.await?;
-            let node = Box::leak(Box::new(Node::new(key, value))).into();
+            let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
             let _ignore = self.inner.remove(&KeyRef(node))
                 .map(|node| {
                     self.detach(node);
@@ -298,10 +317,11 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn get_or_insert_async(
         &mut self,
         key: K,
-        future: Pin<Box<dyn Future<Output = Result<V>>>>
+        future: impl Future<Output = Result<V>>
     ) -> Result<&V>
     {
         self.get_or_insert_async_node(key, future)
@@ -309,10 +329,12 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             .map(|node| unsafe { &node.as_ref().value })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.inner.len()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -345,7 +367,7 @@ fn test_lru_cache() {
         assert_eq!(
             lru.get_or_insert_async(
                 9,
-                Box::pin(async {Ok(9)})
+                async {Ok(9)}
             ).await.unwrap(),
             &9
         );
@@ -358,19 +380,17 @@ fn test_lru_cache() {
 #[test]
 fn test_sharding_cache() {
     tokio_test::block_on(async move {
-        let mut lru = ShardingLruCache::new(4, 2, RandomState::default()).unwrap();
-        assert_eq!(lru.put(1, 10), None);
+        let lru = ShardingLruCache::new(4, 2, RandomState::default()).unwrap();
+        assert_eq!(lru.put(1, 10).await, None);
 
-        assert_eq!(lru.get(&1), Some(&10));
+        assert_eq!(lru.get(&1).await, Some(&10));
 
         assert_eq!(
             lru.get_or_insert_async(
                 9,
-                Box::pin(async {Ok(9)})
+                async {Ok(9)}
             ).await.unwrap(),
             &9
         );
-
-        assert!(!lru.is_empty())
     })
 }

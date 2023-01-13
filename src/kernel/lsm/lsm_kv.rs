@@ -38,7 +38,7 @@ pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
-pub(crate) const DEFAULT_BLOCK_CACHE_SIZE: usize = 2333;
+pub(crate) const DEFAULT_BLOCK_CACHE_SIZE: usize = 3200;
 
 pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 15;
 
@@ -246,7 +246,7 @@ impl LsmStore {
             }
         }
         // 构建SSTable信息集
-        let manifest = Manifest::new(ss_tables, Arc::new(path), config.block_cache_size)?;
+        let manifest = Manifest::new(ss_tables, Arc::new(path), &config)?;
 
         Ok(LsmStore {
             mem_table: MemTable::new(mem_map),
@@ -415,6 +415,7 @@ pub struct Config {
     pub(crate) desired_error_prob: f64,
     /// 数据库全局Position段数据缓存的数量
     /// 一个size大约为4kb(可能更少)
+    /// 由于使用ShardingCache作为并行，以16为单位
     pub(crate) block_cache_size: usize,
     /// 用于缓存SSTable
     pub(crate) table_cache_size: usize,

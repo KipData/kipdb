@@ -1,11 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
-use std::num::NonZeroUsize;
+use std::collections::hash_map::RandomState;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
-use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use skiplist::SkipMap;
 use tokio::sync::RwLock;
@@ -14,7 +13,7 @@ use crate::kernel::io::{IOHandler, IOHandlerFactory};
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::{Config, LevelSlice};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
-use crate::KvsError;
+use crate::kernel::utils::lru_cache::ShardingLruCache;
 
 pub(crate) mod ss_table;
 pub mod lsm_kv;
@@ -64,7 +63,7 @@ pub(crate) struct Manifest {
     /// 内部会存储SSTable的Gen，
     /// 判定meet成功时移除对应Gen，避免收集重复SSTable
     sync_buffer_of_meet: Mutex<HashSet<i64>>,
-    block_cache: tokio::sync::Mutex<LruCache<(i64, Position), Vec<CommandData>>>
+    block_cache: ShardingLruCache<(i64, Position), Vec<CommandData>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Hash, PartialOrd, Eq)]
@@ -146,7 +145,7 @@ impl MetaInfo {
 }
 
 impl Manifest {
-    pub(crate) fn new(ss_tables_map: SSTableMap, path: Arc<PathBuf>, cache_size: usize) -> Result<Self> {
+    pub(crate) fn new(ss_tables_map: SSTableMap, path: Arc<PathBuf>, config: &Config) -> Result<Self> {
         // 获取ss_table分级Vec
         let level_slice = Self::level_layered(&ss_tables_map);
 
@@ -158,10 +157,11 @@ impl Manifest {
             .map(SSTable::get_size_of_disk)
             .sum();
 
-        let block_cache = tokio::sync::Mutex::new(
-            LruCache::new(NonZeroUsize::new(cache_size)
-                .ok_or(KvsError::CacheSizeOverFlow)?)
-        );
+        let block_cache = ShardingLruCache::new(
+            config.block_cache_size,
+            16,
+            RandomState::default()
+        )?;
 
         Ok(Self { _path: path, ss_tables_map, level_slice, size_of_disk, sync_buffer_of_meet, block_cache })
     }

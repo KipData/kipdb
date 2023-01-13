@@ -30,10 +30,12 @@ pub enum KvsError {
     NotMatchCmd,
     #[fail(display = "CRC code does not match")]
     CrcMisMatch,
-    #[fail(display = "Cache size overflow")]
-    CacheSizeOverFlow,
     #[fail(display = "{}", _0)]
     Sled(#[cause] sled::Error),
+    #[fail(display = "Cache size overflow")]
+    CacheSizeOverFlow,
+    #[fail(display = "Cache sharding and size overflow")]
+    CacheShardingNotAlign,
     #[fail(display = "File not found")]
     FileNotFound,
     /// 正常情况wal在内存中存在索引则表示硬盘中存在有对应的数据
@@ -82,6 +84,8 @@ pub enum CacheError {
     ShardingNotAlign,
     #[fail(display = "Cache size overflow")]
     CacheSizeOverFlow,
+    #[fail(display = "{}", _0)]
+    KvStoreError(#[cause] KvsError),
 }
 
 impl From<io::Error> for ConnectionError {
@@ -137,5 +141,21 @@ impl From<KvsError> for ConnectionError {
     #[inline]
     fn from(err: KvsError) -> Self {
         ConnectionError::KvStoreError(err)
+    }
+}
+
+impl From<CacheError> for KvsError {
+    fn from(value: CacheError) -> Self {
+        match value {
+            CacheError::KvStoreError(kv_error) => kv_error,
+            CacheError::CacheSizeOverFlow => KvsError::CacheSizeOverFlow,
+            CacheError::ShardingNotAlign => KvsError::CacheShardingNotAlign,
+        }
+    }
+}
+
+impl From<KvsError> for CacheError {
+    fn from(value: KvsError) -> Self {
+        CacheError::KvStoreError(value)
     }
 }

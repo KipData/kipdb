@@ -1,8 +1,6 @@
 use std::cmp::Ordering;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
-use lru::LruCache;
-use tokio::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use skiplist::SkipMap;
 use tracing::info;
@@ -11,6 +9,7 @@ use crate::kernel::io::{IOHandler, IOHandlerFactory, IOType};
 use crate::kernel::lsm::{data_sharding, MetaBlock, Manifest, MetaInfo, Position};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::Result;
+use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError;
 
 const ALIGNMENT_4K: usize = 4096;
@@ -195,12 +194,10 @@ impl SSTable {
                 start_len += sharding_len as u64;
                 position
             }).collect_vec();
-        Ok((
-            keys.into_iter()
+        Ok((keys.into_iter()
                 .zip(vec_position)
                 .collect(),
-            crc_code
-            ))
+            crc_code))
     }
 
     #[allow(dead_code)]
@@ -238,28 +235,23 @@ impl SSTable {
     pub(crate) async fn query_with_key(
         &self,
         key: &[u8],
-        position_cache: &Mutex<LruCache<(i64, Position), Vec<CommandData>>>
+        block_cache: &ShardingLruCache<(i64, Position), Vec<CommandData>>
     ) -> Result<Option<CommandData>> {
         if self.filter.contains(key) {
-            let mut cache = position_cache.lock().await;
-
             if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
                 info!("[SsTable: {}][query_with_key]: {:?}", self.gen, position);
                 let key_position = (self.gen, position.clone());
-                // !!!Async closure cannot be used in get_or_insert
-                if !cache.contains(&key_position) {
-                    let bytes = self
-                        .io_handler
-                        .read_with_pos(position.start, position.len)
-                        .await?;
-                    let _ignore = cache.put(
-                        key_position.clone(),
-                        CommandPackage::from_bytes_to_unpack_vec(&bytes)?
-                    );
-                }
 
-                return Ok(cache.get(&key_position)
-                    .expect("When an error occurs here, it means that the empty data is not filled")
+                return Ok(block_cache.get_or_insert_async(
+                    key_position,
+                    async {
+                        let bytes = self
+                            .io_handler
+                            .read_with_pos(position.start, position.len)
+                            .await?;
+                        Ok(CommandPackage::from_bytes_to_unpack_vec(&bytes)?)
+                    }
+                ).await?
                     .iter()
                     .find(|cmd_data| cmd_data.get_key() == key)
                     .map(CommandData::clone));

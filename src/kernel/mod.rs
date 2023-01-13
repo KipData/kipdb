@@ -43,7 +43,7 @@ impl FileExtension {
 
 /// KV持久化内核 操作定义
 #[async_trait]
-pub trait KVStore: Send + 'static + Sized {
+pub trait KVStore: Send + Sync + 'static + Sized {
     /// 获取内核名
     fn name() -> &'static str where Self: Sized;
 
