@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
 use tracing::{error, info};
 use prost::Message;
-use crate::kernel::{CommandData, CommandPackage, KVStore};
+use crate::kernel::{CommandData, CommandPackage, KVStore, options_none};
 use crate::kernel::lsm::lsm_kv::LsmStore;
 use crate::net::connection::Connection;
 use crate::net::{key_value_from_option, kv_encode_with_len, Result};
@@ -162,9 +162,19 @@ impl Handler {
 
             match client_option.r#type {
                 0 => {
-                    let res_option =
-                        CommandData::from(key_value_from_option(&client_option)?)
-                        .apply(&*self.kv_store).await?;
+                    // 不使用`CommandData::apply`是因为避免value的内存移动开销
+                    let KeyValue { key, value, r#type } = key_value_from_option(&client_option)?;
+                    let res_option = match r#type {
+                        1 => {
+                            self.kv_store.set(&key, value).await.map(|_| options_none())?
+                        }
+                        2 => {
+                            self.kv_store.remove(&key).await.map(|_| options_none())?
+                        }
+                        _ => {
+                            self.kv_store.get(&key).await.map(CommandOption::from)?
+                        }
+                    };
 
                     self.connection.write(res_option).await?;
                 }

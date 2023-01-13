@@ -1,6 +1,7 @@
 use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use futures::future;
@@ -104,7 +105,7 @@ struct CommandPos {
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommandData {
-    Set { key: Vec<u8>, value: Vec<u8> },
+    Set { key: Vec<u8>, value: Arc<Vec<u8>> },
     Remove { key: Vec<u8> },
     Get { key: Vec<u8> }
 }
@@ -290,7 +291,7 @@ impl CommandData {
     #[inline]
     pub fn get_value_clone(&self) -> Option<Vec<u8>> {
         match self {
-            CommandData::Set { value, .. } => { Some(value.clone()) }
+            CommandData::Set { value, .. } => { Some(Vec::clone(&value)) }
             CommandData::Remove{ .. } | CommandData::Get{ .. } => { None }
         }
     }
@@ -298,7 +299,7 @@ impl CommandData {
     #[inline]
     pub fn get_value_owner(self) -> Option<Vec<u8>> {
         match self {
-            CommandData::Set { value, .. } => { Some(value) }
+            CommandData::Set { value, .. } => { Some(Vec::clone(&value)) }
             CommandData::Remove{ .. } | CommandData::Get{ .. } => { None }
         }
     }
@@ -326,11 +327,12 @@ impl CommandData {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 参数Arc<RwLock<KvStore>>为持久化内核
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
+    /// 存在内存移动开销
     #[inline]
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                kv_store.set(&key, value).await.map(|_| options_none())
+                kv_store.set(&key, Vec::clone(&value)).await.map(|_| options_none())
             }
             CommandData::Remove { key } => {
                 kv_store.remove(&key).await.map(|_| options_none())
@@ -343,7 +345,7 @@ impl CommandData {
 
     #[inline]
     pub fn set(key: Vec<u8>, value: Vec<u8>) -> Self {
-        Self::Set { key, value }
+        Self::Set { key, value: Arc::new(value) }
     }
 
     #[inline]
@@ -368,18 +370,19 @@ impl From<KeyValue> for CommandData {
         match r#type {
             0 => CommandData::Get { key },
             2 => CommandData::Remove { key },
-            _ => CommandData::Set { key, value }
+            _ => CommandData::Set { key, value: Arc::new(value) }
         }
     }
 }
 
 impl From<CommandData> for KeyValue {
+    /// 存在内存移动开销
     #[inline]
     fn from(cmd_data: CommandData) -> Self {
         match cmd_data {
             CommandData::Set { key, value } => KeyValue {
                 key,
-                value,
+                value: Vec::clone(&value),
                 r#type: 1,
             },
             CommandData::Remove { key } => KeyValue {

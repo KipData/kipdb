@@ -1,6 +1,6 @@
 [package]
 name = "kip_db"
-version = "0.1.0-alpha.0"
+version = "0.1.0-beta.0"
 edition = "2021"
 authors = ["Kould <kould2333@gmail.com>"]
 description = "轻量级、异步 基于LSM Leveled Compaction K-V数据库"
@@ -33,7 +33,7 @@ failure = { version = "0.1.5", features = ["derive"] }
 # 序列化
 prost = "0.9"
 prost-derive = "0.9"
-serde = { version = "1.0.89", features = ["derive"] }
+serde = { version = "1.0.89", features = ["derive", "rc"] }
 bincode = "1.3.3"
 rmp-serde = "1.1.0"
 # tokio异步

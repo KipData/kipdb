@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -99,7 +99,7 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data(CommandData::Set { key: key.to_vec(), value }, true).await
+        self.append_cmd_data(CommandData::Set { key: key.to_vec(), value: Arc::new(value) }, true).await
     }
 
     #[inline]
@@ -204,7 +204,7 @@ impl LsmStore {
         let wal_compaction_threshold = config.wal_compaction_threshold;
 
         let mut mem_map = MemMap::new();
-        let mut ss_tables = BTreeMap::new();
+        let mut ss_tables = HashMap::new();
 
         let mut lock_file = LockFile::open(&path.join(DEFAULT_LOCK_FILE))?;
 

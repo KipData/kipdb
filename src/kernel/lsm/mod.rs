@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::RandomState;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,7 @@ mod compactor;
 
 pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
 
-pub(crate) type SSTableMap = BTreeMap<i64, SSTable>;
+pub(crate) type SSTableMap = HashMap<i64, SSTable>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
@@ -170,10 +170,14 @@ impl Manifest {
     /// 由于ss_tables是有序的，level_vec的内容应当是从L0->LN，旧->新
     fn level_layered(ss_tables: &SSTableMap) -> LevelSlice {
         let mut level_slice = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-        for ss_table in ss_tables.values() {
-            let level = ss_table.get_level();
-            level_slice[level].push(ss_table.get_gen());
-        }
+
+        ss_tables.iter()
+            .sorted_by_key(|(key, _)| *key)
+            .for_each(|(gen, ss_table)| {
+                let level = ss_table.get_level();
+                level_slice[level].push(*gen);
+            });
+
         level_slice
     }
 

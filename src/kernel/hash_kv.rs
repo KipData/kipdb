@@ -1,6 +1,7 @@
 use std::{path::PathBuf, collections::HashMap, fs};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use itertools::Itertools;
 use async_trait::async_trait;
 use fslock::LockFile;
@@ -210,7 +211,7 @@ impl KVStore for HashStore {
 
         //将数据包装为命令
         let gen = manifest.current_gen;
-        let cmd = CommandData::Set { key: key.to_vec(), value };
+        let cmd = CommandData::Set { key: key.to_vec(), value: Arc::new(value) };
         // 获取写入器当前地址
         let io_handler = manifest.current_io_handler()?;
         let (pos, cmd_len) = CommandPackage::write(io_handler, &cmd).await?;
@@ -245,7 +246,7 @@ impl KVStore for HashStore {
                     // 将命令进行转换
                     return if let CommandData::Set { value, .. } = cmd {
                         //返回匹配成功的数据
-                        Ok(Some(value))
+                        Ok(Some(Vec::clone(&value)))
                     } else {
                         //返回错误（错误的指令类型）
                         Err(KvsError::UnexpectedCommandType)
