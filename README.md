@@ -67,7 +67,7 @@ client.batch(vec_batch_cmd, true).await?
 
 ## 内置多种持久化内核👍
 - LsmStore: LSM存储，使用Leveled Compaction策略(默认内核)
-- HashStore: 类Bitcask
+- HashStore: 类Bitcask，在LSM存储内核中作为WAL防灾日志使用
 - SledStore: 基于Sled数据库进行封装
 
 ## 操作示例⌨️
@@ -111,11 +111,8 @@ OPTIONS:
 
 SUBCOMMANDS:
     batch-get
-    batch-get-parallel
     batch-remove
-    batch-remove-parallel
     batch-set
-    batch-set-parallel
     flush
     get
     help                     Print this message or the help of the given subcommand(s)
@@ -134,7 +131,7 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
 ## Features🌠
 - Marjor Compation 
   - 多级递增循环压缩 ✅
-  - SSTable锁
+  - SSTable压缩状态互斥
     - 避免并行压缩时数据范围重复 ✅
 - KVStore
   - 参考Sled增加api
@@ -142,20 +139,34 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
     - clear
     - contains_key
     - len ✅
+    - is_empty ✅
     - ...
+  - 多进程锁 ✅
+    - 防止多进程对文件进行读写造成数据异常
 - SSTable
   - CRC校验和 ✅
-    - 用于校验数据是否异常
+    - 用于校验数据内容是否异常
   - 布隆过滤器 ✅
     - 加快获取键值的速度
-  - MetaBlock区
+  - MetaBlock区 ✅
     - 用于存储统计数据布隆过滤器的存放
   - 数据压缩
-- Cache ✅
-  - 加快数据读取，避免冗余硬盘读取IO
-  - 块存取
+- Cache
+  - TableCache: SSTable Level 0缓存 ✅
+    - 读取频繁,因此使用Mmap进行只读映射
+  - BlockCache: 稀疏索引数据块缓存 ✅
+  - 类LevelDB的并行LruCache: ShardingLruCache ✅
+- WAL 防灾日志
+  - 落盘时异常后重启数据回复 ✅
+  - 读取数据不存在时尝试读取 ✅
 - MVCC单机事务
   - Manifest多版本持久化
+  - SSTable多版本持久化
+- 网络通信
+  - 使用ProtoBuf进行多语言序列化 ✅
+  - Ruby of KipDB
+  - Java of KipDB
+  - Rust of KipDB ✅
 - 分布式
   - TAS(Test And Set)与Master调度主机
   - 服务端作为Worker支持单机与集群

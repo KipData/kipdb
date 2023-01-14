@@ -159,7 +159,8 @@ impl MemTable {
     }
 
     async fn is_threshold_exceeded_minor(&self, threshold_size_with_mem_table: u64) -> bool {
-        self.mem_table_slice.read()
+        self.mem_table_slice
+            .read()
             .await[0].1 > threshold_size_with_mem_table
     }
 
