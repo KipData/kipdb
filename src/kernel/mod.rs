@@ -297,14 +297,6 @@ impl CommandData {
     }
 
     #[inline]
-    pub fn get_value_owner(self) -> Option<Vec<u8>> {
-        match self {
-            CommandData::Set { value, .. } => { Some(Vec::clone(&value)) }
-            CommandData::Remove{ .. } | CommandData::Get{ .. } => { None }
-        }
-    }
-
-    #[inline]
     pub fn get_data_len_for_rmp(&self) -> usize {
         self.get_key().len()
             + self.get_value().map_or(0, |value| value.len())
@@ -327,12 +319,11 @@ impl CommandData {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 参数Arc<RwLock<KvStore>>为持久化内核
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
-    /// 存在内存移动开销
     #[inline]
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                kv_store.set(&key, Vec::clone(&value)).await.map(|_| options_none())
+                kv_store.set(&key, value_unwrap(value)).await.map(|_| options_none())
             }
             CommandData::Remove { key } => {
                 kv_store.remove(&key).await.map(|_| options_none())
@@ -376,13 +367,12 @@ impl From<KeyValue> for CommandData {
 }
 
 impl From<CommandData> for KeyValue {
-    /// 存在内存移动开销
     #[inline]
     fn from(cmd_data: CommandData) -> Self {
         match cmd_data {
             CommandData::Set { key, value } => KeyValue {
                 key,
-                value: Vec::clone(&value),
+                value: value_unwrap(value),
                 r#type: 1,
             },
             CommandData::Remove { key } => KeyValue {
@@ -416,6 +406,12 @@ impl From<Option<Vec<u8>>> for CommandOption {
             None => options_none()
         }
     }
+}
+
+/// 用于对解除Arc指针
+/// 确保value此时无其他数据引用
+fn value_unwrap(value: Arc<Vec<u8>>) -> Vec<u8> {
+    Arc::try_unwrap(value).unwrap()
 }
 
 /// 现有日志文件序号排序

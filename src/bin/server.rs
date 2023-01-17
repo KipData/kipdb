@@ -40,7 +40,7 @@ pub async fn quit() -> Result<()> {
 }
 
 #[derive(Parser, Debug)]
-#[clap(name = "KipDB-Server", version, author, about = "A KV-Store server")]
+#[clap(name = "KipDB-Server", version, author, about = "KipDB Net Server")]
 struct Cli {
     #[clap(long)]
     ip: Option<String>,

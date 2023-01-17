@@ -104,7 +104,7 @@ impl KVStore for LsmStore {
     #[inline]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         if let Some(cmd_data) = self.mem_table.get_cmd_data(key).await {
-            return Ok(cmd_data.get_value_owner());
+            return Ok(cmd_data.get_value_clone());
         }
         // 读取前等待压缩完毕
         // 相对来说，消耗较小
@@ -326,11 +326,6 @@ impl LsmStore {
         cmd_data.get_value_clone()
     }
 
-    /// 通过CommandData的所有权直接返回value值的所有权
-    #[allow(dead_code)]
-    fn value_unpack_with_owner(cmd_data: CommandData) -> Option<Vec<u8>> {
-        cmd_data.get_value_owner()
-    }
     pub(crate) fn manifest(&self) -> &Arc<RwLock<Manifest>> {
         &self.manifest
     }

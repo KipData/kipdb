@@ -357,7 +357,7 @@ impl Manifest {
                 .query_with_key(key, &self.block_cache)
                 .await?
             {
-                return Ok(cmd_data.get_value_owner());
+                return Ok(cmd_data.get_value_clone());
             }
         }
         // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的SSTable
@@ -372,7 +372,7 @@ impl Manifest {
                     .query_with_key(key, &self.block_cache)
                     .await?
                 {
-                    return Ok(cmd_data.get_value_owner());
+                    return Ok(cmd_data.get_value_clone());
                 }
             }
         }
