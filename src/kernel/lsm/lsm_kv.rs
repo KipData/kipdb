@@ -10,8 +10,8 @@ use tokio::sync::{Mutex, oneshot, RwLock};
 use tokio::sync::oneshot::Sender;
 use tracing::{error, info, warn};
 use crate::{HashStore, KvsError};
-use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, FileExtension, KVStore, sorted_gen_list};
-use crate::kernel::io::{IOHandlerFactory, IOType};
+use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, KVStore, sorted_gen_list};
+use crate::kernel::io::{FileExtension, IOHandlerFactory, IOType};
 use crate::kernel::lsm::{Manifest, MemMap, MemTable, SSTableMap};
 use crate::kernel::lsm::compactor::Compactor;
 use crate::kernel::lsm::ss_table::SSTable;
@@ -176,6 +176,7 @@ impl LsmStore {
         let threshold_size = self.config.minor_threshold_with_data_size;
 
         let key = cmd.get_key();
+        // TODO: Wal的MVCC支持
         // Wal与MemTable双写
         if self.config.wal_enable && wal_write {
             wal_put(
@@ -221,7 +222,7 @@ impl LsmStore {
             IOHandlerFactory::new(
                 path.clone(),
                 FileExtension::SSTable
-            )
+            )?
         );
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
@@ -235,7 +236,7 @@ impl LsmStore {
                         let _ignore = ss_tables.caching(*gen, &factory).await?;
                     }
                     // 初始化成功时直接传入SSTable的索引中
-                    let _ignore1 = ss_tables.insert(*gen, ss_table).await;
+                    let _ignore1 = ss_tables.insert(ss_table).await;
                 }
                 Err(err) => {
                     error!("[LsmKVStore][Load SSTable: {gen}][Error]: {err:?}");
@@ -249,7 +250,7 @@ impl LsmStore {
             }
         }
         // 构建SSTable信息集
-        let manifest = Manifest::new(ss_tables, Arc::new(path), &config)?;
+        let manifest = Manifest::new(ss_tables, &config)?;
 
         Ok(LsmStore {
             mem_table: MemTable::new(mem_map),

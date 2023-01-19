@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures::future;
 use itertools::Itertools;
 
-use crate::kernel::io::IOHandler;
+use crate::kernel::io::{FileExtension, IOHandler};
 use crate::KvsError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
@@ -20,27 +20,6 @@ pub mod utils;
 pub type Result<T> = std::result::Result<T, KvsError>;
 
 pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
-
-#[derive(Debug, Copy, Clone)]
-pub enum FileExtension {
-    Log,
-    SSTable,
-}
-
-impl FileExtension {
-    
-    pub(crate) fn extension_str(&self) -> &'static str {
-        match self {
-            FileExtension::Log => "log",
-            FileExtension::SSTable => "sst"
-        }
-    }
-
-    /// 对文件夹路径填充日志文件名
-    pub(crate) fn path_with_gen(&self, dir: &Path, gen: i64) -> PathBuf {
-        dir.join(format!("{gen}.{}", self.extension_str()))
-    }
-}
 
 /// KV持久化内核 操作定义
 #[async_trait]
@@ -147,6 +126,19 @@ impl CommandPackage {
         io_handler.write(Self::trans_to_vec_u8(cmd)?).await
     }
 
+    #[allow(dead_code)]
+    pub(crate) async fn write_batch(
+        io_handler: &Box<dyn IOHandler>,
+        vec_cmd: &Vec<CommandData>
+    ) -> Result<(u64, usize)> {
+        let bytes = vec_cmd.iter()
+            .filter_map(|cmd_data| Self::trans_to_vec_u8(cmd_data).ok())
+            .flatten()
+            .collect_vec();
+
+        io_handler.write(bytes).await
+    }
+
     /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
     pub(crate) async fn write_batch_first_pos_with_sharding(
         io_handler: &Box<dyn IOHandler>,
@@ -211,12 +203,21 @@ impl CommandPackage {
             .collect_vec())
     }
 
-    /// 获取reader之中所有的Command
+    /// 获取reader之中所有的CommandPackage
     pub(crate) async fn from_read_to_vec(io_handler: &Box<dyn IOHandler>) -> Result<Vec<CommandPackage>> {
-        let len = io_handler.file_size()?;
+        Self::from_bytes_to_vec(io_handler
+            .bytes()
+            .await?
+            .as_slice())
+    }
 
-        let bytes = io_handler.read_with_pos(0, len as usize).await?;
-        Self::from_bytes_to_vec(bytes.as_slice())
+    #[allow(dead_code)]
+    /// 获取reader之中所有的CommandData
+    pub(crate) async fn from_read_to_unpack_vec(io_handler: &Box<dyn IOHandler>) -> Result<Vec<CommandData>> {
+        Self::from_bytes_to_unpack_vec(io_handler
+            .bytes()
+            .await?
+            .as_slice())
     }
 
     /// 获取此reader的所有命令对应的字节数组段落
@@ -299,7 +300,7 @@ impl CommandData {
     #[inline]
     pub fn get_data_len_for_rmp(&self) -> usize {
         self.get_key().len()
-            + self.get_value().map_or(0, |value| value.len())
+            + self.get_value().map_or(0, Vec::len)
             + self.get_cmd_len_for_rmp()
     }
 

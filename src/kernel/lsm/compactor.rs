@@ -157,7 +157,7 @@ impl Compactor {
                 Self::data_merge_and_sharding(&vec_ss_table_final, &self.config).await?;
 
             // 收集需要清除的SSTable
-            let vec_expire_gen = SSTable::collect_gen(vec_ss_table_final)?;
+            let vec_expire_gen = SSTable::collect_gen(&vec_ss_table_final)?;
             info!("[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]", start.elapsed());
 
             Ok(Some((index, vec_expire_gen, vec_merge_sharding)))
@@ -170,7 +170,7 @@ impl Compactor {
     /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
     /// 真他妈完美
     async fn data_merge_and_sharding(
-        vec_ss_table: &[&SSTable],
+        vec_ss_table: &[SSTable],
         config: &Config
     ) -> Result<MergeShardingVec> {
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
@@ -194,7 +194,7 @@ impl Compactor {
         manifest: &Manifest,
         level: usize,
         size: usize
-    ) -> Option<Vec<&SSTable>>{
+    ) -> Option<Vec<SSTable>>{
         let level_vec = manifest.get_level_vec(level).iter()
             .take(size)
             .cloned()

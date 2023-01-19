@@ -1,14 +1,37 @@
 pub(crate) mod buf_handler;
 pub(crate) mod mmap_handler;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
 use async_trait::async_trait;
-use crate::kernel::FileExtension;
 use crate::kernel::io::buf_handler::BufHandler;
 use crate::kernel::io::mmap_handler::MMapHandler;
 use crate::kernel::Result;
+
+
+#[derive(Debug, Copy, Clone)]
+pub enum FileExtension {
+    Log,
+    SSTable,
+    Manifest,
+}
+
+impl FileExtension {
+
+    pub(crate) fn extension_str(&self) -> &'static str {
+        match self {
+            FileExtension::Log => "log",
+            FileExtension::SSTable => "sst",
+            FileExtension::Manifest => "manifest"
+        }
+    }
+
+    /// 对文件夹路径填充日志文件名
+    pub(crate) fn path_with_gen(&self, dir: &Path, gen: i64) -> PathBuf {
+        dir.join(format!("{gen}.{}", self.extension_str()))
+    }
+}
 
 #[derive(Debug)]
 pub struct IOHandlerFactory {
@@ -36,11 +59,14 @@ impl IOHandlerFactory {
     }
 
     #[inline]
-    pub fn new(dir_path: impl Into<PathBuf>, extension: FileExtension) -> Self {
-        let dir_path = Arc::new(dir_path.into());
+    pub fn new(dir_path: impl Into<PathBuf>, extension: FileExtension) -> Result<Self> {
+        let path_buf = dir_path.into();
+        // 创建文件夹（如果他们缺失）
+        fs::create_dir_all(&path_buf)?;
+        let dir_path = Arc::new(path_buf);
         let extension = Arc::new(extension);
 
-        Self { dir_path, extension }
+        Ok(Self { dir_path, extension })
     }
 
     #[inline]
@@ -72,4 +98,9 @@ pub trait IOHandler: Send + Sync + 'static {
     async fn flush(&self) -> Result<()>;
 
     fn get_type(&self) -> IOType;
+
+    async fn bytes(&self) -> Result<Vec<u8>> {
+        let len = self.file_size()?;
+        self.read_with_pos(0, len as usize).await
+    }
 }

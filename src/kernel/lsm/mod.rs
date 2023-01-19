@@ -1,8 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::{Iter, Keys, RandomState, Values};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -18,20 +17,20 @@ use crate::kernel::utils::lru_cache::ShardingLruCache;
 pub(crate) mod ss_table;
 pub mod lsm_kv;
 mod compactor;
+// mod version;
 
 pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
-const TABLE_META_INFO_SIZE: usize = 36;
+const TABLE_META_INFO_SIZE: usize = 28;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct MetaInfo {
     level: u64,
-    version: u64,
     data_part_len: u64,
     index_len: u64,
-    crc_code: u32
+    crc_code: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,7 +48,6 @@ struct MemTable {
 }
 
 pub(crate) struct Manifest {
-    _path: Arc<PathBuf>,
     /// SSTable有序存储集合
     ss_tables_map: SSTableMap,
     /// Level层级Vec
@@ -61,7 +59,7 @@ pub(crate) struct Manifest {
     /// 内部会存储SSTable的Gen，
     /// 判定meet成功时移除对应Gen，避免收集重复SSTable
     sync_buffer_of_meet: Mutex<HashSet<i64>>,
-    block_cache: ShardingLruCache<(i64, Position), Vec<CommandData>>,
+    block_cache: ShardingLruCache<(i64, u64, Position), Vec<CommandData>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Hash, PartialOrd, Eq)]
@@ -88,13 +86,14 @@ impl SSTableMap {
         })
     }
 
-    pub(crate) async fn insert(&mut self, gen: i64, ss_table: SSTable) -> Option<SSTable> {
-        self.inner.insert(gen, ss_table)
+    pub(crate) async fn insert(&mut self, ss_table: SSTable) -> Option<SSTable> {
+        self.inner.insert(ss_table.get_gen(), ss_table)
     }
 
-    pub(crate) async fn get(&self, gen: &i64) -> Option<&SSTable> {
+    pub(crate) async fn get(&self, gen: &i64) -> Option<SSTable> {
         self.cache.get(gen).await
             .or_else(|| self.inner.get(gen))
+            .map(SSTable::clone)
     }
 
     /// 将指定gen通过MMapHandler进行读取以提高读取性能
@@ -203,7 +202,7 @@ impl MetaInfo {
 }
 
 impl Manifest {
-    pub(crate) fn new(ss_tables_map: SSTableMap, path: Arc<PathBuf>, config: &Config) -> Result<Self> {
+    pub(crate) fn new(ss_tables_map: SSTableMap, config: &Config) -> Result<Self> {
         // 获取ss_table分级Vec
         let level_slice = Self::level_layered(&ss_tables_map);
 
@@ -221,7 +220,7 @@ impl Manifest {
             RandomState::default()
         )?;
 
-        Ok(Self { _path: path, ss_tables_map, level_slice, size_of_disk, sync_buffer_of_meet, block_cache })
+        Ok(Self { ss_tables_map, level_slice, size_of_disk, sync_buffer_of_meet, block_cache })
     }
 
     /// 使用ss_tables返回LevelVec
@@ -256,7 +255,7 @@ impl Manifest {
         }
 
         self.size_of_disk += ss_table.get_size_of_disk();
-        let _ignore = self.ss_tables_map.insert(gen, ss_table);
+        let _ignore = self.ss_tables_map.insert(ss_table).await;
         self.level_slice[level].insert(index, gen);
         let _ignore1 = self.sync_buffer_of_meet.lock().unwrap()
             .insert(gen);
@@ -270,17 +269,16 @@ impl Manifest {
         ss_tables: Vec<SSTable>,
         index: usize
     ) {
-        let vec_gen = ss_tables.into_iter()
-            .map(|ss_table| {
-                let gen = ss_table.get_gen();
-                let level = ss_table.get_level();
+        let mut vec_gen = vec![];
+        for ss_table in ss_tables {
+            let gen = ss_table.get_gen();
+            let level = ss_table.get_level();
 
-                self.size_of_disk += ss_table.get_size_of_disk();
-                let _ignore = self.ss_tables_map.insert(gen, ss_table);
-                self.level_slice[level].insert(index, gen);
-                gen
-            })
-            .collect_vec();
+            self.size_of_disk += ss_table.get_size_of_disk();
+            let _ignore = self.ss_tables_map.insert(ss_table).await;
+            self.level_slice[level].insert(index, gen);
+            vec_gen.push(gen);
+        }
 
         let mut sync_buffer_of_meet = self.sync_buffer_of_meet.lock().unwrap();
 
@@ -297,7 +295,7 @@ impl Manifest {
         self.size_of_disk -= match self.get_ss_table_batch(vec_expired_gen).await {
             None => 0,
             Some(vec_ss_table) => {
-                vec_ss_table.into_iter()
+                vec_ss_table.iter()
                     .map(SSTable::get_size_of_disk)
                     .sum::<u64>()
             }
@@ -323,7 +321,7 @@ impl Manifest {
         &self.level_slice[level]
     }
 
-    pub(crate) async fn get_vec_ss_table_with_level(&self, level: usize) -> Vec<&SSTable> {
+    pub(crate) async fn get_vec_ss_table_with_level(&self, level: usize) -> Vec<SSTable> {
         let mut vec = Vec::new();
 
         for gen in self.level_slice[level]
@@ -334,11 +332,6 @@ impl Manifest {
             }
         }
         vec
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn get_ss_table(&self, gen: &i64) -> Option<&SSTable> {
-        self.ss_tables_map.get(gen).await
     }
 
     fn is_threshold_exceeded_major(&self, sst_size: usize, level: usize, sst_magnification: usize) -> bool {
@@ -354,7 +347,7 @@ impl Manifest {
             .rev()
         {
             if let Some(cmd_data) = ss_table
-                .query_with_key(key, &self.block_cache)
+                .query_with_key(key, 0, &self.block_cache)
                 .await?
             {
                 return Ok(cmd_data.get_value_clone());
@@ -369,7 +362,7 @@ impl Manifest {
                 .rfind(|ss_table| ss_table.get_scope().meet(&key_scope))
             {
                 if let Some(cmd_data) = ss_table
-                    .query_with_key(key, &self.block_cache)
+                    .query_with_key(key, 0, &self.block_cache)
                     .await?
                 {
                     return Ok(cmd_data.get_value_clone());
@@ -380,7 +373,7 @@ impl Manifest {
         Ok(None)
     }
 
-    pub(crate) async fn get_ss_table_batch(&self, vec_gen: &[i64]) -> Option<Vec<&SSTable>> {
+    pub(crate) async fn get_ss_table_batch(&self, vec_gen: &[i64]) -> Option<Vec<SSTable>> {
         if vec_gen.is_empty() {
             None
         } else {
@@ -398,7 +391,7 @@ impl Manifest {
     }
 
     #[allow(clippy::unwrap_used)]
-    pub(crate) async fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<&SSTable> {
+    pub(crate) async fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<SSTable> {
         let mut meet_vec = self.get_vec_ss_table_with_level(level)
             .await;
 
@@ -411,7 +404,7 @@ impl Manifest {
         meet_vec
     }
 
-    pub(crate) fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
+    fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
         self.level_slice[level].iter()
             .enumerate()
             .find(|(_ , gen)| source_gen.eq(*gen))
@@ -466,7 +459,6 @@ async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config:
 fn test_meta_info() -> Result<()> {
     let info = MetaInfo {
         level: 0,
-        version: 0,
         data_part_len: 0,
         index_len: 0,
         crc_code: 0

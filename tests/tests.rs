@@ -1,8 +1,8 @@
 use tempfile::TempDir;
 use walkdir::WalkDir;
 use kip_db::kernel::hash_kv::HashStore;
-use kip_db::kernel::io::{IOHandlerFactory, IOType};
-use kip_db::kernel::{FileExtension, KVStore};
+use kip_db::kernel::io::{FileExtension, IOHandlerFactory, IOType};
+use kip_db::kernel::KVStore;
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::Result;
 use kip_db::kernel::sled_kv::SledStore;
@@ -221,7 +221,7 @@ fn test_io() -> Result<()> {
     let temp_dir = TempDir::new()
         .expect("unable to create temporary working directory");
     tokio_test::block_on(async move {
-        let factory = IOHandlerFactory::new(temp_dir.path(), FileExtension::Log);
+        let factory = IOHandlerFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
 
         io_type_test(&factory, IOType::Buf).await?;
         io_type_test(&factory, IOType::MMap).await?;

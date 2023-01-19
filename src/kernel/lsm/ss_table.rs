@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::sync::Arc;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,20 @@ use crate::KvsError;
 
 const ALIGNMENT_4K: usize = 4096;
 
-/// SSTable
 pub(crate) struct SSTable {
+    inner: Arc<SSTableInner>
+}
+
+impl Clone for SSTable {
+    fn clone(&self) -> Self {
+        SSTable {
+            inner: Arc::clone(&self.inner)
+        }
+    }
+}
+
+/// SSTable
+pub(crate) struct SSTableInner {
     // 表索引信息
     meta_info: MetaInfo,
     // 字段稀疏索引
@@ -45,7 +58,7 @@ pub(crate) struct Scope {
 
 impl PartialEq<Self> for SSTable {
     fn eq(&self, other: &Self) -> bool {
-        self.meta_info.eq(&other.meta_info)
+        self.inner.meta_info.eq(&other.inner.meta_info)
     }
 }
 
@@ -114,7 +127,7 @@ impl Scope {
     }
 
     /// 由一组SSTable融合成一个scope
-    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[&SSTable]) -> Result<Self>
+    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[SSTable]) -> Result<Self>
     {
         let vec_scope = vec_ss_table.iter()
             .map(|ss_table| ss_table.get_scope())
@@ -124,6 +137,25 @@ impl Scope {
 }
 
 impl SSTable {
+    pub(crate) fn get_level(&self) -> usize {
+        self.inner.meta_info.level as usize
+    }
+
+    pub(crate) fn get_gen(&self) -> i64 {
+        self.inner.gen
+    }
+
+    pub(crate) fn get_scope(&self) -> &Scope {
+        &self.inner.scope
+    }
+
+    pub(crate) fn get_size_of_disk(&self) -> u64 {
+        self.inner.size_of_disk
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.inner.size_of_data
+    }
 
     /// 通过已经存在的文件构建SSTable
     ///
@@ -153,14 +185,18 @@ impl SSTable {
                     let info_crc_code = meta_info.crc_code;
                     if loaded_crc_code.eq(&info_crc_code) {
                         Ok(SSTable {
-                            meta_info,
-                            sparse_index: SkipMap::from_iter(vec_index),
-                            gen,
-                            io_handler,
-                            scope,
-                            filter,
-                            size_of_disk,
-                            size_of_data,
+                            inner : Arc::new(
+                                SSTableInner {
+                                    meta_info,
+                                    sparse_index: SkipMap::from_iter(vec_index),
+                                    gen,
+                                    io_handler,
+                                    scope,
+                                    filter,
+                                    size_of_disk,
+                                    size_of_data,
+                                }
+                            )
                         })
                     } else {
                         Err(KvsError::CrcMisMatch)
@@ -200,52 +236,24 @@ impl SSTable {
             crc_code))
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn level(&mut self, level: u64) {
-        self.meta_info.level = level;
-    }
-
-    pub(crate) fn get_level(&self) -> usize {
-        self.meta_info.level as usize
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn get_version(&self) -> u64 {
-        self.meta_info.version
-    }
-
-    pub(crate) fn get_gen(&self) -> i64 {
-        self.gen
-    }
-
-    pub(crate) fn get_scope(&self) -> &Scope {
-        &self.scope
-    }
-
-    pub(crate) fn get_size_of_disk(&self) -> u64 {
-        self.size_of_disk
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.size_of_data
-    }
-
     /// 从该sstable中获取指定key对应数据可能存在的CommandData段
     #[allow(clippy::expect_used)]
     pub(crate) async fn query_with_key(
         &self,
         key: &[u8],
-        block_cache: &ShardingLruCache<(i64, Position), Vec<CommandData>>
+        version: u64,
+        block_cache: &ShardingLruCache<(i64, u64, Position), Vec<CommandData>>
     ) -> Result<Option<CommandData>> {
-        if self.filter.contains(key) {
-            if let Some(position) = Position::from_sparse_index_with_key(&self.sparse_index, key) {
-                info!("[SsTable: {}][query_with_key]: {:?}", self.gen, position);
-                let key_position = (self.gen, position.clone());
+        if self.inner.filter.contains(key) {
+            if let Some(position) = Position::from_sparse_index_with_key(&self.inner.sparse_index, key) {
+                info!("[SsTable: {}][query_with_key]: {:?}", self.inner.gen, position);
+                let key_position = (self.inner.gen, version, position.clone());
 
                 return Ok(block_cache.get_or_insert_async(
                     key_position,
                     async {
                         let bytes = self
+                            .inner
                             .io_handler
                             .read_with_pos(position.start, position.len)
                             .await?;
@@ -262,22 +270,22 @@ impl SSTable {
 
     /// 获取SsTable内所有的正常数据
     pub(crate) async fn get_all_data(&self) -> Result<Vec<CommandData>> {
-        let info = &self.meta_info;
+        let info = &self.inner.meta_info;
         let data_len = info.data_part_len;
 
-        let all_data_u8 = self.io_handler.read_with_pos(0, data_len as usize).await?;
+        let all_data_u8 = self.inner.io_handler.read_with_pos(0, data_len as usize).await?;
         CommandPackage::from_bytes_to_unpack_vec(all_data_u8.as_slice())
     }
 
     /// 通过一组SSTable收集对应的Gen
-    pub(crate) fn collect_gen(vec_ss_table: Vec<&SSTable>) -> Result<Vec<i64>> {
-        Ok(vec_ss_table.into_iter()
+    pub(crate) fn collect_gen(vec_ss_table: &Vec<SSTable>) -> Result<Vec<i64>> {
+        Ok(vec_ss_table.iter()
             .map(SSTable::get_gen)
             .collect())
     }
 
     /// 获取一组SSTable中第一个SSTable的索引位置
-    pub(crate) fn first_index_with_level(vec_ss_table: &[&SSTable], manifest: &Manifest, level: usize) -> usize {
+    pub(crate) fn first_index_with_level(vec_ss_table: &[SSTable], manifest: &Manifest, level: usize) -> usize {
         match vec_ss_table.first() {
             None => 0,
             Some(first_ss_table) => {
@@ -288,7 +296,6 @@ impl SSTable {
     }
 
     /// 通过内存表构建持久化并构建SSTable
-    ///
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
     pub(crate) async fn create_for_immutable_table(
         config: &Config,
@@ -337,7 +344,6 @@ impl SSTable {
         // data_part_len跳过sparse_index_pos的len_head所以-4
         let meta_info = MetaInfo {
             level: level as u64,
-            version: 0,
             data_part_len: sparse_index_pos - 4,
             index_len: sparse_index_len as u64,
             crc_code
@@ -349,14 +355,18 @@ impl SSTable {
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
         let MetaBlock { vec_index, scope, filter, size_of_data } = meta_block;
         Ok(SSTable {
-            meta_info,
-            sparse_index: SkipMap::from_iter(vec_index),
-            io_handler,
-            gen,
-            scope,
-            filter,
-            size_of_disk,
-            size_of_data,
+            inner: Arc::new(
+                SSTableInner {
+                    meta_info,
+                    sparse_index: SkipMap::from_iter(vec_index),
+                    io_handler,
+                    gen,
+                    scope,
+                    filter,
+                    size_of_disk,
+                    size_of_data,
+                }
+            )
         })
 
     }

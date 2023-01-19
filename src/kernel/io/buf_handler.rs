@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use async_trait::async_trait;
-use crate::kernel::io::{IOHandler, IOType};
-use crate::kernel::{FileExtension, Result};
+use crate::kernel::io::{FileExtension, IOHandler, IOType};
+use crate::kernel::Result;
 
 type SyncWriter = Mutex<BufWriterWithPos<File>>;
 

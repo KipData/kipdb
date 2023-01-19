@@ -1,4 +1,4 @@
-use std::{path::PathBuf, collections::HashMap, fs};
+use std::{path::PathBuf, collections::HashMap};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -64,8 +64,9 @@ impl HashStore {
     ) -> Result<Self> where Self: Sized {
         // 获取地址
         let path = path.into();
-        // 创建文件夹（如果他们缺失）
-        fs::create_dir_all(&path)?;
+        // 创建IOHandlerFactory
+        let io_handler_factory =
+            IOHandlerFactory::new(path.clone(), FileExtension::Log)?;
 
         let mut lock_file = LockFile::open(&path.join(DEFAULT_LOCK_FILE))?;
 
@@ -78,9 +79,7 @@ impl HashStore {
         let mut index = HashMap::<Vec<u8>, CommandPos>::new();
         // 通过path获取有序的log序名Vec
         let gen_list = sorted_gen_list(&path, FileExtension::Log)?;
-        // 创建IOHandlerFactory
-        let io_handler_factory =
-            IOHandlerFactory::new(path, FileExtension::Log);
+
         // 初始化压缩阈值
         let mut un_compacted = 0;
         // 对读入其Map进行初始化并计算对应的压缩阈值
