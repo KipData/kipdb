@@ -8,7 +8,7 @@ use fslock::LockFile;
 use tokio::sync::RwLock;
 use tracing::error;
 
-use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_LOCK_FILE, FileExtension, KVStore, Result, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_LOCK_FILE, FileExtension, KVStore, lock_or_time_out, Result, sorted_gen_list};
 use crate::kernel::io::{IOHandler, IOHandlerFactory, IOType};
 use crate::KvsError;
 
@@ -67,12 +67,7 @@ impl HashStore {
         // 创建IOHandlerFactory
         let io_handler_factory =
             IOHandlerFactory::new(path.clone(), FileExtension::Log)?;
-
-        let mut lock_file = LockFile::open(&path.join(DEFAULT_LOCK_FILE))?;
-
-        if !lock_file.try_lock()? {
-            return Err(KvsError::ProcessExistsError);
-        }
+        let lock_file = lock_or_time_out(&path.join(DEFAULT_LOCK_FILE)).await?;
 
         let mut io_handler_index = BTreeMap::new();
         // 创建索引

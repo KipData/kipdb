@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::sync::Arc;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
@@ -7,8 +6,9 @@ use skiplist::SkipMap;
 use tracing::info;
 use crate::kernel::{CommandData, CommandPackage};
 use crate::kernel::io::{IOHandler, IOHandlerFactory, IOType};
-use crate::kernel::lsm::{data_sharding, MetaBlock, Manifest, MetaInfo, Position};
+use crate::kernel::lsm::{data_sharding, MetaBlock, MetaInfo, Position};
 use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError;
@@ -44,7 +44,7 @@ pub(crate) struct SSTableInner {
     // 硬盘占有大小
     size_of_disk: u64,
     // 数据数量
-    size_of_data: usize,
+    len: usize,
 }
 
 /// 数据范围索引
@@ -54,18 +54,6 @@ pub(crate) struct SSTableInner {
 pub(crate) struct Scope {
     start: Vec<u8>,
     end: Vec<u8>
-}
-
-impl PartialEq<Self> for SSTable {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner.meta_info.eq(&other.inner.meta_info)
-    }
-}
-
-impl PartialOrd<Self> for SSTable {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Option::from(self.get_gen().cmp(&other.get_gen()))
-    }
 }
 
 impl Scope {
@@ -154,7 +142,7 @@ impl SSTable {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.inner.size_of_data
+        self.inner.len
     }
 
     /// 通过已经存在的文件构建SSTable
@@ -180,7 +168,7 @@ impl SSTable {
         if let Some(meta_block_cmd) = CommandPackage::from_pos_unpack(&io_handler, index_pos, index_len).await? {
             match meta_block_cmd {
                 CommandData::Get { key: meta_block_bytes } => {
-                    let MetaBlock { vec_index, scope, filter , size_of_data }
+                    let MetaBlock { vec_index, scope, filter , len }
                         = rmp_serde::from_slice::<MetaBlock>(&meta_block_bytes)?;
                     let info_crc_code = meta_info.crc_code;
                     if loaded_crc_code.eq(&info_crc_code) {
@@ -194,7 +182,7 @@ impl SSTable {
                                     scope,
                                     filter,
                                     size_of_disk,
-                                    size_of_data,
+                                    len,
                                 }
                             )
                         })
@@ -241,19 +229,18 @@ impl SSTable {
     pub(crate) async fn query_with_key(
         &self,
         key: &[u8],
-        version: u64,
-        block_cache: &ShardingLruCache<(i64, u64, Position), Vec<CommandData>>
+        block_cache: &ShardingLruCache<(i64, Position), Vec<CommandData>>
     ) -> Result<Option<CommandData>> {
-        if self.inner.filter.contains(key) {
-            if let Some(position) = Position::from_sparse_index_with_key(&self.inner.sparse_index, key) {
-                info!("[SsTable: {}][query_with_key]: {:?}", self.inner.gen, position);
-                let key_position = (self.inner.gen, version, position.clone());
+        let inner = &self.inner;
+        if inner.filter.contains(key) {
+            if let Some(position) = Position::from_sparse_index_with_key(&inner.sparse_index, key) {
+                info!("[SsTable: {}][query_with_key]: {:?}", inner.gen, position);
+                let key_position = (inner.gen, position.clone());
 
                 return Ok(block_cache.get_or_insert_async(
                     key_position,
                     async {
-                        let bytes = self
-                            .inner
+                        let bytes = inner
                             .io_handler
                             .read_with_pos(position.start, position.len)
                             .await?;
@@ -284,12 +271,12 @@ impl SSTable {
             .collect())
     }
 
-    /// 获取一组SSTable中第一个SSTable的索引位置
-    pub(crate) fn first_index_with_level(vec_ss_table: &[SSTable], manifest: &Manifest, level: usize) -> usize {
-        match vec_ss_table.first() {
+    /// 获取指定SSTable索引位置
+    pub(crate) fn find_index_with_level(option_first: Option<i64>, version: &Version, level: usize) -> usize {
+        match option_first {
             None => 0,
-            Some(first_ss_table) => {
-                manifest.get_index(level, first_ss_table.get_gen())
+            Some(gen) => {
+                version.get_index(level, gen)
                     .unwrap_or(0)
             }
         }
@@ -309,12 +296,12 @@ impl SSTable {
         // 获取地址
         let interval_block_size = config.sparse_index_interval_block_size;
         let io_handler = io_handler_factory.create(gen, IOType::Buf)?;
-        let mut filter = GrowableBloom::new(config.desired_error_prob, vec_mem_data.len());
+        let len = vec_mem_data.len();
+        let mut filter = GrowableBloom::new(config.desired_error_prob, len);
 
         for data in vec_mem_data.iter() {
             let _ignore = filter.insert(data.get_key());
         }
-        let size_of_data = vec_mem_data.len();
         let vec_sharding = data_sharding(
             vec_mem_data,
             ALIGNMENT_4K * interval_block_size as usize,
@@ -330,7 +317,7 @@ impl SSTable {
             vec_index,
             scope,
             filter,
-            size_of_data
+            len
         };
 
         // 开始对稀疏索引进行伪装并断点处理
@@ -353,7 +340,7 @@ impl SSTable {
         let size_of_disk = io_handler.file_size()?;
 
         info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
-        let MetaBlock { vec_index, scope, filter, size_of_data } = meta_block;
+        let MetaBlock { vec_index, scope, filter, len } = meta_block;
         Ok(SSTable {
             inner: Arc::new(
                 SSTableInner {
@@ -364,7 +351,7 @@ impl SSTable {
                     scope,
                     filter,
                     size_of_disk,
-                    size_of_data,
+                    len,
                 }
             )
         })

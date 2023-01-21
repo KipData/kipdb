@@ -2,10 +2,13 @@ use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
+use fslock::LockFile;
 use futures::future;
 use itertools::Itertools;
+use tokio::time;
 
 use crate::kernel::io::{FileExtension, IOHandler};
 use crate::KvsError;
@@ -205,19 +208,23 @@ impl CommandPackage {
 
     /// 获取reader之中所有的CommandPackage
     pub(crate) async fn from_read_to_vec(io_handler: &Box<dyn IOHandler>) -> Result<Vec<CommandPackage>> {
-        Self::from_bytes_to_vec(io_handler
-            .bytes()
-            .await?
-            .as_slice())
+        Self::from_bytes_to_vec(
+            io_handler
+                .bytes()
+                .await?
+                .as_slice()
+        )
     }
 
     #[allow(dead_code)]
     /// 获取reader之中所有的CommandData
     pub(crate) async fn from_read_to_unpack_vec(io_handler: &Box<dyn IOHandler>) -> Result<Vec<CommandData>> {
-        Self::from_bytes_to_unpack_vec(io_handler
-            .bytes()
-            .await?
-            .as_slice())
+        Self::from_bytes_to_unpack_vec(
+            io_handler
+                .bytes()
+                .await?
+                .as_slice()
+        )
     }
 
     /// 获取此reader的所有命令对应的字节数组段落
@@ -433,6 +440,24 @@ fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64
     Ok(gen_list)
 }
 
+/// 尝试锁定文件或超时
+async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
+    let mut lock_file = LockFile::open(path)?;
+
+    let mut backoff = 1;
+
+    loop {
+        if lock_file.try_lock()? {
+            return Ok(lock_file)
+        } else if backoff > 4 {
+            return Err(KvsError::ProcessExistsError);
+        }
+
+        time::sleep(Duration::from_millis(backoff * 100)).await;
+
+        backoff *= 2;
+    };
+}
 // #[test]
 // fn test_cmd_len() -> Result<()>{
 //     use tracing::info;

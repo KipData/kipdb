@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use futures::future;
 use itertools::Itertools;
-use tokio::sync::RwLock;
 use tracing::{error, info};
 use crate::{HashStore, KvsError};
 use crate::kernel::io::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, LsmStore, wal_put};
-use crate::kernel::lsm::{data_sharding, Manifest};
+use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, wal_put};
+use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::version::{VersionEdit, VersionVec};
 
 pub(crate) const LEVEL_0: usize = 0;
 
@@ -19,22 +19,35 @@ pub(crate) type MergeShardingVec = Vec<(i64, Vec<CommandData>)>;
 
 pub(crate) type ExpiredGenVec = Vec<i64>;
 
+/// 压缩器
+/// 负责Minor和Major压缩
+/// TODO: 对SSTableMap中无效SSTable进行删除
 pub(crate) struct Compactor {
-    manifest: Arc<RwLock<Manifest>>,
+    ver_vec: Arc<VersionVec>,
     config: Arc<Config>,
-    io_handler_factory: Arc<IOHandlerFactory>,
+    sst_factory: Arc<IOHandlerFactory>,
     wal: Arc<HashStore>,
 }
 
 impl Compactor {
 
-    pub(crate) fn new(manifest: Arc<RwLock<Manifest>>, config: Arc<Config>, io_handler_factory: Arc<IOHandlerFactory>, wal: Arc<HashStore>) -> Self {
-        Self { manifest, config, io_handler_factory, wal }
+    pub(crate) fn new(
+        ver_vec: Arc<VersionVec>,
+        config: Arc<Config>,
+        sst_factory: Arc<IOHandlerFactory>,
+        wal: Arc<HashStore>
+    ) -> Self {
+        Self { ver_vec, config, sst_factory, wal }
     }
 
     /// 持久化immutable_table为SSTable
-    pub(crate) async fn minor_compaction(&self,vec_keys: Vec<Vec<u8>>, vec_values: Vec<CommandData>) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+    pub(crate) async fn minor_compaction(
+        &self,
+        vec_keys: Vec<Vec<u8>>,
+        vec_values: Vec<CommandData>,
+        is_drop: bool
+    ) -> Result<()>
+    {
         let gen = self.config.create_gen();
 
         // 将这些索引的key序列化后预先存入wal中作防灾准备
@@ -52,14 +65,18 @@ impl Compactor {
         let ss_table = SSTable::create_for_immutable_table(
             &self.config,
             gen,
-            &self.io_handler_factory,
+            &self.sst_factory,
             vec_values,
             LEVEL_0
         ).await?;
-        manifest.insert_ss_table_with_index(ss_table, 0, &self.io_handler_factory).await?;
+        self.ver_vec.insert_vec_ss_table(vec![ss_table], !is_drop).await?;
 
-        drop(manifest);
-        if let Err(err) = self.major_compaction(LEVEL_0).await {
+        // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
+        if let Err(err) = self.major_compaction(
+            LEVEL_0,
+            vec![VersionEdit::NewFile((vec![gen], 0), 0)]
+        ).await
+        {
             error!("[LsmStore][major_compaction][error happen]: {:?}", err);
         }
         Ok(())
@@ -67,22 +84,21 @@ impl Compactor {
 
     /// Major压缩，负责将不同Level之间的数据向下层压缩转移
     /// 目前Major压缩的大体步骤是
-    /// 1、获取manifest读锁，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
+    /// 1、获取当前Version，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
     /// 2、vec_ss_table_l的每个SSTable中的scope属性进行融合，并以此获取下一Level与该scope相交的SSTable，命名为vec_ss_table_l_1
     /// 3、获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
     /// 4、vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<CommandData>
-    /// 5、释放manifest读锁
     /// 6、并行将每个分片各自生成SSTable
-    /// 6、获取manifest写锁
     /// 7、生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
-    /// 8、释放manifest写锁
+    /// 8、将变更的SSTable插入至vec_ver_edit以持久化
+    ///
+    /// final: 将vec_ver_edit中的数据进行log_and_apply生成新的Version作为最新状态
     ///
     /// 经过压缩测试，Level 1的SSTable总是较多，根据原理推断：
     /// Level0的Key基本是无序的，容易生成大量的SSTable至Level1
     /// 而Level1-7的Key排布有序，故转移至下一层的SSTable数量较小
     /// 因此大量数据压缩的情况下Level 1的SSTable数量会较多
-    /// TODO: SSTable锁,避免并行压缩时数据范围重复
-    pub(crate) async fn major_compaction(&self, mut level: usize) -> Result<()> {
+    pub(crate) async fn major_compaction(&self, mut level: usize, mut vec_ver_edit: Vec<VersionEdit>) -> Result<()> {
         if level > 6 {
             return Err(KvsError::LevelOver);
         }
@@ -99,57 +115,73 @@ impl Compactor {
                         SSTable::create_for_immutable_table(
                             config,
                             gen,
-                            &self.io_handler_factory,
+                            &self.sst_factory,
                             sharding,
                             level + 1
                         )
                     });
                 let vec_new_ss_table: Vec<SSTable> = future::try_join_all(ss_table_futures).await?;
 
-                let mut manifest = self.manifest.write().await;
-                manifest.insert_ss_table_with_index_batch(vec_new_ss_table, index).await;
-                manifest.retain_with_vec_gen_and_level(&vec_expire_gen, &self.io_handler_factory).await?;
+                let vec_new_sst_gen = vec_new_ss_table.iter()
+                    .map(SSTable::get_gen)
+                    .collect_vec();
+                self.ver_vec.insert_vec_ss_table(vec_new_ss_table, true).await?;
 
+                vec_ver_edit.push(VersionEdit::NewFile((vec_new_sst_gen, level + 1), index));
+                vec_ver_edit.push(VersionEdit::DeleteFile((vec_expire_gen, level + 1)));
                 info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
                 level += 1;
             } else { break }
         }
+        self.ver_vec.log_and_apply(vec_ver_edit).await?;
         Ok(())
     }
 
     /// 通过Level进行归并数据加载
     async fn data_loading_with_level(&self, level: usize) -> Result<Option<(usize, ExpiredGenVec, MergeShardingVec)>> {
-        let manifest = self.manifest.read().await;
+        let version = self.ver_vec.current().await;
         let config = &self.config;
-        let next_level = level + 1;
-        let major_select_file_size = self.config.major_select_file_size;
+        let major_select_file_size = config.major_select_file_size;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !manifest.is_threshold_exceeded_major(config.major_threshold_with_sst_size,
-                                                level,
-                                                config.level_sst_magnification) {
+        if level > 5 || !version.is_threshold_exceeded_major(&config, level)
+        {
             return Ok(None);
         }
 
-        if let Some(vec_ss_table_l) = Self::get_first_vec_ss_table(&manifest, level, major_select_file_size).await {
+
+        if let Some(vec_ss_table_l) = version
+            .get_first_vec_ss_table_with_size(level, major_select_file_size)
+            .await
+        {
             let start = Instant::now();
 
             let scope_l = Scope::fusion_from_vec_ss_table(&vec_ss_table_l)?;
 
+            // 获取下一级中有重复键值范围的SSTable
             let vec_ss_table_ll =
-                manifest.get_meet_scope_ss_tables(next_level, &scope_l).await;
-            let vec_ss_table_l_1 =
-                manifest.get_meet_scope_ss_tables(level, &scope_l).await;
+                version.get_meet_scope_ss_tables(level + 1, &scope_l).await;
 
-            let index = SSTable::first_index_with_level(&vec_ss_table_ll, &manifest, next_level);
+            let index = SSTable::find_index_with_level(
+                vec_ss_table_ll.first().map(SSTable::get_gen),
+                &version,
+                level + 1
+            );
+
+            // 若为Level 0则与获取同级下是否存在有键值范围冲突数据
+            let vec_ss_table_l_1 = if level == 0 {
+                version.get_meet_scope_ss_tables(level, &scope_l).await
+            } else {
+                Vec::new()
+            };
 
             let vec_ss_table_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_ll) {
-                Ok(scope) => manifest.get_meet_scope_ss_tables(level, &scope).await,
+                Ok(scope) => version.get_meet_scope_ss_tables(level, &scope).await,
                 Err(_) => vec_ss_table_l
             }.into_iter()
                 .chain(vec_ss_table_ll)
                 .chain(vec_ss_table_l_1)
-                .unique_by(|ss_table| ss_table.get_gen())
+                .unique_by(SSTable::get_gen)
                 .collect_vec();
 
             // 数据合并并切片
@@ -189,28 +221,6 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, config.sst_file_size, config, true).await)
     }
 
-    /// 获取对应Level的开头指定数量的SSTable
-    pub(crate) async fn get_first_vec_ss_table(
-        manifest: &Manifest,
-        level: usize,
-        size: usize
-    ) -> Option<Vec<SSTable>>{
-        let level_vec = manifest.get_level_vec(level).iter()
-            .take(size)
-            .cloned()
-            .collect_vec();
-        manifest.get_ss_table_batch(&level_vec.to_vec()).await
-    }
-
-    pub(crate) fn from_lsm_kv(lsm_kv: &LsmStore) -> Self {
-        let manifest = Arc::clone(lsm_kv.manifest());
-        let config = Arc::clone(lsm_kv.config());
-        let wal = Arc::clone(lsm_kv.wal());
-        let io_handler_factory = Arc::clone(lsm_kv.io_handler_factory());
-
-        Compactor::new(manifest, config, io_handler_factory, wal)
-    }
-
 }
 
 // #[test]
@@ -232,9 +242,9 @@ impl Compactor {
 impl Clone for Compactor {
     fn clone(&self) -> Self {
         Compactor {
-            manifest: Arc::clone(&self.manifest),
+            ver_vec: Arc::clone(&self.ver_vec),
             config: Arc::clone(&self.config),
-            io_handler_factory: Arc::clone(&self.io_handler_factory),
+            sst_factory: Arc::clone(&self.sst_factory),
             wal: Arc::clone(&self.wal)
         }
     }

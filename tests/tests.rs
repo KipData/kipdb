@@ -69,8 +69,6 @@ fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
         kv_store.flush().await?;
         assert_eq!(kv_store.get(&key1).await?, Some(value2.clone()));
 
-        // Open from disk again and check persistent data.
-        kv_store.flush().await?;
         drop(kv_store);
         let kv_store = T::open(temp_dir.path()).await?;
         assert_eq!(kv_store.get(&key1).await?, Some(value2.clone()));
