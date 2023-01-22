@@ -12,7 +12,7 @@ use crate::{HashStore, KvsError};
 use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::lsm::{MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
-use crate::kernel::lsm::version::VersionVec;
+use crate::kernel::lsm::version::VersionStatus;
 use crate::kernel::Result;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
@@ -47,7 +47,7 @@ pub struct LsmStore {
     mem_table: MemTable,
     /// VersionVec
     /// 用于管理内部多版本状态
-    ver_vec: Arc<VersionVec>,
+    ver_status: Arc<VersionStatus>,
     /// LSM全局参数配置
     config: Arc<Config>,
     /// WAL存储器
@@ -71,7 +71,7 @@ pub struct LsmStore {
 impl KVStore for LsmStore {
     #[inline]
     fn name() -> &'static str where Self: Sized {
-        "LsmStore made in Kould"
+        "LSMStore made in Kould"
     }
 
     #[inline]
@@ -81,7 +81,7 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn flush(&self) -> Result<()> {
-        self.flush_or_drop(false).await
+        self.flush_(false).await
     }
 
     #[inline]
@@ -95,7 +95,7 @@ impl KVStore for LsmStore {
             return Ok(cmd_data.get_value_clone());
         }
 
-        if let Some(value) = self.ver_vec
+        if let Some(value) = self.ver_status
             .current()
             .await
             .find_data_for_ss_tables(key)
@@ -119,28 +119,31 @@ impl KVStore for LsmStore {
     #[inline]
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
-            Some(_) => { self.append_cmd_data(CommandData::Remove { key: key.to_vec() }, true).await }
+            Some(_) => {
+                self.append_cmd_data(CommandData::Remove { key: key.to_vec() }, true)
+                    .await
+            }
             None => { Err(KvsError::KeyNotFound) }
         }
     }
 
     #[inline]
     async fn size_of_disk(&self) -> Result<u64> {
-        Ok(self.ver_vec.current().await
+        Ok(self.ver_status.current().await
             .get_size_of_disk()
             + self.wal.size_of_disk().await?)
     }
 
     #[inline]
     async fn len(&self) -> Result<usize> {
-        Ok(self.ver_vec.current().await
+        Ok(self.ver_status.current().await
             .get_len()
             + self.mem_table.mem_table_len().await)
     }
 
     #[inline]
     async fn is_empty(&self) -> bool {
-        self.ver_vec.current().await
+        self.ver_status.current().await
             .is_empty()
             && self.mem_table.mem_table_is_empty().await
     }
@@ -206,16 +209,16 @@ impl LsmStore {
                 wal_compaction_threshold
             ).await?
         );
-        let ver_vec = Arc::new(
-            VersionVec::load_with_path(&config, &mut mem_map, &wal).await?
+        let ver_status = Arc::new(
+            VersionStatus::load_with_path(&config, &mut mem_map, &wal).await?
         );
 
         let compactor = Arc::new(
             Mutex::new(
                 Compactor::new(
-                    Arc::clone(&ver_vec),
+                    Arc::clone(&ver_status),
                     Arc::clone(&config),
-                    ver_vec.get_sst_factory(),
+                    ver_status.get_sst_factory(),
                     Arc::clone(&wal)
                 )
             )
@@ -223,7 +226,7 @@ impl LsmStore {
 
         Ok(LsmStore {
             mem_table: MemTable::new(mem_map),
-            ver_vec,
+            ver_status,
             config,
             wal,
             lock_file,
@@ -282,8 +285,8 @@ impl LsmStore {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn ver_vec(&self) -> &Arc<VersionVec> {
-        &self.ver_vec
+    pub(crate) fn ver_status(&self) -> &Arc<VersionStatus> {
+        &self.ver_status
     }
     #[allow(dead_code)]
     pub(crate) fn config(&self) -> &Arc<Config> {
@@ -294,7 +297,7 @@ impl LsmStore {
         &self.wal
     }
 
-    pub(crate) async fn flush_or_drop(&self, is_drop: bool) -> Result<()> {
+    pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
         self.wal.flush().await?;
         if !self.mem_table.mem_table_is_empty().await {
             self.minor_compaction_sync(is_drop).await?;

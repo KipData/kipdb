@@ -60,7 +60,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<()> {
             }
         }
         _ = shutdown => {
-            server.kv_store_root.flush_or_drop(true).await?;
+            server.kv_store_root.flush_(true).await?;
             info!("[Listener][Shutting Down]");
         }
     }

@@ -268,6 +268,7 @@ impl SSTable {
     pub(crate) fn collect_gen(vec_ss_table: &Vec<SSTable>) -> Result<Vec<i64>> {
         Ok(vec_ss_table.iter()
             .map(SSTable::get_gen)
+            .unique()
             .collect())
     }
 

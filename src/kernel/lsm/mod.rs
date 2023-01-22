@@ -89,8 +89,6 @@ impl SSTableMap {
         ).await)
     }
 
-    /// TODO: 检测过期的SSTable进行删除
-    #[allow(dead_code)]
     pub(crate) async fn remove(&mut self, gen: &i64) -> Option<SSTable> {
         let _ignore = self.cache.remove(gen).await;
         self.inner.remove(gen)
