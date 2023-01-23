@@ -68,7 +68,7 @@ impl Cleaner {
         }
     }
 
-    async fn loop_and_clean(&mut self) {
+    async fn listen(&mut self) {
         loop {
             if let Some(tag) = self.tag_rev.recv().await {
                 match tag {
@@ -257,7 +257,7 @@ impl VersionStatus {
         );
 
         let _ignore = tokio::spawn(async move {
-            cleaner.loop_and_clean().await;
+            cleaner.listen().await;
         });
 
         Ok(Self {
@@ -582,19 +582,23 @@ impl Version {
             .map(|(index, _)| index)
     }
 
-    /// TODO: 延迟加载
-    async fn get_vec_ss_table_with_level(&self, level: usize) -> Vec<SSTable> {
-        let mut vec = Vec::new();
-        let ss_table_map = self.ss_tables_map.read().await;
-
-        for gen in self.level_slice[level]
-            .iter()
-        {
+    async fn rfind_ss_table<F>(
+        level_slice: &LevelSlice,
+        ss_table_map: &SSTableMap,
+        level: usize,
+        fn_rfind: F
+    ) -> Option<SSTable>
+        where F: Fn(&SSTable) -> bool
+    {
+        for gen in level_slice[level].iter() {
             if let Some(ss_table) = ss_table_map.get(gen).await {
-                vec.push(ss_table);
+                if fn_rfind(&ss_table) {
+                    return Some(ss_table);
+                }
             }
         }
-        vec
+
+        None
     }
 
     pub(crate) async fn get_first_vec_ss_table_with_size(&self, level: usize, size: usize) -> Option<Vec<SSTable>> {
@@ -618,45 +622,69 @@ impl Version {
 
     /// 获取指定level中与scope冲突的
     pub(crate) async fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<SSTable> {
-        self.get_vec_ss_table_with_level(level)
-            .await
-            .into_iter()
-            .filter(|ss_table| ss_table.get_scope().meet(scope))
-            .collect()
+        let mut vec = Vec::new();
+        let ss_table_map = self.ss_tables_map.read().await;
+
+        for gen in self.level_slice[level].iter()
+        {
+            if let Some(ss_table) = ss_table_map.get(gen).await {
+                if ss_table.get_scope().meet(scope) {
+                    vec.push(ss_table);
+                }
+            }
+        }
+        vec
     }
 
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) async fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        // Level 0的SSTable是无序且SSTable间的数据是可能重复的
-        for ss_table in self.get_vec_ss_table_with_level(0)
-            .await
+        let ss_table_map = self.ss_tables_map.read().await;
+        let block_cache = &self.block_cache;
+
+        // Level 0的SSTable是无序且SSTable间的数据是可能重复的,因此需要遍历
+        for gen in self.level_slice[LEVEL_0]
             .iter()
             .rev()
         {
-            if let Some(cmd_data) = ss_table
-                .query_with_key(key, &self.block_cache)
-                .await?
-            {
-                return Ok(cmd_data.get_value_clone());
+            if let Some(ss_table) = ss_table_map.get(gen).await {
+                if let Some(value) =
+                    Self::query_with_ss_table(key, block_cache, &ss_table).await?
+                {
+                    return Ok(Some(value))
+                }
             }
         }
         // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的SSTable
         let key_scope = Scope::from_key(key);
         for level in 1..7 {
-            if let Some(ss_table) = self.get_vec_ss_table_with_level(level)
-                .await
-                .iter()
-                .rfind(|ss_table| ss_table.get_scope().meet(&key_scope))
-            {
-                if let Some(cmd_data) = ss_table
-                    .query_with_key(key, &self.block_cache)
-                    .await?
+            if let Some(ss_table) = Self::rfind_ss_table(
+                &self.level_slice,
+                &ss_table_map,
+                level,
+                |ss_table| ss_table.get_scope().meet(&key_scope)
+            ).await {
+                if let Some(value) =
+                    Self::query_with_ss_table(key, block_cache, &ss_table).await?
                 {
-                    return Ok(cmd_data.get_value_clone());
+                    return Ok(Some(value))
                 }
             }
         }
 
+        Ok(None)
+    }
+
+    async fn query_with_ss_table(
+        key: &[u8],
+        block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
+        ss_table: &SSTable
+    ) -> Result<Option<Vec<u8>>> {
+        if let Some(cmd_data) = ss_table
+            .query_with_key(key, block_cache)
+            .await?
+        {
+            return Ok(cmd_data.get_value_clone());
+        }
         Ok(None)
     }
 
