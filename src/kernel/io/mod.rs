@@ -77,6 +77,14 @@ impl IOHandlerFactory {
         )?;
         Ok(())
     }
+
+    #[inline]
+    pub fn has_gen(&self, gen: i64) -> Result<bool>{
+        Ok(fs::try_exists(
+            self.extension
+                .path_with_gen(&self.dir_path, gen)
+        )?)
+    }
 }
 
 #[async_trait]

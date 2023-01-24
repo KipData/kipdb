@@ -76,7 +76,7 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
-        LsmStore::open_with_config(Config::default().dir_path(path.into())).await
+        LsmStore::open_with_config(Config::new(path)).await
     }
 
     #[inline]
@@ -371,6 +371,26 @@ pub struct Config {
 
 impl Config {
 
+    pub fn new(path: impl Into<PathBuf> + Send) -> Config {
+        Config {
+            dir_path: path.into(),
+            minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
+            wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
+            sparse_index_interval_block_size: DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE,
+            sst_file_size: DEFAULT_SST_FILE_SIZE,
+            major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
+            major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
+            node_id: DEFAULT_MACHINE_ID,
+            level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
+            buffer_i32: AtomicI32::new(0),
+            desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
+            block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
+            table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
+            wal_enable: true,
+            wal_async_put_enable: true,
+        }
+    }
+
     #[inline]
     pub fn dir_path(mut self, dir_path: PathBuf) -> Self {
         self.dir_path = dir_path;
@@ -462,29 +482,6 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            dir_path: DEFAULT_WAL_PATH.into(),
-            minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
-            wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
-            sparse_index_interval_block_size: DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE,
-            sst_file_size: DEFAULT_SST_FILE_SIZE,
-            major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
-            major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
-            node_id: DEFAULT_MACHINE_ID,
-            level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
-            buffer_i32: AtomicI32::new(0),
-            desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
-            block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
-            table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
-            wal_enable: true,
-            wal_async_put_enable: true,
-        }
-    }
-}
-
 /// 以Task类似的异步写数据，避免影响数据写入性能
 /// 当然，LevelDB的话虽然wal写入会提供是否同步的选项，此处先简化优先使用异步
 pub(crate) async fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>, is_sync: bool) {
@@ -509,8 +506,7 @@ fn test_lsm_major_compactor() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
-        let config = Config::default()
-            .dir_path(temp_dir.into_path())
+        let config = Config::new(temp_dir.into_path())
             .wal_enable(false);
         let kv_store = LsmStore::open_with_config(config).await?;
         let mut vec_key: Vec<Vec<u8>> = Vec::new();

@@ -17,6 +17,10 @@ use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError::SSTableLostError;
 
+pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
+
+pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
+
 pub(crate) type LevelSlice = [Vec<i64>; 7];
 
 pub(crate) type FileVec = (Vec<i64>, usize);
@@ -72,7 +76,16 @@ impl Cleaner {
         loop {
             if let Some(tag) = self.tag_rev.recv().await {
                 match tag {
-                    CleanTag::Drop => return,
+                    CleanTag::Drop => {
+                        for (_, vec_gen) in &self.del_gens {
+                            for gen in vec_gen {
+                                if let Err(err) = self.sst_factory.clean(*gen) {
+                                    error!("[Cleaner][drop][SSTables{}]: Remove Error!: {:?}", gen, err);
+                                };
+                            }
+                        }
+                        return
+                    },
                     CleanTag::Clean(ver_num) => {
                         self.clean(ver_num).await;
                     }
@@ -105,7 +118,7 @@ impl Cleaner {
                 }
             } else {
                 // 若非Version并非第一位，为了不影响前面Version对SSTable的读取处理，将待删除的SSTable的gen转移至前一位
-                if let Some((_, pre_vec_gen)) = self.del_gens.get_mut(index) {
+                if let Some((_, pre_vec_gen)) = self.del_gens.get_mut(index - 1) {
                     pre_vec_gen.append(&mut vec_gen);
                 }
             }
@@ -137,8 +150,8 @@ pub(crate) struct VersionStatus {
     tag_sender: Sender<CleanTag>,
 }
 
-#[derive(Clone)]
-pub(crate) struct MetaData {
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub(crate) struct VersionMeta {
     /// SSTable集合占有磁盘大小
     size_of_disk: u64,
     /// SSTable集合中指令数量
@@ -156,7 +169,7 @@ pub(crate) struct Version {
     /// 每个Version各持有各自的Gen矩阵
     level_slice: LevelSlice,
     /// 统计数据
-    meta_data: MetaData,
+    meta_data: VersionMeta,
     /// 稀疏区间数据Block缓存
     block_cache: Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
     /// 用于MVCC的有序编号
@@ -181,8 +194,8 @@ impl VersionStatus {
         wal: &HashStore,
     ) -> Result<Self> {
         let path = config.dir_path.clone();
-        let sst_path = path.join("ss_table");
-        let ver_path = path.join("version");
+        let sst_path = path.join(DEFAULT_SS_TABLE_PATH);
+        let ver_path = path.join(DEFAULT_VERSION_PATH);
 
         let block_cache = Arc::new(ShardingLruCache::new(
             config.block_cache_size,
@@ -373,7 +386,7 @@ impl Version {
             block_cache: Arc::clone(block_cache),
             last_sequence_id: 0,
             wal_log_gen: 0,
-            meta_data: MetaData { size_of_disk: 0, len: 0 },
+            meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_sender,
         }
     }
@@ -403,7 +416,7 @@ impl Version {
             version_num: 0,
             ss_tables_map: Arc::clone(ss_table_map),
             level_slice,
-            meta_data: MetaData { size_of_disk, len },
+            meta_data: VersionMeta { size_of_disk, len },
             block_cache: Arc::clone(block_cache),
             last_sequence_id: 0,
             wal_log_gen: 0,
@@ -526,12 +539,12 @@ impl Version {
 
         self.clean_sender.send(
             CleanTag::Add(self.version_num, del_gens)
-        ).await.unwrap();
+        ).await.expect("send error!");
 
         Ok(())
     }
 
-    async fn apply_add(meta_data: &mut MetaData, ss_tables_map: &SSTableMap, vec_gen: &Vec<i64>) -> Result<()>  {
+    async fn apply_add(meta_data: &mut VersionMeta, ss_tables_map: &SSTableMap, vec_gen: &Vec<i64>) -> Result<()>  {
         meta_data.statistical_process(
             &ss_tables_map,
             &vec_gen,
@@ -543,7 +556,7 @@ impl Version {
         Ok(())
     }
 
-    async fn apply_del_on_running(meta_data: &mut MetaData, ss_tables_map: &SSTableMap, vec_gen: &Vec<i64>) -> Result<()> {
+    async fn apply_del_on_running(meta_data: &mut VersionMeta, ss_tables_map: &SSTableMap, vec_gen: &Vec<i64>) -> Result<()> {
         meta_data.statistical_process(
             &ss_tables_map,
             &vec_gen,
@@ -695,7 +708,7 @@ impl Version {
     }
 }
 
-impl MetaData {
+impl VersionMeta {
     // MetaData对SSTable统计数据处理
     async fn statistical_process<F>(
         &mut self,
@@ -703,7 +716,7 @@ impl MetaData {
         vec_gen: &Vec<i64>,
         fn_process: F
     ) -> Result<()>
-        where F: Fn(&mut MetaData, &SSTable)
+        where F: Fn(&mut VersionMeta, &SSTable)
     {
         for gen in vec_gen.iter() {
             let ss_table = ss_table_map.get(gen).await
@@ -755,6 +768,179 @@ fn version_display(new_version: &Version, method: &str) {
             new_version.last_sequence_id,
             new_version.wal_log_gen
         );
+}
+
+#[test]
+fn test_version_clean() {
+    use tempfile::TempDir;
+    use tokio::time;
+    use std::time::Duration;
+    use crate::kernel::lsm::lsm_kv::{DEFAULT_WAL_PATH, DEFAULT_WAL_COMPACTION_THRESHOLD};
+    use crate::kernel::lsm::ss_table::SSTable;
+
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+    tokio_test::block_on(async move {
+
+        let config = Config::new(temp_dir.into_path());
+        let wal = Arc::new(
+            HashStore::open_with_compaction_threshold(
+                &config.dir_path.join(DEFAULT_WAL_PATH),
+                DEFAULT_WAL_COMPACTION_THRESHOLD
+            ).await.unwrap()
+        );
+        let mut map = MemMap::new();
+
+        // 注意：将ss_table的创建防止VersionStatus的创建前
+        // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
+        let ver_status =
+            VersionStatus::load_with_path(&config, &mut map, &wal).await.unwrap();
+
+
+        let sst_factory = IOHandlerFactory::new(
+            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+            FileExtension::SSTable
+        ).unwrap();
+
+        let ss_table_1 = SSTable::create_for_immutable_table(
+            &config,
+            1,
+            &sst_factory,
+            vec![CommandData::get(b"test".to_vec())],
+            0
+        ).await.unwrap();
+
+        let ss_table_2 = SSTable::create_for_immutable_table(
+            &config,
+            2,
+            &sst_factory,
+            vec![CommandData::get(b"test".to_vec())],
+            0
+        ).await.unwrap();
+
+        ver_status.insert_vec_ss_table(vec![ss_table_1], false).await.unwrap();
+        ver_status.insert_vec_ss_table(vec![ss_table_2], false).await.unwrap();
+
+        let vec_edit_1 = vec![
+            VersionEdit::NewFile((vec![1], 0),0),
+        ];
+
+        ver_status.log_and_apply(vec_edit_1).await.unwrap();
+
+        let version_1 = Arc::clone(&ver_status.current().await);
+
+        let vec_edit_2 = vec![
+            VersionEdit::NewFile((vec![2], 0),0),
+            VersionEdit::DeleteFile((vec![1], 0)),
+        ];
+
+        ver_status.log_and_apply(vec_edit_2).await.unwrap();
+
+        let version_2 = Arc::clone(&ver_status.current().await);
+
+        let vec_edit_3 = vec![
+            VersionEdit::DeleteFile((vec![2], 0)),
+        ];
+
+        // 用于去除version2的引用计数
+        ver_status.log_and_apply(vec_edit_3).await.unwrap();
+
+        assert!(sst_factory.has_gen(1).unwrap());
+        assert!(sst_factory.has_gen(2).unwrap());
+
+        drop(version_2);
+
+        assert!(sst_factory.has_gen(1).unwrap());
+        assert!(sst_factory.has_gen(2).unwrap());
+
+        drop(version_1);
+        time::sleep(Duration::from_secs(1)).await;
+
+        assert!(!sst_factory.has_gen(1).unwrap());
+        assert!(sst_factory.has_gen(2).unwrap());
+
+        drop(ver_status);
+        time::sleep(Duration::from_secs(1)).await;
+
+        assert!(!sst_factory.has_gen(1).unwrap());
+        assert!(!sst_factory.has_gen(2).unwrap());
+
+    });
+}
+
+#[test]
+fn test_version_apply_and_log() {
+    use tempfile::TempDir;
+    use crate::kernel::lsm::lsm_kv::{DEFAULT_WAL_PATH, DEFAULT_WAL_COMPACTION_THRESHOLD};
+    use crate::kernel::lsm::ss_table::SSTable;
+
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+    tokio_test::block_on(async move {
+
+        let config = Config::new(temp_dir.into_path());
+        let wal = Arc::new(
+            HashStore::open_with_compaction_threshold(
+                &config.dir_path.join(DEFAULT_WAL_PATH),
+                DEFAULT_WAL_COMPACTION_THRESHOLD
+            ).await.unwrap()
+        );
+        let mut map = MemMap::new();
+
+        // 注意：将ss_table的创建防止VersionStatus的创建前
+        // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
+        let ver_status_1 =
+            VersionStatus::load_with_path(&config, &mut map, &wal).await.unwrap();
+
+
+        let sst_factory = IOHandlerFactory::new(
+            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+            FileExtension::SSTable
+        ).unwrap();
+
+        let ss_table_1 = SSTable::create_for_immutable_table(
+            &config,
+            1,
+            &sst_factory,
+            vec![CommandData::get(b"test".to_vec())],
+            0
+        ).await.unwrap();
+
+        let ss_table_2 = SSTable::create_for_immutable_table(
+            &config,
+            2,
+            &sst_factory,
+            vec![CommandData::get(b"test".to_vec())],
+            0
+        ).await.unwrap();
+
+        let vec_edit = vec![
+            VersionEdit::NewFile((vec![1], 0),0),
+            VersionEdit::NewFile((vec![2], 0),0),
+            VersionEdit::DeleteFile((vec![2], 0)),
+            VersionEdit::LogGen(3),
+            VersionEdit::LastSequenceId(4),
+        ];
+
+        ver_status_1.insert_vec_ss_table(vec![ss_table_1], false).await.unwrap();
+        ver_status_1.insert_vec_ss_table(vec![ss_table_2], false).await.unwrap();
+        ver_status_1.log_and_apply(vec_edit).await.unwrap();
+
+        let version_1 = Version::clone(ver_status_1.current().await.as_ref());
+
+        drop(ver_status_1);
+
+        let ver_status_2 =
+            VersionStatus::load_with_path(&config, &mut map, &wal).await.unwrap();
+        let version_2 = ver_status_2.current().await;
+
+        assert_eq!(version_1.last_sequence_id, 4);
+        assert_eq!(version_1.wal_log_gen, 3);
+        assert_eq!(version_2.last_sequence_id, 4);
+        assert_eq!(version_2.wal_log_gen, 3);
+        assert_eq!(version_1.level_slice, version_2.level_slice);
+        assert_eq!(version_1.meta_data, version_2.meta_data);
+    });
 }
 
 
