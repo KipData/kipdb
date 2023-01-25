@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use async_trait::async_trait;
 use crate::kernel::Result;
 use crate::kernel::io::{FileExtension,IOHandler, IOType};
+use crate::KvsError::UnSupportError;
 
 /// 使用MMap作为实现的IOHandler
 /// 目前主要用途是作为缓存读取器，尽可能减少磁盘IO弥补BufHandler读取性能上的不足
@@ -17,8 +18,8 @@ use crate::kernel::io::{FileExtension,IOHandler, IOType};
 pub(crate) struct MMapHandler {
     gen: i64,
     dir_path: Arc<PathBuf>,
-    writer: Mutex<MmapWriter>,
-    reader: MmapReader,
+    writer: Mutex<MMapWriter>,
+    reader: MMapReader,
     extension: Arc<FileExtension>,
 }
 
@@ -33,13 +34,36 @@ impl MMapHandler {
             .read(true)
             .open(&path)?;
 
-        let writer = Mutex::new(MmapWriter::new(&file)?);
-        let reader = MmapReader::new(&File::open(path)?)?;
+        let writer = Mutex::new(MMapWriter::new(&file)?);
+        let reader = MMapReader::new(&File::open(path)?)?;
 
         Ok(MMapHandler {
             gen,
             dir_path,
             writer,
+            reader,
+            extension,
+        })
+    }
+}
+
+/// MMap只读器
+/// 因为比较喜欢用MMap做只读
+pub(crate) struct MMapIOReader {
+    gen: i64,
+    dir_path: Arc<PathBuf>,
+    reader: MMapReader,
+    extension: Arc<FileExtension>,
+}
+
+impl MMapIOReader {
+    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+        let path = extension.path_with_gen(&dir_path, gen);
+        let reader = MMapReader::new(&File::open(path)?)?;
+
+        Ok(MMapIOReader {
+            gen,
+            dir_path,
             reader,
             extension,
         })
@@ -86,28 +110,59 @@ impl IOHandler for MMapHandler {
     }
 }
 
+#[async_trait]
+impl IOHandler for MMapIOReader {
+    fn get_gen(&self) -> i64 {
+        self.gen
+    }
+
+    fn get_path(&self) -> PathBuf {
+        self.extension
+            .path_with_gen(&self.dir_path, self.gen)
+    }
+
+    async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
+        let start_pos = start as usize;
+
+        self.reader.read_bytes(start_pos, len + start_pos)
+            .map(|slice| slice.to_vec())
+    }
+
+    async fn write(&self, _buf: Vec<u8>) -> Result<(u64, usize)> {
+        Err(UnSupportError)
+    }
+
+    async fn flush(&self) -> Result<()> {
+        Err(UnSupportError)
+    }
+
+    fn get_type(&self) -> IOType {
+        IOType::MMapOnlyReader
+    }
+}
+
 #[derive(Debug)]
-struct MmapReader {
+struct MMapReader {
     mmap: Mmap,
     pos: usize
 }
 
-impl MmapReader {
+impl MMapReader {
     fn read_bytes(&self, start: usize, end: usize) -> Result<&[u8]> {
         Ok(&self.mmap[start..end])
     }
 
     #[allow(unsafe_code)]
-    fn new(file: &File) -> Result<MmapReader> {
+    fn new(file: &File) -> Result<MMapReader> {
         let mmap = unsafe{ Mmap::map(file) }?;
-        Ok(MmapReader{
+        Ok(MMapReader {
             mmap,
             pos: 0
         })
     }
 }
 
-impl Read for MmapReader {
+impl Read for MMapReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let last_pos = self.pos;
         let len = (&self.mmap[last_pos..]).read(buf)?;
@@ -117,25 +172,25 @@ impl Read for MmapReader {
 }
 
 #[derive(Debug)]
-struct MmapWriter {
+struct MMapWriter {
     mmap_mut: MmapMut,
     pos: u64
 }
 
-impl MmapWriter {
+impl MMapWriter {
     #[allow(unsafe_code)]
-    fn new(file: &File) -> Result<MmapWriter> {
+    fn new(file: &File) -> Result<MMapWriter> {
         let mmap_mut = unsafe {
             MmapMut::map_mut(file)?
         };
-        Ok(MmapWriter{
+        Ok(MMapWriter {
             pos: 0,
             mmap_mut
         })
     }
 }
 
-impl Write for MmapWriter {
+impl Write for MMapWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let last_pos = self.pos as usize;
         let len = (&mut self.mmap_mut[last_pos..]).write(buf)?;

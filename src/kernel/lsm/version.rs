@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use crate::{HashStore, KvsError};
-use crate::kernel::{CommandData, CommandPackage, KVStore, Result, sorted_gen_list};
+use crate::kernel::{CommandData, CommandPackage, Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IOHandler, IOHandlerFactory, IOType};
-use crate::kernel::lsm::{MemMap, Position, SSTableMap};
+use crate::kernel::lsm::{Position, SSTableMap};
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::lsm_kv::{CommandCodec, Config};
+use crate::kernel::lsm::log::WalLoader;
+use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError::SSTableLostError;
@@ -190,8 +190,7 @@ impl VersionStatus {
 
     pub(crate) async fn load_with_path(
         config: &Config,
-        mem_map: &mut MemMap,
-        wal: &HashStore,
+        wal: &WalLoader,
     ) -> Result<Self> {
         let path = config.dir_path.clone();
         let sst_path = path.join(DEFAULT_SS_TABLE_PATH);
@@ -219,27 +218,29 @@ impl VersionStatus {
         );
         // 持久化数据恢复
         // 倒叙遍历，从最新的数据开始恢复
-        for gen in sorted_gen_list(&sst_path, FileExtension::SSTable)?.iter().rev() {
-            let io_handler = sst_factory.create(*gen, IOType::Buf)?;
-            // 尝试初始化Table
-            match SSTable::load_from_file(io_handler).await {
-                Ok(ss_table) => {
-                    // 对Level 0的SSTable进行MMap映射
-                    if ss_table.get_level() == LEVEL_0 {
-                        let _ignore = ss_table_map.caching(*gen, &sst_factory).await?;
-                    }
-                    // 初始化成功时直接传入SSTable的索引中
-                    let _ignore1 = ss_table_map.insert(ss_table).await;
-                }
+        for gen in sorted_gen_list(&sst_path, FileExtension::SSTable)?
+            .iter()
+            .copied()
+            .rev()
+        {
+            let io_handler = sst_factory.create(gen, IOType::Buf)?;
+
+            if let Some(ss_table) = match SSTable::load_from_file(io_handler).await {
+                Ok(ss_table) => Some(ss_table),
                 Err(err) => {
-                    error!("[LSMStore][Load SSTable: {}][Error]: {:?}", gen, err);
-                    // TODO: 是否删除可能还是得根据用户选择
-                    // io_handler_factory.clean(*gen)?;
-                    // 从wal将有问题的ss_table恢复到mem_table中
-                    Self::reload_for_wal(mem_map, wal, *gen).await?;
-                    // 删除有问题的ss_table
-                    sst_factory.clean(*gen)?;
+                    warn!(
+                        "[LSMStore][Load SSTable: {}][try to reload with wal][Error]: {:?}",
+                        gen, err
+                    );
+                    Self::reload_with_wal(config, wal, &sst_factory, gen).await?
                 }
+            } {
+                Self::ss_table_insert(
+                    &mut ss_table_map,
+                    &sst_factory,
+                    ss_table,
+                    true
+                ).await?
             }
         }
 
@@ -284,25 +285,35 @@ impl VersionStatus {
     }
 
     /// 从Wal恢复SSTable数据
-    /// 初始化失败时遍历wal的key并检测key是否为gen
-    async fn reload_for_wal(mem_table: &mut MemMap, wal: &HashStore, gen: i64) -> Result<()>{
-        // 将SSTable持久化失败前预存入的指令键集合从wal中获取
-        // 随后将每一条指令键对应的指令恢复到mem_table中
-        warn!("[SSTable: {}][reload_from_wal]", gen);
-        let key_gen = CommandCodec::encode_gen(gen)?;
-        if let Some(key_cmd_u8) = wal.get(&key_gen).await? {
-            for key in CommandCodec::decode_keys(&key_cmd_u8)? {
-                if let Some(cmd_data_u8) = wal.get(&key).await? {
-                    let cmd_data = CommandPackage::decode(&cmd_data_u8)?;
-
-                    let _ignore = mem_table.insert(cmd_data.get_key_clone(), cmd_data);
-                } else {
-                    return Err(KvsError::WalLoadError);
-                }
-            };
+    ///
+    /// 仅能恢复Level0的SSTable
+    async fn reload_with_wal(config: &Config, wal: &WalLoader, sst_factory: &Arc<IOHandlerFactory>, gen: i64) -> Result<Option<SSTable>> {
+        Ok(if let Some(vec_mem_data) = wal.load(gen).await? {
+            Some(SSTable::create_for_immutable_table(
+                config,
+                gen,
+                &sst_factory,
+                vec_mem_data,
+                LEVEL_0
+            ).await?)
         } else {
-            return Err(KvsError::WalLoadError);
+            None
+        })
+
+    }
+
+    async fn ss_table_insert(
+        ss_table_map: &mut SSTableMap,
+        sst_factory: &Arc<IOHandlerFactory>,
+        ss_table: SSTable,
+        enable_cache: bool
+    ) -> Result<()> {
+        // 对Level 0的SSTable进行MMap映射
+        if ss_table.get_level() == LEVEL_0 && enable_cache {
+            let _ignore = ss_table_map.caching(ss_table.get_gen(), &sst_factory).await?;
         }
+        // 初始化成功时直接传入SSTable的索引中
+        let _ignore1 = ss_table_map.insert(ss_table).await;
         Ok(())
     }
 
@@ -317,11 +328,12 @@ impl VersionStatus {
     pub(crate) async fn insert_vec_ss_table(&self, vec_ss_table: Vec<SSTable>, enable_cache: bool) -> Result<()> {
         let mut ss_table_map = self.ss_table_map.write().await;
         for ss_table in vec_ss_table {
-            // 创造缓存成本较大，因此只对Level 0的数据进行MMap映射
-            if enable_cache && ss_table.get_level() == LEVEL_0 {
-                let _ignore = ss_table_map.caching(ss_table.get_gen(), &self.sst_factory).await?;
-            }
-            let _ignore = ss_table_map.insert(ss_table).await;
+            Self::ss_table_insert(
+                &mut ss_table_map,
+                &self.sst_factory,
+                ss_table,
+                enable_cache
+            ).await?;
         }
 
         Ok(())
@@ -775,26 +787,20 @@ fn test_version_clean() {
     use tempfile::TempDir;
     use tokio::time;
     use std::time::Duration;
-    use crate::kernel::lsm::lsm_kv::{DEFAULT_WAL_PATH, DEFAULT_WAL_COMPACTION_THRESHOLD};
     use crate::kernel::lsm::ss_table::SSTable;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
 
-        let config = Config::new(temp_dir.into_path());
-        let wal = Arc::new(
-            HashStore::open_with_compaction_threshold(
-                &config.dir_path.join(DEFAULT_WAL_PATH),
-                DEFAULT_WAL_COMPACTION_THRESHOLD
-            ).await.unwrap()
-        );
-        let mut map = MemMap::new();
+        let config = Arc::new(Config::new(temp_dir.into_path()));
+
+        let (wal, _) = WalLoader::reload_with_path(&config).await.unwrap();
 
         // 注意：将ss_table的创建防止VersionStatus的创建前
         // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
         let ver_status =
-            VersionStatus::load_with_path(&config, &mut map, &wal).await.unwrap();
+            VersionStatus::load_with_path(&config, &wal).await.unwrap();
 
 
         let sst_factory = IOHandlerFactory::new(
@@ -871,26 +877,20 @@ fn test_version_clean() {
 #[test]
 fn test_version_apply_and_log() {
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::{DEFAULT_WAL_PATH, DEFAULT_WAL_COMPACTION_THRESHOLD};
     use crate::kernel::lsm::ss_table::SSTable;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
 
-        let config = Config::new(temp_dir.into_path());
-        let wal = Arc::new(
-            HashStore::open_with_compaction_threshold(
-                &config.dir_path.join(DEFAULT_WAL_PATH),
-                DEFAULT_WAL_COMPACTION_THRESHOLD
-            ).await.unwrap()
-        );
-        let mut map = MemMap::new();
+        let config = Arc::new(Config::new(temp_dir.into_path()));
+
+        let (wal, _) = WalLoader::reload_with_path(&config).await.unwrap();
 
         // 注意：将ss_table的创建防止VersionStatus的创建前
         // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
         let ver_status_1 =
-            VersionStatus::load_with_path(&config, &mut map, &wal).await.unwrap();
+            VersionStatus::load_with_path(&config, &wal).await.unwrap();
 
 
         let sst_factory = IOHandlerFactory::new(
@@ -931,7 +931,7 @@ fn test_version_apply_and_log() {
         drop(ver_status_1);
 
         let ver_status_2 =
-            VersionStatus::load_with_path(&config, &mut map, &wal).await.unwrap();
+            VersionStatus::load_with_path(&config, &wal).await.unwrap();
         let version_2 = ver_status_2.current().await;
 
         assert_eq!(version_1.last_sequence_id, 4);

@@ -3,10 +3,10 @@ use std::time::Instant;
 use futures::future;
 use itertools::Itertools;
 use tracing::{error, info};
-use crate::{HashStore, KvsError};
+use crate::KvsError;
 use crate::kernel::io::IOHandlerFactory;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::{CommandCodec, Config, wal_put};
+use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
@@ -27,7 +27,6 @@ pub(crate) struct Compactor {
     ver_status: Arc<VersionStatus>,
     config: Arc<Config>,
     sst_factory: Arc<IOHandlerFactory>,
-    wal: Arc<HashStore>,
 }
 
 impl Compactor {
@@ -35,32 +34,18 @@ impl Compactor {
     pub(crate) fn new(
         ver_status: Arc<VersionStatus>,
         config: Arc<Config>,
-        sst_factory: Arc<IOHandlerFactory>,
-        wal: Arc<HashStore>
+        sst_factory: Arc<IOHandlerFactory>
     ) -> Self {
-        Self { ver_status, config, sst_factory, wal }
+        Self { ver_status, config, sst_factory }
     }
 
     /// 持久化immutable_table为SSTable
     pub(crate) async fn minor_compaction(
         &self,
-        vec_keys: Vec<Vec<u8>>,
+        gen: i64,
         vec_values: Vec<CommandData>,
-        is_drop: bool
+        enable_caching: bool
     ) -> Result<()> {
-        let gen = self.config.create_gen();
-
-        // 将这些索引的key序列化后预先存入wal中作防灾准备
-        // 当持久化异常时将对应gen的key反序列化出来并从wal找到对应值
-        // 此处通过config.wal_enable重复判断以提前避免序列化开销
-        if self.config.wal_enable {
-            wal_put(
-                &self.wal,
-                CommandCodec::encode_gen(gen)?,
-                CommandCodec::encode_keys(&vec_keys)?,
-                !self.config.wal_async_put_enable
-            ).await;
-        }
         // 从内存表中将数据持久化为ss_table
         let ss_table = SSTable::create_for_immutable_table(
             &self.config,
@@ -69,8 +54,9 @@ impl Compactor {
             vec_values,
             LEVEL_0
         ).await?;
+
         self.ver_status
-            .insert_vec_ss_table(vec![ss_table], !is_drop)
+            .insert_vec_ss_table(vec![ss_table], enable_caching)
             .await?;
 
         // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
@@ -266,7 +252,6 @@ impl Clone for Compactor {
             ver_status: Arc::clone(&self.ver_status),
             config: Arc::clone(&self.config),
             sst_factory: Arc::clone(&self.sst_factory),
-            wal: Arc::clone(&self.wal)
         }
     }
 }

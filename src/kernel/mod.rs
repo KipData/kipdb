@@ -103,14 +103,6 @@ impl CommandPos {
 
 impl CommandPackage {
 
-    pub(crate) fn encode(cmd: &CommandData) -> Result<Vec<u8>> {
-        Ok(rmp_serde::to_vec(cmd)?)
-    }
-
-    pub(crate) fn decode(vec: &[u8]) -> Result<CommandData> {
-        Ok(rmp_serde::from_slice(vec)?)
-    }
-
     /// 实例化一个Command
     pub(crate) fn new(cmd: CommandData, pos: u64, len: usize) -> Self {
         CommandPackage{ cmd, pos, len }

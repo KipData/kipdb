@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::fs;
 use async_trait::async_trait;
 use crate::kernel::io::buf_handler::BufHandler;
-use crate::kernel::io::mmap_handler::MMapHandler;
+use crate::kernel::io::mmap_handler::{MMapHandler, MMapIOReader};
 use crate::kernel::Result;
 
 
@@ -43,6 +43,7 @@ pub struct IOHandlerFactory {
 pub enum IOType {
     Buf,
     MMap,
+    MMapOnlyReader
 }
 
 impl IOHandlerFactory {
@@ -53,9 +54,10 @@ impl IOHandlerFactory {
         let extension = Arc::clone(&self.extension);
 
         Ok(match io_type {
-                IOType::Buf => Box::new(BufHandler::new(dir_path, gen, extension)?),
-                IOType::MMap => Box::new(MMapHandler::new(dir_path, gen, extension)?),
-            })
+            IOType::Buf => Box::new(BufHandler::new(dir_path, gen, extension)?),
+            IOType::MMap => Box::new(MMapHandler::new(dir_path, gen, extension)?),
+            IOType::MMapOnlyReader => Box::new(MMapIOReader::new(dir_path, gen, extension)?)
+        })
     }
 
     #[inline]

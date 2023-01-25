@@ -12,10 +12,11 @@ use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 
-pub(crate) mod ss_table;
+mod ss_table;
 pub mod lsm_kv;
 mod compactor;
 mod version;
+mod log;
 
 pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
 
@@ -82,7 +83,7 @@ impl SSTableMap {
     /// 将指定gen通过MMapHandler进行读取以提高读取性能
     /// 创建MMapHandler成本较高，因此使用单独api控制缓存
     pub(crate) async fn caching(&mut self, gen: i64, factory: &IOHandlerFactory) -> Result<Option<SSTable>> {
-        let mmap_handler = factory.create(gen.clone(), IOType::MMap)?;
+        let mmap_handler = factory.create(gen.clone(), IOType::MMapOnlyReader)?;
         Ok(self.cache.put(
             gen,
             SSTable::load_from_file(mmap_handler).await?
@@ -144,15 +145,15 @@ impl MemTable {
     }
 
     /// MemTable交换并分解
-    async fn table_swap(&self) -> (Vec<Vec<u8>>, Vec<CommandData>){
+    async fn table_swap(&self) -> Vec<CommandData>{
         let mut mem_table_slice = self.mem_table_slice.write().await;
 
         mem_table_slice.swap(0, 1);
         mem_table_slice[0] = (MemMap::new(), 0);
-        mem_table_slice[1].0
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .unzip()
+        // 这里看起来需要clone所有的value看起来开销很大，不过实际上CommandData的Value是使用Arc指针封装
+        mem_table_slice[1].0.values()
+            .cloned()
+            .collect()
     }
 
     async fn get_cmd_data(&self, key: &[u8]) -> Option<CommandData> {

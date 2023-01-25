@@ -8,14 +8,13 @@ use fslock::LockFile;
 use snowflake::SnowflakeIdBucket;
 use tokio::sync::Mutex;
 use tracing::{error, info};
-use crate::{HashStore, KvsError};
-use crate::kernel::{CommandData, CommandPackage, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
-use crate::kernel::lsm::{MemMap, MemTable};
+use crate::KvsError;
+use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
+use crate::kernel::lsm::MemTable;
 use crate::kernel::lsm::compactor::Compactor;
+use crate::kernel::lsm::log::WalLoader;
 use crate::kernel::lsm::version::VersionStatus;
 use crate::kernel::Result;
-
-pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 4 * 1024 * 1024;
 
@@ -37,7 +36,7 @@ pub(crate) const DEFAULT_BLOCK_CACHE_SIZE: usize = 3200;
 
 pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 112;
 
-pub(crate) const DEFAULT_WAL_COMPACTION_THRESHOLD: u64 = crate::kernel::hash_kv::DEFAULT_COMPACTION_THRESHOLD;
+pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
 /// 基于LSM的KV Store存储内核
 /// Leveled Compaction压缩算法
@@ -50,16 +49,13 @@ pub struct LsmStore {
     ver_status: Arc<VersionStatus>,
     /// LSM全局参数配置
     config: Arc<Config>,
-    /// WAL存储器
+    /// WAL载入器
     ///
-    /// SSTable持久化前会将gen写入
-    /// 持久化成功后则会删除gen，以此作为是否成功的依据
-    ///
-    /// 使用HashStore作为wal的原因：
-    /// 1、操作简易，不需要重新写一个WAL
-    /// 2、作Key-Value分离的准备，当作vLog
-    /// 3、HashStore会丢弃超出大小的数据，保证最新数据不会丢失
-    wal: Arc<HashStore>,
+    /// 用于异常停机时MemTable的恢复
+    /// 同时当Level 0的SSTable异常时，可以尝试恢复
+    /// `Config.wal_threshold`用于控制WalLoader的的SSTable数据日志个数
+    /// 超出个数阈值时会清空最旧的一半日志
+    wal: Arc<WalLoader>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
     lock_file: LockFile,
@@ -103,15 +99,6 @@ impl KVStore for LsmStore {
         {
             return Ok(Some(value));
         }
-        // TODO: Wal对MVCC支持
-        // // 尝试从Wal获取数据
-        // if let Some(vec_cmd_u8) = self.wal.get(key).await? {
-        //     let wal_cmd = CommandPackage::decode(&vec_cmd_u8)?;
-        //     warn!("[Command][reload_from_wal]{:?}", wal_cmd);
-        //     let option_value = wal_cmd.get_value_clone();
-        //     self.append_cmd_data(wal_cmd, false).await?;
-        //     return Ok(option_value);
-        // }
 
         Ok(None)
     }
@@ -130,8 +117,7 @@ impl KVStore for LsmStore {
     #[inline]
     async fn size_of_disk(&self) -> Result<u64> {
         Ok(self.ver_status.current().await
-            .get_size_of_disk()
-            + self.wal.size_of_disk().await?)
+            .get_size_of_disk())
     }
 
     #[inline]
@@ -171,13 +157,11 @@ impl LsmStore {
         let threshold_size = self.config.minor_threshold_with_data_size;
 
         let key = cmd.get_key();
-        // TODO: Wal的MVCC支持
         // Wal与MemTable双写
         if self.config.wal_enable && wal_write {
             wal_put(
                 &self.wal,
-                key.clone(),
-                CommandPackage::encode(&cmd)?,
+                &cmd,
                 !self.config.wal_async_put_enable
             ).await;
         }
@@ -194,23 +178,16 @@ impl LsmStore {
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
         let config = Arc::new(config);
-        let path = config.dir_path.clone();
-        let wal_compaction_threshold = config.wal_compaction_threshold;
-
-        let mut mem_map = MemMap::new();
-
         // 若lockfile的文件夹路径不存在则创建
-        fs::create_dir_all(&path)?;
-        let lock_file = lock_or_time_out(&path.join(DEFAULT_LOCK_FILE)).await?;
+        fs::create_dir_all(&config.dir_path)?;
+        let lock_file = lock_or_time_out(
+            &config.dir_path.join(DEFAULT_LOCK_FILE)
+        ).await?;
+
+        let (wal, mem_map) = WalLoader::reload_with_path(&config).await?;
         // 初始化wal日志
-        let wal = Arc::new(
-            HashStore::open_with_compaction_threshold(
-                &path.join(DEFAULT_WAL_PATH),
-                wal_compaction_threshold
-            ).await?
-        );
         let ver_status = Arc::new(
-            VersionStatus::load_with_path(&config, &mut mem_map, &wal).await?
+            VersionStatus::load_with_path(&config, &wal).await?
         );
 
         let compactor = Arc::new(
@@ -219,7 +196,6 @@ impl LsmStore {
                     Arc::clone(&ver_status),
                     Arc::clone(&config),
                     ver_status.get_sst_factory(),
-                    Arc::clone(&wal)
                 )
             )
         );
@@ -228,7 +204,7 @@ impl LsmStore {
             mem_table: MemTable::new(mem_map),
             ver_status,
             config,
-            wal,
+            wal: Arc::new(wal),
             lock_file,
             compactor,
         })
@@ -238,15 +214,16 @@ impl LsmStore {
     #[inline]
     #[allow(clippy::unwrap_used)]
     pub async fn minor_compaction(&self) -> Result<()> {
-        let (keys, values) = self.mem_table.table_swap().await;
-        if !keys.is_empty() && !values.is_empty() {
+        let values = self.mem_table.table_swap().await;
+        if !values.is_empty() {
             let compactor = Arc::clone(&self.compactor);
+            let gen = self.wal.switch().await?;
 
             let _ignore = tokio::spawn(async move {
                 let start = Instant::now();
                 if let Err(err) = compactor
                     .lock().await
-                    .minor_compaction(keys, values, false).await
+                    .minor_compaction(gen, values, true).await
                 {
                     error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
                 }
@@ -259,12 +236,13 @@ impl LsmStore {
     /// 同步持久化immutable_table为SSTable
     #[inline]
     pub async fn minor_compaction_sync(&self, is_drop: bool) -> Result<()> {
-        let (keys, values) = self.mem_table.table_swap().await;
+        let values = self.mem_table.table_swap().await;
+        let gen = self.wal.switch().await?;
 
         self.compactor
             .lock()
             .await
-            .minor_compaction(keys, values, is_drop)
+            .minor_compaction(gen, values, !is_drop)
             .await
     }
 
@@ -293,7 +271,7 @@ impl LsmStore {
         &self.config
     }
     #[allow(dead_code)]
-    pub(crate) fn wal(&self) -> &Arc<HashStore> {
+    pub(crate) fn wal(&self) -> &Arc<WalLoader> {
         &self.wal
     }
 
@@ -306,32 +284,12 @@ impl LsmStore {
     }
 }
 
-pub(crate) struct CommandCodec;
-
-impl CommandCodec {
-    pub(crate) fn encode_gen(gen: i64) -> Result<Vec<u8>> {
-        Ok(bincode::serialize(&gen)?)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn decode_gen(key: &[u8]) -> Result<i64> {
-        Ok(bincode::deserialize(key)?)
-    }
-
-    pub(crate) fn encode_keys(value: &Vec<Vec<u8>>) -> Result<Vec<u8>> {
-        Ok(bincode::serialize(value)?)
-    }
-
-    pub(crate) fn decode_keys(vec_u8: &[u8]) -> Result<Vec<Vec<u8>>> {
-        Ok(bincode::deserialize(vec_u8)?)
-    }
-}
 #[derive(Debug)]
 pub struct Config {
     /// 数据目录地址
     pub(crate) dir_path: PathBuf,
-    /// WAL持久化阈值
-    pub(crate) wal_compaction_threshold: u64,
+    /// WAL数量阈值
+    pub(crate) wal_threshold: usize,
     /// 稀疏索引间间隔的Block(4K字节大小)数量
     pub(crate) sparse_index_interval_block_size: u64,
     /// SSTable文件大小
@@ -375,7 +333,7 @@ impl Config {
         Config {
             dir_path: path.into(),
             minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
-            wal_compaction_threshold: DEFAULT_WAL_COMPACTION_THRESHOLD,
+            wal_threshold: DEFAULT_WAL_THRESHOLD,
             sparse_index_interval_block_size: DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
@@ -404,8 +362,8 @@ impl Config {
     }
 
     #[inline]
-    pub fn wal_compaction_threshold(mut self, wal_compaction_threshold: u64) -> Self {
-        self.wal_compaction_threshold = wal_compaction_threshold;
+    pub fn wal_threshold(mut self, wal_threshold: usize) -> Self {
+        self.wal_threshold = wal_threshold;
         self
     }
 
@@ -482,21 +440,23 @@ impl Config {
     }
 }
 
-/// 以Task类似的异步写数据，避免影响数据写入性能
-/// 当然，LevelDB的话虽然wal写入会提供是否同步的选项，此处先简化优先使用异步
-pub(crate) async fn wal_put(wal: &Arc<HashStore>, key: Vec<u8>, value: Vec<u8>, is_sync: bool) {
+/// 日志记录，可选以Task类似的异步写数据或同步
+pub(crate) async fn wal_put(wal: &Arc<WalLoader>, cmd: &CommandData, is_sync: bool) {
     let wal = Arc::clone(wal);
-    let wal_closure = async move {
-        if let Err(err) = wal.set(&key, value).await {
-            error!("[LsmStore][wal_put][error happen]: {:?}", err);
-        }
-    };
     if is_sync {
-        wal_closure.await;
+        wal_put_(&wal, cmd).await;
     } else {
-        let _ignore = tokio::spawn(wal_closure);
+        let cmd_clone = cmd.clone();
+        let _ignore = tokio::spawn(async move {
+            wal_put_(&wal, &cmd_clone).await;
+        });
     }
 
+    async fn wal_put_(wal: &Arc<WalLoader>, cmd: &CommandData) {
+        if let Err(err) = wal.log(&cmd).await {
+            error!("[LsmStore][wal_put][error happen]: {:?}", err);
+        }
+    }
 }
 
 #[test]
