@@ -14,10 +14,6 @@ pub enum KvsError {
 
     /// Serialization or deserialization error
     #[fail(display = "{}", _0)]
-    SerdeMPEncode(#[cause] rmp_serde::encode::Error),
-    #[fail(display = "{}", _0)]
-    SerdeMPDecode(#[cause] rmp_serde::decode::Error),
-    #[fail(display = "{}", _0)]
     SerdeBinCode(#[cause] Box<bincode::ErrorKind>),
     /// Remove no-existent key error
     #[fail(display = "Key not found")]
@@ -116,20 +112,6 @@ impl From<Box<bincode::ErrorKind>> for KvsError {
     #[inline]
     fn from(err: Box<bincode::ErrorKind>) -> Self {
         KvsError::SerdeBinCode(err)
-    }
-}
-
-impl From<rmp_serde::encode::Error> for KvsError {
-    #[inline]
-    fn from(err: rmp_serde::encode::Error) -> Self {
-        KvsError::SerdeMPEncode(err)
-    }
-}
-
-impl From<rmp_serde::decode::Error> for KvsError {
-    #[inline]
-    fn from(err: rmp_serde::decode::Error) -> Self {
-        KvsError::SerdeMPDecode(err)
     }
 }
 

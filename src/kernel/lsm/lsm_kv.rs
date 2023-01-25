@@ -20,7 +20,7 @@ pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 4 * 1024 * 10
 
 pub(crate) const DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE: u64 = 4;
 
-pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 32 * 1024 * 1024;
+pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 24 * 1024 * 1024;
 
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
@@ -473,7 +473,7 @@ fn test_lsm_major_compactor() -> Result<()> {
 
         let start = Instant::now();
         for i in 0..300000 {
-            let vec_u8 = rmp_serde::to_vec(&i).unwrap();
+            let vec_u8 = bincode::serialize(&i).unwrap();
             kv_store.set(&vec_u8, vec_u8.clone()).await?;
             vec_key.push(vec_u8);
         }
@@ -481,7 +481,7 @@ fn test_lsm_major_compactor() -> Result<()> {
         println!("[set_for][Time: {:?}]", start.elapsed());
 
         let start = Instant::now();
-        let _ignore = kv_store.get(&rmp_serde::to_vec(&0).unwrap()).await?.unwrap();
+        let _ignore = kv_store.get(&bincode::serialize(&0).unwrap()).await?.unwrap();
         println!("[compaction_for][Time: {:?}]", start.elapsed());
 
         kv_store.flush().await?;

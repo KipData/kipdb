@@ -160,7 +160,7 @@ impl CommandPackage {
     }
 
     pub(crate) fn trans_to_vec_u8(cmd: &CommandData) -> Result<Vec<u8>> {
-        let mut vec = rmp_serde::to_vec(cmd)?;
+        let mut vec = bincode::serialize(cmd)?;
         let i = vec.len();
         let mut vec_head = vec![(i >> 24) as u8,
                                 (i >> 16) as u8,
@@ -173,7 +173,7 @@ impl CommandPackage {
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub(crate) async fn from_pos_unpack(io_handler: &Box<dyn IOHandler>, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = io_handler.read_with_pos(start, len).await?;
-        Ok(rmp_serde::from_slice(cmd_u8.as_slice()).ok())
+        Ok(bincode::deserialize(cmd_u8.as_slice()).ok())
     }
 
     /// 获取bytes之中所有的CommandPackage
@@ -182,7 +182,7 @@ impl CommandPackage {
         Ok(Self::get_vec_bytes(bytes).into_iter()
             .filter_map(|cmd_u8| {
                 let len = cmd_u8.len();
-                let option = rmp_serde::from_slice::<CommandData>(cmd_u8).ok()
+                let option = bincode::deserialize::<CommandData>(cmd_u8).ok()
                     .map(|cmd_data| CommandPackage::new(cmd_data, pos, len));
                 // 对pos进行长度自增并对占位符进行跳过
                 pos += len as u64 + 4;
@@ -194,7 +194,7 @@ impl CommandPackage {
     /// 获取bytes之中所有的CommandData
     pub(crate) fn from_bytes_to_unpack_vec(bytes: &[u8]) -> Result<Vec<CommandData>> {
         Ok(Self::get_vec_bytes(bytes).into_iter()
-            .filter_map(|cmd_u8| rmp_serde::from_slice(cmd_u8).ok())
+            .filter_map(|cmd_u8| bincode::deserialize(cmd_u8).ok())
             .collect_vec())
     }
 
@@ -297,21 +297,14 @@ impl CommandData {
     }
 
     #[inline]
-    pub fn get_data_len_for_rmp(&self) -> usize {
+    pub fn bytes_len(&self) -> usize {
         self.get_key().len()
             + self.get_value().map_or(0, Vec::len)
-            + self.get_cmd_len_for_rmp()
-    }
-
-    /// 使用下方的测试方法对每个指令类型做测试得出的常量值
-    /// 测试并非为准确的常量值，但大多数情况下该值，且极端情况下也不会超过该值
-    #[inline]
-    pub fn get_cmd_len_for_rmp(&self) -> usize {
-        match self {
-            CommandData::Set { .. } => { 10 }
-            CommandData::Remove { .. } => { 12 }
-            CommandData::Get { .. } => { 9 }
-        }
+            + match self {
+                CommandData::Set { .. } => { 20 }
+                CommandData::Remove { .. } => { 12 }
+                CommandData::Get { .. } => { 12 }
+            }
     }
 
     /// 命令消费
@@ -450,9 +443,9 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
         backoff *= 2;
     };
 }
+
 // #[test]
 // fn test_cmd_len() -> Result<()>{
-//     use tracing::info;
 //
 //     let data_big_p = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
 //                             abcdefghijklmnopqrstuvwxyz
@@ -468,20 +461,21 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
 //
 //     let data_smail = CommandData::set(vec![b'1'], vec![b'1']);
 //
-//     let data_smail_len = data_smail.get_data_len_for_rmp();
-//     let data_middle_len = data_middle.get_data_len_for_rmp();
-//     let data_big_len = data_big.get_data_len_for_rmp();
-//     let data_big_p_len = data_big_p.get_data_len_for_rmp();
-//     let data0_len = rmp_serde::to_vec(&CommandData::get(vec![]))?.len();
-//     let data1_len = rmp_serde::to_vec(&data_smail)?.len() - data_smail_len;
-//     let data2_len = rmp_serde::to_vec(&data_middle)?.len() - data_middle_len;
-//     let data3_len = rmp_serde::to_vec(&data_big)?.len() - data_big_len;
-//     let data4_len = rmp_serde::to_vec(&data_big_p)?.len() - data_big_p_len;
+//     let data_smail_len = data_smail.get_data_len();
+//     let data_middle_len = data_middle.get_data_len();
+//     let data_big_len = data_big.get_data_len();
+//     let data_big_p_len = data_big_p.get_data_len();
+//     let data0_len = bincode::serialize(&CommandData::set(vec![], vec![]))?.len();
+//     let data1_len = bincode::serialize(&data_smail)?.len() - data_smail_len;
+//     let data2_len = bincode::serialize(&data_middle)?.len() - data_middle_len;
+//     let data3_len = bincode::serialize(&data_big)?.len() - data_big_len;
+//     let data4_len = bincode::serialize(&data_big_p)?.len() - data_big_p_len;
 //     let cmd_len = vec![data0_len, data1_len, data2_len, data3_len, data4_len].into_iter()
 //         .counts().into_iter()
 //         .max_by_key(|(_, count)| count.clone())
 //         .map(|(len, _)| len).unwrap();
-//     info!("{}", cmd_len);
+//     println!("{}", cmd_len);
+//
 //
 //     Ok(())
 // }

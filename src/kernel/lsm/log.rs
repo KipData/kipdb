@@ -28,7 +28,6 @@ impl WalLoader {
     /// 通过日志进行WalLoader和MemMap的数据重载
     pub(crate) async fn reload_with_path(config: &Arc<Config>) -> Result<(Self, MemMap)> {
         let config = Arc::clone(config);
-
         let wal_path = config.dir_path.join(DEFAULT_WAL_PATH);
 
         let factory = IOHandlerFactory::new(
@@ -39,7 +38,6 @@ impl WalLoader {
         let vec_gen = VecDeque::from_iter(
             sorted_gen_list(&wal_path, FileExtension::Log)?
         );
-
         let mem_map = Self::create_mem_map_and_check(&factory, &vec_gen).await?;
 
         let current_gen = config.create_gen();
@@ -50,7 +48,6 @@ impl WalLoader {
                 vec_gen,
             }
         );
-
         let success_fs = factory.create(SUCCESS_FS_GEN, IOType::Buf)?;
 
         Ok((WalLoader {

@@ -2,7 +2,6 @@ use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::sync::Arc;
 use itertools::Itertools;
-use rmp_serde::{from_slice, to_vec};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::RwLock;
@@ -351,7 +350,7 @@ impl VersionStatus {
 
         let vec_cmd_data = vec_version_edit.iter()
             .filter_map(|edit| {
-                to_vec(&edit).ok()
+                bincode::serialize(&edit).ok()
                     .map(CommandData::get)
             })
             .collect();
@@ -453,7 +452,7 @@ impl Version {
             let mut vec_edit = vec![];
             for cmd_data in vec_log.into_iter() {
                 if let CommandData::Get { key } = cmd_data {
-                   vec_edit.push(from_slice::<VersionEdit>(key.as_slice())?);
+                   vec_edit.push(bincode::deserialize::<VersionEdit>(key.as_slice())?);
                 }
             }
 

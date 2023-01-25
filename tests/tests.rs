@@ -249,5 +249,5 @@ async fn io_type_test(factory: &IOHandlerFactory, io_type: IOType) -> Result<()>
 }
 
 fn encode_key(key: &str) -> Result<Vec<u8>>{
-    Ok(rmp_serde::to_vec(key)?)
+    Ok(bincode::serialize(key)?)
 }

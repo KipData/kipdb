@@ -35,7 +35,6 @@ prost = "0.9"
 prost-derive = "0.9"
 serde = { version = "1.0.89", features = ["derive", "rc"] }
 bincode = "1.3.3"
-rmp-serde = "1.1.0"
 # tokio异步
 tokio = { version="1.21.2", features = ["full", "signal"] }
 futures = "0.3"

@@ -169,7 +169,7 @@ impl SSTable {
             match meta_block_cmd {
                 CommandData::Get { key: meta_block_bytes } => {
                     let MetaBlock { vec_index, scope, filter , len }
-                        = rmp_serde::from_slice::<MetaBlock>(&meta_block_bytes)?;
+                        = bincode::deserialize::<MetaBlock>(&meta_block_bytes)?;
                     let info_crc_code = meta_info.crc_code;
                     if loaded_crc_code.eq(&info_crc_code) {
                         Ok(SSTable {
@@ -324,7 +324,7 @@ impl SSTable {
         // 开始对稀疏索引进行伪装并断点处理
         // 获取指令数据段的数据长度
         // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
-        let cmd_sparse_index = CommandData::Get { key: rmp_serde::to_vec(&meta_block)?};
+        let cmd_sparse_index = CommandData::Get { key: bincode::serialize(&meta_block)?};
         // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
         let (sparse_index_pos, sparse_index_len) = CommandPackage::write(&io_handler, &cmd_sparse_index).await?;
 

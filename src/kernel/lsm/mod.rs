@@ -113,7 +113,7 @@ impl MemTable {
     pub(crate) fn new(mem_map: MemMap) -> Self {
         let mem_occupied = mem_map.iter()
             .map(|(key, value)| {
-                (key.len() + value.get_data_len_for_rmp()) as u64
+                (key.len() + value.bytes_len()) as u64
             })
             .sum();
         MemTable { mem_table_slice: RwLock::new([(mem_map, mem_occupied), (MemMap::new(), 0)]) }
@@ -122,7 +122,7 @@ impl MemTable {
     pub(crate) async fn insert_data(&self, key: Vec<u8>, value: CommandData) {
         let mut mem_table_slice = self.mem_table_slice.write().await;
 
-        mem_table_slice[0].1 += (key.len() + value.get_data_len_for_rmp()) as u64;
+        mem_table_slice[0].1 += (key.len() + value.bytes_len()) as u64;
         let _ignore = mem_table_slice[0].0.insert(key, value);
     }
 
@@ -197,7 +197,7 @@ impl Position {
 async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Config, with_gen: bool) -> MergeShardingVec {
     // 向上取整计算STable数量
     let part_size = (vec_data.iter()
-        .map(|cmd| cmd.get_data_len_for_rmp())
+        .map(CommandData::bytes_len)
         .sum::<usize>() + file_size - 1) / file_size;
 
     vec_data.reverse();
@@ -211,7 +211,7 @@ async fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config:
         let mut data_len = 0;
         while !vec_data.is_empty() {
             if let Some(cmd_data) = vec_data.pop() {
-                data_len += cmd_data.get_data_len_for_rmp();
+                data_len += cmd_data.bytes_len();
                 if data_len >= file_size && i < part_size - 1 {
                     slice[i + 1].1.push(cmd_data);
                     break
