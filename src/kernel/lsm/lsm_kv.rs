@@ -10,9 +10,10 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 use crate::KvsError;
 use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
-use crate::kernel::lsm::MemTable;
+use crate::kernel::io::FileExtension;
+use crate::kernel::lsm::{MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
-use crate::kernel::lsm::log::WalLoader;
+use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::version::VersionStatus;
 use crate::kernel::Result;
 
@@ -38,6 +39,8 @@ pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 112;
 
 pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
+pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
+
 /// 基于LSM的KV Store存储内核
 /// Leveled Compaction压缩算法
 pub struct LsmStore {
@@ -55,7 +58,7 @@ pub struct LsmStore {
     /// 同时当Level 0的SSTable异常时，可以尝试恢复
     /// `Config.wal_threshold`用于控制WalLoader的的SSTable数据日志个数
     /// 超出个数阈值时会清空最旧的一半日志
-    wal: Arc<WalLoader>,
+    wal: Arc<LogLoader>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
     lock_file: LockFile,
@@ -158,11 +161,11 @@ impl LsmStore {
 
         let key = cmd.get_key();
         // Wal与MemTable双写
-        if self.config.wal_enable && wal_write {
+        if self.is_enable_wal() && wal_write {
             wal_put(
                 &self.wal,
                 &cmd,
-                !self.config.wal_async_put_enable
+                !self.is_async_wal()
             ).await;
         }
         mem_table.insert_data(key.clone(), cmd).await;
@@ -172,6 +175,14 @@ impl LsmStore {
         }
 
         Ok(())
+    }
+
+    fn is_enable_wal(&self) -> bool {
+        self.config.wal_enable
+    }
+
+    fn is_async_wal(&self) -> bool {
+        self.config.wal_async_put_enable
     }
 
     /// 使用Config进行LsmStore初始化
@@ -184,7 +195,21 @@ impl LsmStore {
             &config.dir_path.join(DEFAULT_LOCK_FILE)
         ).await?;
 
-        let (wal, mem_map) = WalLoader::reload_with_path(&config).await?;
+        let (wal, option_data) = LogLoader::reload_with_check(
+            &config,
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        ).await?;
+        let mem_map = match option_data {
+            None => MemMap::new(),
+            Some(vec_data) => {
+                MemMap::from_iter(
+                    vec_data.into_iter()
+                        .map(|cmd| (cmd.get_key_clone(), cmd))
+                )
+            }
+        };
+
         // 初始化wal日志
         let ver_status = Arc::new(
             VersionStatus::load_with_path(&config, &wal).await?
@@ -217,7 +242,7 @@ impl LsmStore {
         let values = self.mem_table.table_swap().await;
         if !values.is_empty() {
             let compactor = Arc::clone(&self.compactor);
-            let gen = self.wal.switch().await?;
+            let gen = self.create_gen().await?;
 
             let _ignore = tokio::spawn(async move {
                 let start = Instant::now();
@@ -233,11 +258,19 @@ impl LsmStore {
         Ok(())
     }
 
+    async fn create_gen(&self) -> Result<i64> {
+        Ok(if self.is_enable_wal() {
+            self.wal.switch().await?
+        } else {
+            self.config.create_gen()
+        })
+    }
+
     /// 同步持久化immutable_table为SSTable
     #[inline]
     pub async fn minor_compaction_sync(&self, is_drop: bool) -> Result<()> {
         let values = self.mem_table.table_swap().await;
-        let gen = self.wal.switch().await?;
+        let gen = self.create_gen().await?;
 
         self.compactor
             .lock()
@@ -271,7 +304,7 @@ impl LsmStore {
         &self.config
     }
     #[allow(dead_code)]
-    pub(crate) fn wal(&self) -> &Arc<WalLoader> {
+    pub(crate) fn wal(&self) -> &Arc<LogLoader> {
         &self.wal
     }
 
@@ -441,7 +474,7 @@ impl Config {
 }
 
 /// 日志记录，可选以Task类似的异步写数据或同步
-pub(crate) async fn wal_put(wal: &Arc<WalLoader>, cmd: &CommandData, is_sync: bool) {
+pub(crate) async fn wal_put(wal: &Arc<LogLoader>, cmd: &CommandData, is_sync: bool) {
     let wal = Arc::clone(wal);
     if is_sync {
         wal_put_(&wal, cmd).await;
@@ -452,7 +485,7 @@ pub(crate) async fn wal_put(wal: &Arc<WalLoader>, cmd: &CommandData, is_sync: bo
         });
     }
 
-    async fn wal_put_(wal: &Arc<WalLoader>, cmd: &CommandData) {
+    async fn wal_put_(wal: &Arc<LogLoader>, cmd: &CommandData) {
         if let Err(err) = wal.log(&cmd).await {
             error!("[LsmStore][wal_put][error happen]: {:?}", err);
         }
@@ -479,10 +512,6 @@ fn test_lsm_major_compactor() -> Result<()> {
         }
         kv_store.set(&vec_key[0], vec![b'k']).await?;
         println!("[set_for][Time: {:?}]", start.elapsed());
-
-        let start = Instant::now();
-        let _ignore = kv_store.get(&bincode::serialize(&0).unwrap()).await?.unwrap();
-        println!("[compaction_for][Time: {:?}]", start.elapsed());
 
         kv_store.flush().await?;
         let start = Instant::now();

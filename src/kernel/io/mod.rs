@@ -4,6 +4,7 @@ pub(crate) mod mmap_handler;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
+use std::fs::{File, OpenOptions};
 use async_trait::async_trait;
 use crate::kernel::io::buf_handler::BufHandler;
 use crate::kernel::io::mmap_handler::{MMapHandler, MMapIOReader};
@@ -58,6 +59,17 @@ impl IOHandlerFactory {
             IOType::MMap => Box::new(MMapHandler::new(dir_path, gen, extension)?),
             IOType::MMapOnlyReader => Box::new(MMapIOReader::new(dir_path, gen, extension)?)
         })
+    }
+
+    pub fn create_fs(&self, gen: i64) -> Result<File> {
+        Ok(OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(
+                &self.extension
+                    .path_with_gen(&self.dir_path, gen)
+            )?)
     }
 
     #[inline]

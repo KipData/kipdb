@@ -1,22 +1,18 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
-use skiplist::SkipMap;
 use tokio::sync::RwLock;
 use tracing::error;
 use crate::kernel::{CommandData, CommandPackage, Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IOHandler, IOHandlerFactory, IOType};
 use crate::kernel::lsm::lsm_kv::Config;
-use crate::kernel::lsm::MemMap;
-
-const DEFAULT_WAL_PATH: &str = "wal";
 
 const SUCCESS_FS_GEN: i64 = 000_000_000;
 
-pub(crate) struct WalLoader {
+pub(crate) struct LogLoader {
     factory: IOHandlerFactory,
     config: Arc<Config>,
     inner: RwLock<Inner>,
-    _success_fs: Box<dyn IOHandler>,
+    check_success: bool,
 }
 
 struct Inner {
@@ -24,54 +20,83 @@ struct Inner {
     vec_gen: VecDeque<i64>
 }
 
-impl WalLoader {
+impl LogLoader {
     /// 通过日志进行WalLoader和MemMap的数据重载
-    pub(crate) async fn reload_with_path(config: &Arc<Config>) -> Result<(Self, MemMap)> {
+    pub(crate) async fn reload_with_check(
+        config: &Arc<Config>,
+        path_name: &str,
+        extension: FileExtension
+    ) -> Result<(Self, Option<Vec<CommandData>>)> {
+        let (mut loader, last_gen) = Self::reload_(
+            config,
+            path_name,
+            extension
+        ).await?;
+        loader.check_success = true;
+
+        let option_data =
+            Self::check_and_reload(&loader.factory, last_gen).await?;
+
+        Ok((loader, option_data))
+    }
+
+    pub(crate) async fn reload(
+        config: &Arc<Config>,
+        path_name: &str,
+        extension: FileExtension
+    ) -> Result<Self> {
+        Self::reload_(config, path_name, extension).await
+            .map(|(loader, _)| loader)
+    }
+
+    async fn reload_(
+        config: &Arc<Config>,
+        path_name: &str,
+        extension: FileExtension
+    ) -> Result<(Self, i64)> {
         let config = Arc::clone(config);
-        let wal_path = config.dir_path.join(DEFAULT_WAL_PATH);
+        let wal_path = config.dir_path
+            .join(path_name);
 
         let factory = IOHandlerFactory::new(
             wal_path.clone(),
-            FileExtension::Log
+            extension.clone()
         )?;
 
         let vec_gen = VecDeque::from_iter(
-            sorted_gen_list(&wal_path, FileExtension::Log)?
+            sorted_gen_list(&wal_path, extension)?
         );
-        let mem_map = Self::create_mem_map_and_check(&factory, &vec_gen).await?;
-
-        let current_gen = config.create_gen();
+        let last_gen = vec_gen.back()
+            .cloned()
+            .unwrap_or(0);
 
         let inner = RwLock::new(
             Inner {
-                inner: (current_gen, factory.create(current_gen, IOType::Buf)?),
+                inner: (last_gen, factory.create(last_gen, IOType::Buf)?),
                 vec_gen,
             }
         );
-        let success_fs = factory.create(SUCCESS_FS_GEN, IOType::Buf)?;
 
-        Ok((WalLoader {
+        Ok((LogLoader {
             factory,
             config,
             inner,
-            _success_fs: success_fs,
-        }, mem_map))
+            check_success: false,
+        }, last_gen))
     }
 
-    /// 创建mem_map，同时检测并恢复数据，防止数据异常而丢失
-    async fn create_mem_map_and_check(factory: &IOHandlerFactory, vec_gen: &VecDeque<i64>) -> Result<MemMap> {
+    /// 同时检测并恢复数据，防止数据异常而丢失
+    async fn check_and_reload(
+        factory: &IOHandlerFactory,
+        last_gen: i64,
+    ) -> Result<Option<Vec<CommandData>>> {
         // 当存在SUCCESS_FS时，代表Drop不正常，因此恢复最新的gen日志进行恢复
         if factory.has_gen(SUCCESS_FS_GEN)? {
-            if let Some(gen) = vec_gen.back() {
-                let reader = factory.create(*gen, IOType::MMapOnlyReader)?;
-                return Ok(SkipMap::from_iter(
-                    CommandPackage::from_read_to_unpack_vec(&reader).await?
-                        .into_iter()
-                        .map(|cmd| (cmd.get_key_clone(), cmd))
-                ));
-            }
-        }
-        Ok(SkipMap::new())
+            let reader = factory.create(last_gen, IOType::MMapOnlyReader)?;
+            return Ok(Some(CommandPackage::from_read_to_unpack_vec(&reader).await?));
+        } else { let _ignore = factory.create_fs(SUCCESS_FS_GEN)?; }
+
+        Ok(None)
     }
 
     pub(crate) async fn log(&self, cmd: &CommandData) -> Result<()> {
@@ -80,16 +105,34 @@ impl WalLoader {
         Ok(())
     }
 
+    pub(crate) async fn log_batch(&self, vec_cmd: &Vec<CommandData>) -> Result<()> {
+        let inner = self.inner.read().await;
+        let _ignore = CommandPackage::write_batch(&inner.inner.1, vec_cmd).await?;
+        Ok(())
+    }
+
     pub(crate) async fn flush(&self) -> Result<()> {
         self.inner.read().await
             .inner.1.flush().await
+    }
+
+    pub(crate) async fn last_gen(&self) -> Option<i64> {
+        self.inner.read().await
+            .vec_gen.back()
+            .cloned()
+    }
+
+    pub(crate) async fn load_last(&self) -> Result<Option<Vec<CommandData>>> {
+        if let Some(gen) = self.last_gen().await {
+            self.load(gen).await
+        } else { Ok(None) }
     }
 
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
     pub(crate) async fn switch(&self) -> Result<i64> {
         let next_gen = self.config.create_gen();
 
-        let buf_handler = self.factory.create(next_gen, IOType::Buf)?;
+        let next_handler = self.factory.create(next_gen, IOType::Buf)?;
         let mut inner = self.inner.write().await;
 
         let current_gen = inner.inner.0;
@@ -107,7 +150,7 @@ impl WalLoader {
         }
 
         inner.vec_gen.push_back(next_gen);
-        inner.inner = (next_gen, buf_handler);
+        inner.inner = (next_gen, next_handler);
 
         Ok(current_gen)
     }
@@ -121,18 +164,22 @@ impl WalLoader {
     }
 }
 
-impl Drop for WalLoader {
+impl Drop for LogLoader {
     // 使用drop释放SUCCESS_FS，以代表此次运行正常
     fn drop(&mut self) {
-        if let Err(err) = self.factory.clean(SUCCESS_FS_GEN) {
-            error!("[WALLoader][drop][error]: {err:?}")
-        }
+        let _ignore = self.check_success
+            .then(|| {
+                if let Err(err) = self.factory.clean(SUCCESS_FS_GEN) {
+                    error!("[WALLoader][drop][error]: {err:?}")
+                }
+            });
     }
 }
 
 #[test]
-fn test_wal_load() {
+fn test_log_load() {
     use tempfile::TempDir;
+    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
@@ -140,7 +187,11 @@ fn test_wal_load() {
 
         let config = Arc::new(Config::new(temp_dir.into_path()));
 
-        let (wal, _) = WalLoader::reload_with_path(&config).await.unwrap();
+        let wal = LogLoader::reload(
+            &config,
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        ).await.unwrap();
 
         let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
         let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
@@ -152,7 +203,11 @@ fn test_wal_load() {
 
         drop(wal);
 
-        let (wal, _) = WalLoader::reload_with_path(&config).await.unwrap();
+        let wal = LogLoader::reload(
+            &config,
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        ).await.unwrap();
         let option = wal.load(gen).await.unwrap();
 
         assert_eq!(option, Some(vec![data_1, data_2]));
@@ -160,9 +215,9 @@ fn test_wal_load() {
 }
 
 #[test]
-fn test_wal_reload() {
+fn test_log_reload_check() {
     use tempfile::TempDir;
-    use itertools::Itertools;
+    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
@@ -170,7 +225,11 @@ fn test_wal_reload() {
 
         let config = Arc::new(Config::new(temp_dir.into_path()));
 
-        let (wal_1, _) = WalLoader::reload_with_path(&config).await.unwrap();
+        let (wal_1, _) = LogLoader::reload_with_check(
+            &config,
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        ).await.unwrap();
 
         let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
         let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
@@ -181,13 +240,13 @@ fn test_wal_reload() {
         wal_1.flush().await.unwrap();
         // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复
 
-        let (_wal, mem_map) = WalLoader::reload_with_path(&config).await.unwrap();
+        let (_, option_vec) = LogLoader::reload_with_check(
+            &config,
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        ).await.unwrap();
 
-        let values = mem_map.values()
-            .cloned()
-            .collect_vec();
-
-        assert_eq!(values, vec![data_1, data_2]);
+        assert_eq!(option_vec, Some(vec![data_1, data_2]));
     });
 }
 

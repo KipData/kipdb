@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use crate::kernel::{CommandData, CommandPackage, Result, sorted_gen_list};
-use crate::kernel::io::{FileExtension, IOHandler, IOHandlerFactory, IOType};
+use crate::kernel::{CommandData, Result, sorted_gen_list};
+use crate::kernel::io::{FileExtension, IOHandlerFactory, IOType};
 use crate::kernel::lsm::{Position, SSTableMap};
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::log::WalLoader;
+use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
@@ -32,8 +32,6 @@ pub(crate) enum VersionEdit {
     NewFile(FileVec, usize),
     // SSTable's SequenceId
     LastSequenceId(u64),
-    // Wal Log Gen
-    LogGen(i64),
     // // Level and SSTable Gen List
     // CompactPoint(usize, Vec<i64>),
 }
@@ -143,8 +141,7 @@ pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
     ss_table_map: Arc<RwLock<SSTableMap>>,
     sst_factory: Arc<IOHandlerFactory>,
-    _ver_factory: Arc<IOHandlerFactory>,
-    current_ver_handler: Box<dyn IOHandler>,
+    ver_log: LogLoader,
     /// 用于Drop时通知Cleaner drop
     tag_sender: Sender<CleanTag>,
 }
@@ -174,9 +171,6 @@ pub(crate) struct Version {
     /// 用于MVCC的有序编号
     /// TODO: last_sequence_id功能支持
     last_sequence_id: u64,
-    /// 该事务所对应的Wal Log Gen
-    /// TODO: Wal MVCC支持
-    wal_log_gen: i64,
     /// 清除信号发送器
     /// Drop时通知Cleaner进行删除
     clean_sender: Sender<CleanTag>
@@ -188,12 +182,11 @@ impl VersionStatus {
     }
 
     pub(crate) async fn load_with_path(
-        config: &Config,
-        wal: &WalLoader,
+        config: &Arc<Config>,
+        wal: &LogLoader,
     ) -> Result<Self> {
         let path = config.dir_path.clone();
         let sst_path = path.join(DEFAULT_SS_TABLE_PATH);
-        let ver_path = path.join(DEFAULT_VERSION_PATH);
 
         let block_cache = Arc::new(ShardingLruCache::new(
             config.block_cache_size,
@@ -207,12 +200,6 @@ impl VersionStatus {
             IOHandlerFactory::new(
                 sst_path.clone(),
                 FileExtension::SSTable
-            )?
-        );
-        let ver_factory = Arc::new(
-            IOHandlerFactory::new(
-                ver_path,
-                FileExtension::Manifest
             )?
         );
         // 持久化数据恢复
@@ -245,18 +232,30 @@ impl VersionStatus {
 
         let ss_table_map = Arc::new(RwLock::new(ss_table_map));
 
-        let last_gen = *sorted_gen_list(&path, FileExtension::Manifest)?
-            .last()
-            .unwrap_or(&0);
+        let ver_log = LogLoader::reload(
+            config,
+            DEFAULT_VERSION_PATH,
+            FileExtension::Manifest
+        ).await?;
 
-        // 获取最新的Manifest文件进行Version的状态恢复
-        // TODO: 使用current指向最新manifest而不需要排序
-        let current_ver_handler = ver_factory.create(last_gen, IOType::Buf)?;
+
+        let vec_edit = ver_log.load_last()
+            .await?
+            .unwrap_or(vec![])
+            .into_iter()
+            .filter_map(|cmd| {
+                if let CommandData::Get { key } = cmd {
+                    bincode::deserialize(key.as_slice())
+                        .ok()
+                } else { None }
+            })
+            .collect_vec();
+
         // TODO: 对channel进行配置
         let (tag_sender, tag_rev) = channel(20);
         let version = Arc::new(
-            Version::load_from_file(
-                &current_ver_handler,
+            Version::load_from_log(
+                vec_edit,
                 &ss_table_map,
                 &block_cache,
                 tag_sender.clone()
@@ -277,8 +276,7 @@ impl VersionStatus {
             inner: RwLock::new(VersionInner { inner: version }),
             ss_table_map,
             sst_factory,
-            _ver_factory: ver_factory,
-            current_ver_handler,
+            ver_log,
             tag_sender,
         })
     }
@@ -286,7 +284,12 @@ impl VersionStatus {
     /// 从Wal恢复SSTable数据
     ///
     /// 仅能恢复Level0的SSTable
-    async fn reload_with_wal(config: &Config, wal: &WalLoader, sst_factory: &Arc<IOHandlerFactory>, gen: i64) -> Result<Option<SSTable>> {
+    async fn reload_with_wal(
+        config: &Config,
+        wal: &LogLoader,
+        sst_factory: &Arc<IOHandlerFactory>,
+        gen: i64
+    ) -> Result<Option<SSTable>> {
         Ok(if let Some(vec_mem_data) = wal.load(gen).await? {
             Some(SSTable::create_for_immutable_table(
                 config,
@@ -359,10 +362,8 @@ impl VersionStatus {
 
         version_display(&new_version, "log_and_apply");
 
-        let _ignore = CommandPackage::write_batch(
-            &self.current_ver_handler,
-            &vec_cmd_data
-        ).await?;
+        self.ver_log
+            .log_batch(&vec_cmd_data).await?;
         self.inner
             .write().await
             .inner = Arc::new(new_version);
@@ -396,7 +397,6 @@ impl Version {
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
             last_sequence_id: 0,
-            wal_log_gen: 0,
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_sender,
         }
@@ -430,36 +430,27 @@ impl Version {
             meta_data: VersionMeta { size_of_disk, len },
             block_cache: Arc::clone(block_cache),
             last_sequence_id: 0,
-            wal_log_gen: 0,
             clean_sender,
         })
     }
 
-    /// 通过IOHandler载入Version
-    async fn load_from_file(
-        io_handler: &Box<dyn IOHandler>,
+    /// 通过一组VersionEdit载入Version
+    async fn load_from_log(
+        vec_log: Vec<VersionEdit>,
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
         sender: Sender<CleanTag>
     ) -> Result<Self>{
-        let vec_log = CommandPackage::from_read_to_unpack_vec(io_handler).await?;
         // 当无日志时,尝试通过现有ss_table_map进行Version恢复
         let version = if vec_log.is_empty() {
             Self::new(ss_table_map, block_cache, sender).await?
         } else {
             let mut version = Self::empty(ss_table_map, block_cache, sender);
 
-            let mut vec_edit = vec![];
-            for cmd_data in vec_log.into_iter() {
-                if let CommandData::Get { key } = cmd_data {
-                   vec_edit.push(bincode::deserialize::<VersionEdit>(key.as_slice())?);
-                }
-            }
-
-            version.apply(vec_edit, true).await?;
+            version.apply(vec_log, true).await?;
             version
         };
-        version_display(&version, "load_from_file");
+        version_display(&version, "load_from_log");
 
         Ok(version)
     }
@@ -530,9 +521,6 @@ impl Version {
                 }
                 VersionEdit::LastSequenceId(last_sequence_id) => {
                     self.last_sequence_id = last_sequence_id;
-                }
-                VersionEdit::LogGen(log_gen) => {
-                    self.wal_log_gen = log_gen;
                 }
             }
         }
@@ -771,13 +759,12 @@ impl Drop for Version {
 /// 使用特定格式进行display
 fn version_display(new_version: &Version, method: &str) {
     info!(
-            "[Version][{}]: version_num: {}, len: {}, size_of_disk: {}, last_sequence_id: {}, wal_log_gen: {}",
+            "[Version][{}]: version_num: {}, len: {}, size_of_disk: {}, last_sequence_id: {}",
             method,
             new_version.version_num,
             new_version.get_len(),
             new_version.get_size_of_disk(),
             new_version.last_sequence_id,
-            new_version.wal_log_gen
         );
 }
 
@@ -786,6 +773,7 @@ fn test_version_clean() {
     use tempfile::TempDir;
     use tokio::time;
     use std::time::Duration;
+    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::SSTable;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
@@ -794,7 +782,11 @@ fn test_version_clean() {
 
         let config = Arc::new(Config::new(temp_dir.into_path()));
 
-        let (wal, _) = WalLoader::reload_with_path(&config).await.unwrap();
+        let (wal, _) = LogLoader::reload_with_check(
+            &config,
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        ).await.unwrap();
 
         // 注意：将ss_table的创建防止VersionStatus的创建前
         // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
@@ -876,6 +868,7 @@ fn test_version_clean() {
 #[test]
 fn test_version_apply_and_log() {
     use tempfile::TempDir;
+    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::SSTable;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
@@ -884,7 +877,11 @@ fn test_version_apply_and_log() {
 
         let config = Arc::new(Config::new(temp_dir.into_path()));
 
-        let (wal, _) = WalLoader::reload_with_path(&config).await.unwrap();
+        let wal = LogLoader::reload(
+            &config,
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        ).await.unwrap();
 
         // 注意：将ss_table的创建防止VersionStatus的创建前
         // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
@@ -917,7 +914,6 @@ fn test_version_apply_and_log() {
             VersionEdit::NewFile((vec![1], 0),0),
             VersionEdit::NewFile((vec![2], 0),0),
             VersionEdit::DeleteFile((vec![2], 0)),
-            VersionEdit::LogGen(3),
             VersionEdit::LastSequenceId(4),
         ];
 
@@ -934,9 +930,7 @@ fn test_version_apply_and_log() {
         let version_2 = ver_status_2.current().await;
 
         assert_eq!(version_1.last_sequence_id, 4);
-        assert_eq!(version_1.wal_log_gen, 3);
         assert_eq!(version_2.last_sequence_id, 4);
-        assert_eq!(version_2.wal_log_gen, 3);
         assert_eq!(version_1.level_slice, version_2.level_slice);
         assert_eq!(version_1.meta_data, version_2.meta_data);
     });
