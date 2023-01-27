@@ -40,9 +40,12 @@ impl Compactor {
     }
 
     /// 持久化immutable_table为SSTable
+    ///
+    /// 请注意：vec_values必须是依照key值有序的
     pub(crate) async fn minor_compaction(
         &self,
         gen: i64,
+        last_seq_id: i64,
         vec_values: Vec<CommandData>,
         enable_caching: bool
     ) -> Result<()> {
@@ -62,9 +65,11 @@ impl Compactor {
         // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
         if let Err(err) = self.major_compaction(
             LEVEL_0,
-            vec![VersionEdit::NewFile((vec![gen], 0), 0)]
-        ).await
-        {
+            vec![
+                VersionEdit::NewFile((vec![gen], 0), 0),
+                VersionEdit::LastSequenceId(last_seq_id)
+            ]
+        ).await {
             error!("[LSMStore][major_compaction][error happen]: {:?}", err);
         }
         Ok(())
@@ -151,7 +156,6 @@ impl Compactor {
             return Ok(None);
         }
 
-
         // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
         if let Some(mut vec_ss_table_l) = version
@@ -225,7 +229,7 @@ impl Compactor {
             .unique_by(CommandData::get_key_clone)
             .sorted_unstable_by_key(CommandData::get_key_clone)
             .collect();
-        Ok(data_sharding(vec_cmd_data, config.sst_file_size, config, true).await)
+        Ok(data_sharding(vec_cmd_data, config.sst_file_size, config))
     }
 
 }

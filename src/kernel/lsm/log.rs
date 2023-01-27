@@ -130,7 +130,7 @@ impl LogLoader {
 
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
     pub(crate) async fn switch(&self) -> Result<i64> {
-        let next_gen = self.config.create_gen();
+        let next_gen = self.config.create_gen_lazy();
 
         let next_handler = self.factory.create(next_gen, IOType::Buf)?;
         let mut inner = self.inner.write().await;
@@ -177,7 +177,7 @@ impl Drop for LogLoader {
 }
 
 #[test]
-fn test_log_load() {
+fn test_log_load() -> Result<()> {
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
 
@@ -185,21 +185,21 @@ fn test_log_load() {
 
     tokio_test::block_on(async move {
 
-        let config = Arc::new(Config::new(temp_dir.into_path()));
+        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
 
         let wal = LogLoader::reload(
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
-        ).await.unwrap();
+        ).await?;
 
         let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
         let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
 
-        wal.log(&data_1).await.unwrap();
-        wal.log(&data_2).await.unwrap();
+        wal.log(&data_1).await?;
+        wal.log(&data_2).await?;
 
-        let gen = wal.switch().await.unwrap();
+        let gen = wal.switch().await?;
 
         drop(wal);
 
@@ -207,15 +207,17 @@ fn test_log_load() {
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
-        ).await.unwrap();
-        let option = wal.load(gen).await.unwrap();
+        ).await?;
+        let option = wal.load(gen).await?;
 
         assert_eq!(option, Some(vec![data_1, data_2]));
-    });
+
+        Ok(())
+    })
 }
 
 #[test]
-fn test_log_reload_check() {
+fn test_log_reload_check() -> Result<()> {
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
 
@@ -223,30 +225,32 @@ fn test_log_reload_check() {
 
     tokio_test::block_on(async move {
 
-        let config = Arc::new(Config::new(temp_dir.into_path()));
+        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
 
         let (wal_1, _) = LogLoader::reload_with_check(
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
-        ).await.unwrap();
+        ).await?;
 
         let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
         let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
 
-        wal_1.log(&data_1).await.unwrap();
-        wal_1.log(&data_2).await.unwrap();
+        wal_1.log(&data_1).await?;
+        wal_1.log(&data_2).await?;
 
-        wal_1.flush().await.unwrap();
+        wal_1.flush().await?;
         // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复
 
         let (_, option_vec) = LogLoader::reload_with_check(
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
-        ).await.unwrap();
+        ).await?;
 
         assert_eq!(option_vec, Some(vec![data_1, data_2]));
-    });
+
+        Ok(())
+    })
 }
 

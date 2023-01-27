@@ -306,10 +306,8 @@ impl SSTable {
         let vec_sharding = data_sharding(
             vec_mem_data,
             ALIGNMENT_4K * interval_block_size as usize,
-            config,
-            false
-        ).await
-            .into_iter()
+            config
+        ).into_iter()
             .map(|(_, sharding)| sharding)
             .collect();
         let (vec_index, crc_code) = Self::write_data_batch(vec_sharding, &io_handler).await?;

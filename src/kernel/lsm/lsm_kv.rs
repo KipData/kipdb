@@ -1,12 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Instant;
 use async_trait::async_trait;
 use fslock::LockFile;
-use snowflake::SnowflakeIdBucket;
-use tokio::sync::Mutex;
+use itertools::Itertools;
+use snowflake::SnowflakeIdGenerator;
+use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot::Sender;
 use tracing::{error, info};
 use crate::KvsError;
 use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
@@ -17,7 +18,7 @@ use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::version::VersionStatus;
 use crate::kernel::Result;
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 4 * 1024 * 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 8 * 1024 * 1024;
 
 pub(crate) const DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE: u64 = 4;
 
@@ -26,8 +27,6 @@ pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 24 * 1024 * 1024;
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
 pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
-
-pub(crate) const DEFAULT_MACHINE_ID: i32 = 1;
 
 pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
@@ -62,6 +61,8 @@ pub struct LsmStore {
     /// 多进程文件锁
     /// 避免多进程进行数据读写
     lock_file: LockFile,
+    /// 异步任务阻塞监听器
+    vec_rev: Mutex<Vec<oneshot::Receiver<()>>>,
     /// 单线程压缩器
     compactor: Arc<Mutex<Compactor>>
 }
@@ -75,7 +76,7 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
-        LsmStore::open_with_config(Config::new(path)).await
+        LsmStore::open_with_config(Config::new(path, 0, 0)).await
     }
 
     #[inline]
@@ -90,15 +91,19 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        if let Some(cmd_data) = self.mem_table.get_cmd_data(key).await {
-            return Ok(cmd_data.get_value_clone());
+        if let Some(value) = self.mem_table.find(key) {
+            return Ok(Some(value));
         }
 
+        // 读取前等待压缩完毕
+        // 相对来说，消耗较小
+        // 当压缩时长高时，说明数据量非常大
+        // 此时直接去获取的话可能会既获取不到数据，也花费大量时间
+        self.wait_for_compression_down().await?;
+
         if let Some(value) = self.ver_status
-            .current()
-            .await
-            .find_data_for_ss_tables(key)
-            .await?
+            .current().await
+            .find_data_for_ss_tables(key).await?
         {
             return Ok(Some(value));
         }
@@ -110,8 +115,7 @@ impl KVStore for LsmStore {
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
             Some(_) => {
-                self.append_cmd_data(CommandData::Remove { key: key.to_vec() }, true)
-                    .await
+                self.append_cmd_data(CommandData::Remove { key: key.to_vec() }, true).await
             }
             None => { Err(KvsError::KeyNotFound) }
         }
@@ -127,14 +131,14 @@ impl KVStore for LsmStore {
     async fn len(&self) -> Result<usize> {
         Ok(self.ver_status.current().await
             .get_len()
-            + self.mem_table.mem_table_len().await)
+            + self.mem_table.mem_table_len())
     }
 
     #[inline]
     async fn is_empty(&self) -> bool {
         self.ver_status.current().await
             .is_empty()
-            && self.mem_table.mem_table_is_empty().await
+            && self.mem_table.mem_table_is_empty()
     }
 }
 
@@ -157,9 +161,7 @@ impl LsmStore {
     /// 追加数据
     async fn append_cmd_data(&self, cmd: CommandData, wal_write: bool) -> Result<()> {
         let mem_table = &self.mem_table;
-        let threshold_size = self.config.minor_threshold_with_data_size;
 
-        let key = cmd.get_key();
         // Wal与MemTable双写
         if self.is_enable_wal() && wal_write {
             wal_put(
@@ -168,9 +170,11 @@ impl LsmStore {
                 !self.is_async_wal()
             ).await;
         }
-        mem_table.insert_data(key.clone(), cmd).await;
 
-        if mem_table.is_threshold_exceeded_minor(threshold_size).await {
+        if mem_table.insert_data_and_is_exceeded(
+            cmd,
+            &self.config
+        ) {
             self.minor_compaction().await?;
         }
 
@@ -185,6 +189,29 @@ impl LsmStore {
         self.config.wal_async_put_enable
     }
 
+    /// 存活标记
+    /// 返回一个Sender用于存活结束通知
+    async fn live_tag(&self) -> Sender<()> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.vec_rev.lock()
+            .await
+            .push(receiver);
+
+        sender
+    }
+
+    /// 等待所有压缩结束
+    async fn wait_for_compression_down(&self) -> Result<()> {
+        // 监听异步任务是否执行完毕
+        let mut vec_rev = self.vec_rev.lock().await;
+        while let Some(rev) = vec_rev.pop() {
+            rev.await?
+        }
+
+        Ok(())
+    }
+
     /// 使用Config进行LsmStore初始化
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
@@ -195,17 +222,25 @@ impl LsmStore {
             &config.dir_path.join(DEFAULT_LOCK_FILE)
         ).await?;
 
-        let (wal, option_data) = LogLoader::reload_with_check(
+        let (wal, option_success) = LogLoader::reload_with_check(
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
         ).await?;
-        let mem_map = match option_data {
+
+        let mem_map = match option_success {
             None => MemMap::new(),
             Some(vec_data) => {
+                // Q: 为什么此处直接生成新的seq并使限制每个数据都使用?
+                // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
+                // 因此不会影响Version的读取顺序
+                let create_seq_id = config.create_gen_lazy();
                 MemMap::from_iter(
+                    // 倒序唯一化，保留最新的数据
                     vec_data.into_iter()
-                        .map(|cmd| (cmd.get_key_clone(), cmd))
+                        .rev()
+                        .unique()
+                        .map(|cmd| (cmd.get_key_clone(), vec![(cmd, create_seq_id)]))
                 )
             }
         };
@@ -231,27 +266,30 @@ impl LsmStore {
             config,
             wal: Arc::new(wal),
             lock_file,
+            vec_rev: Mutex::new(Vec::new()),
             compactor,
         })
     }
 
     /// 异步持久化immutable_table为SSTable
     #[inline]
-    #[allow(clippy::unwrap_used)]
     pub async fn minor_compaction(&self) -> Result<()> {
-        let values = self.mem_table.table_swap().await;
+        let (values, last_seq_id) = self.mem_table.table_swap_and_sort();
         if !values.is_empty() {
             let compactor = Arc::clone(&self.compactor);
             let gen = self.create_gen().await?;
+            let sender = self.live_tag().await;
 
             let _ignore = tokio::spawn(async move {
                 let start = Instant::now();
+                // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
                 if let Err(err) = compactor
                     .lock().await
-                    .minor_compaction(gen, values, true).await
+                    .minor_compaction(gen, last_seq_id, values, true).await
                 {
                     error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
                 }
+                sender.send(()).expect("send err!");
                 info!("[LsmStore][Compaction Drop][Time: {:?}]", start.elapsed());
             });
         }
@@ -262,20 +300,20 @@ impl LsmStore {
         Ok(if self.is_enable_wal() {
             self.wal.switch().await?
         } else {
-            self.config.create_gen()
+            self.config.create_gen_lazy()
         })
     }
 
     /// 同步持久化immutable_table为SSTable
     #[inline]
     pub async fn minor_compaction_sync(&self, is_drop: bool) -> Result<()> {
-        let values = self.mem_table.table_swap().await;
+        let (values, last_seq_id) = self.mem_table.table_swap_and_sort();
         let gen = self.create_gen().await?;
 
         self.compactor
             .lock()
             .await
-            .minor_compaction(gen, values, !is_drop)
+            .minor_compaction(gen, last_seq_id, values, !is_drop)
             .await
     }
 
@@ -310,9 +348,11 @@ impl LsmStore {
 
     pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
         self.wal.flush().await?;
-        if !self.mem_table.mem_table_is_empty().await {
+        if !self.mem_table.mem_table_is_empty() {
             self.minor_compaction_sync(is_drop).await?;
         }
+        self.wait_for_compression_down().await?;
+
         Ok(())
     }
 }
@@ -336,13 +376,8 @@ pub struct Config {
     /// 并将确定范围的下一级SSTable再次对当前等级的SSTable进行范围判定，
     /// 找到最合理的上下级数据范围并压缩
     pub(crate) major_select_file_size: usize,
-    /// 节点Id
-    pub(crate) node_id: i32,
     /// 每级SSTable数量倍率
     pub(crate) level_sst_magnification: usize,
-    /// 用于ID生成的原子缓冲
-    /// 避免极端情况下，SSTable创建重复问题并保持时间有序性
-    pub(crate) buffer_i32: AtomicI32,
     /// 布隆过滤器 期望的错误概率
     pub(crate) desired_error_prob: f64,
     /// 数据库全局Position段数据缓存的数量
@@ -357,12 +392,15 @@ pub struct Config {
     pub(crate) wal_enable: bool,
     /// wal写入时开启异步写入
     /// 可以提高写入响应速度，但可能会导致wal日志在某种情况下并落盘慢于LSM内核而导致该条wal日志无效
-    pub(crate) wal_async_put_enable: bool
+    pub(crate) wal_async_put_enable: bool,
+    /// gen生成器
+    /// 用于SSTable以及SequenceId的生成
+    gen_generator: parking_lot::Mutex<SnowflakeIdGenerator>
 }
 
 impl Config {
 
-    pub fn new(path: impl Into<PathBuf> + Send) -> Config {
+    pub fn new(path: impl Into<PathBuf> + Send, machine_id: i32, node_id: i32) -> Config {
         Config {
             dir_path: path.into(),
             minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
@@ -371,14 +409,15 @@ impl Config {
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
-            node_id: DEFAULT_MACHINE_ID,
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
-            buffer_i32: AtomicI32::new(0),
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
             block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
             table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
             wal_enable: true,
             wal_async_put_enable: true,
+            gen_generator: parking_lot::Mutex::new(
+                SnowflakeIdGenerator::new(machine_id, node_id)
+            ),
         }
     }
 
@@ -425,12 +464,6 @@ impl Config {
     }
 
     #[inline]
-    pub fn node_id(mut self, node_id: i32) -> Self {
-        self.node_id = node_id;
-        self
-    }
-
-    #[inline]
     pub fn level_sst_magnification(mut self, level_sst_magnification: usize) -> Self {
         self.level_sst_magnification = level_sst_magnification;
         self
@@ -455,9 +488,29 @@ impl Config {
     }
 
     #[inline]
+    pub fn create_gen_lazy(&self) -> i64 {
+        self.gen_generator
+            .lock()
+            .lazy_generate()
+    }
+
+    #[inline]
     pub fn create_gen(&self) -> i64 {
-        SnowflakeIdBucket::new(self.node_id, self.buffer_i32
-            .fetch_add(1, Ordering::SeqCst)).get_id()
+        self.gen_generator
+            .lock()
+            .generate()
+    }
+
+    #[inline]
+    pub fn create_gen_with_size(&self, size: usize) -> Vec<i64> {
+        let mut generator = self.gen_generator
+            .lock();
+
+        let mut vec_gen = Vec::with_capacity(size);
+        for _ in 0..size {
+            vec_gen.push(generator.lazy_generate());
+        }
+        vec_gen
     }
 
     #[inline]
@@ -499,28 +552,44 @@ fn test_lsm_major_compactor() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
-        let config = Config::new(temp_dir.into_path())
-            .wal_enable(false);
+        let times = 40000;
+
+        let value = b"Stray birds of summer come to my window to sing and fly away.
+            And yellow leaves of autumn, which have no songs, flutter and fall
+            there with a sign.";
+
+        let config = Config::new(temp_dir.into_path(), 0, 0)
+            .wal_enable(false)
+            .minor_threshold_with_data_size(4 * 512 * 1024)
+            .major_threshold_with_sst_size(4);
         let kv_store = LsmStore::open_with_config(config).await?;
-        let mut vec_key: Vec<Vec<u8>> = Vec::new();
+        let mut vec_kv = Vec::new();
+
+        for i in 0..times {
+            let vec_u8 = bincode::serialize(&i)?;
+            vec_kv.push((
+                vec_u8.clone(),
+                vec_u8.into_iter()
+                    .chain(value.to_vec())
+                    .collect_vec()
+                ));
+        }
 
         let start = Instant::now();
-        for i in 0..300000 {
-            let vec_u8 = bincode::serialize(&i).unwrap();
-            kv_store.set(&vec_u8, vec_u8.clone()).await?;
-            vec_key.push(vec_u8);
+        for i in 0..times {
+            kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?
         }
-        kv_store.set(&vec_key[0], vec![b'k']).await?;
         println!("[set_for][Time: {:?}]", start.elapsed());
 
         kv_store.flush().await?;
+
         let start = Instant::now();
-        assert_eq!(kv_store.get(&vec_key[0]).await?, Some(vec![b'k']));
-        for i in 1..300000 {
-            assert_eq!(kv_store.get(&vec_key[i]).await?, Some(vec_key[i].clone()));
+        for i in 0..times {
+            assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
         }
         println!("[get_for][Time: {:?}]", start.elapsed());
         kv_store.flush().await?;
+
         Ok(())
     })
 }

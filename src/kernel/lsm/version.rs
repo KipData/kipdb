@@ -31,7 +31,7 @@ pub(crate) enum VersionEdit {
     // Level 0则请忽略第二位的index参数，默认会放至最尾
     NewFile(FileVec, usize),
     // SSTable's SequenceId
-    LastSequenceId(u64),
+    LastSequenceId(i64),
     // // Level and SSTable Gen List
     // CompactPoint(usize, Vec<i64>),
 }
@@ -141,6 +141,7 @@ pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
     ss_table_map: Arc<RwLock<SSTableMap>>,
     sst_factory: Arc<IOHandlerFactory>,
+    /// TODO: 日志快照
     ver_log: LogLoader,
     /// 用于Drop时通知Cleaner drop
     tag_sender: Sender<CleanTag>,
@@ -169,8 +170,7 @@ pub(crate) struct Version {
     /// 稀疏区间数据Block缓存
     block_cache: Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
     /// 用于MVCC的有序编号
-    /// TODO: last_sequence_id功能支持
-    last_sequence_id: u64,
+    last_sequence_id: i64,
     /// 清除信号发送器
     /// Drop时通知Cleaner进行删除
     clean_sender: Sender<CleanTag>
@@ -255,6 +255,7 @@ impl VersionStatus {
         let (tag_sender, tag_rev) = channel(20);
         let version = Arc::new(
             Version::load_from_log(
+                &config,
                 vec_edit,
                 &ss_table_map,
                 &block_cache,
@@ -389,14 +390,15 @@ impl Version {
     fn empty(
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
-        clean_sender: Sender<CleanTag>
+        clean_sender: Sender<CleanTag>,
+        last_sequence_id: i64
     ) -> Self {
         Self {
             version_num: 0,
             ss_tables_map: Arc::clone(ss_table_map),
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
-            last_sequence_id: 0,
+            last_sequence_id,
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_sender,
         }
@@ -407,7 +409,8 @@ impl Version {
     async fn new(
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
-        clean_sender: Sender<CleanTag>
+        clean_sender: Sender<CleanTag>,
+        last_sequence_id: i64,
     ) -> Result<Self> {
         let read_guard_map = ss_table_map.read().await;
         let level_slice = Self::level_layered(
@@ -429,23 +432,35 @@ impl Version {
             level_slice,
             meta_data: VersionMeta { size_of_disk, len },
             block_cache: Arc::clone(block_cache),
-            last_sequence_id: 0,
+            last_sequence_id,
             clean_sender,
         })
     }
 
     /// 通过一组VersionEdit载入Version
     async fn load_from_log(
+        config: &Config,
         vec_log: Vec<VersionEdit>,
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
         sender: Sender<CleanTag>
     ) -> Result<Self>{
+        let ver_seq_id = config.create_gen_lazy();
         // 当无日志时,尝试通过现有ss_table_map进行Version恢复
         let version = if vec_log.is_empty() {
-            Self::new(ss_table_map, block_cache, sender).await?
+            Self::new(
+                ss_table_map,
+                block_cache,
+                sender,
+                ver_seq_id
+            ).await?
         } else {
-            let mut version = Self::empty(ss_table_map, block_cache, sender);
+            let mut version = Self::empty(
+                ss_table_map,
+                block_cache,
+                sender,
+                ver_seq_id
+            );
 
             version.apply(vec_log, true).await?;
             version
@@ -702,8 +717,8 @@ impl Version {
 
     /// 判断是否溢出指定的SSTable数量
     pub(crate) fn is_threshold_exceeded_major(&self, config: &Config, level: usize) -> bool {
-        self.level_slice[level].len() >
-            (config.major_threshold_with_sst_size.pow(level as u32) * config.level_sst_magnification)
+        self.level_slice[level].len() >=
+            (config.major_threshold_with_sst_size * config.level_sst_magnification.pow(level as u32))
     }
 }
 
@@ -769,7 +784,7 @@ fn version_display(new_version: &Version, method: &str) {
 }
 
 #[test]
-fn test_version_clean() {
+fn test_version_clean() -> Result<()> {
     use tempfile::TempDir;
     use tokio::time;
     use std::time::Duration;
@@ -780,24 +795,24 @@ fn test_version_clean() {
 
     tokio_test::block_on(async move {
 
-        let config = Arc::new(Config::new(temp_dir.into_path()));
+        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
 
         let (wal, _) = LogLoader::reload_with_check(
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
-        ).await.unwrap();
+        ).await?;
 
         // 注意：将ss_table的创建防止VersionStatus的创建前
         // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
         let ver_status =
-            VersionStatus::load_with_path(&config, &wal).await.unwrap();
+            VersionStatus::load_with_path(&config, &wal).await?;
 
 
         let sst_factory = IOHandlerFactory::new(
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable
-        ).unwrap();
+        )?;
 
         let ss_table_1 = SSTable::create_for_immutable_table(
             &config,
@@ -805,7 +820,7 @@ fn test_version_clean() {
             &sst_factory,
             vec![CommandData::get(b"test".to_vec())],
             0
-        ).await.unwrap();
+        ).await?;
 
         let ss_table_2 = SSTable::create_for_immutable_table(
             &config,
@@ -813,16 +828,16 @@ fn test_version_clean() {
             &sst_factory,
             vec![CommandData::get(b"test".to_vec())],
             0
-        ).await.unwrap();
+        ).await?;
 
-        ver_status.insert_vec_ss_table(vec![ss_table_1], false).await.unwrap();
-        ver_status.insert_vec_ss_table(vec![ss_table_2], false).await.unwrap();
+        ver_status.insert_vec_ss_table(vec![ss_table_1], false).await?;
+        ver_status.insert_vec_ss_table(vec![ss_table_2], false).await?;
 
         let vec_edit_1 = vec![
             VersionEdit::NewFile((vec![1], 0),0),
         ];
 
-        ver_status.log_and_apply(vec_edit_1).await.unwrap();
+        ver_status.log_and_apply(vec_edit_1).await?;
 
         let version_1 = Arc::clone(&ver_status.current().await);
 
@@ -831,7 +846,7 @@ fn test_version_clean() {
             VersionEdit::DeleteFile((vec![1], 0)),
         ];
 
-        ver_status.log_and_apply(vec_edit_2).await.unwrap();
+        ver_status.log_and_apply(vec_edit_2).await?;
 
         let version_2 = Arc::clone(&ver_status.current().await);
 
@@ -840,33 +855,34 @@ fn test_version_clean() {
         ];
 
         // 用于去除version2的引用计数
-        ver_status.log_and_apply(vec_edit_3).await.unwrap();
+        ver_status.log_and_apply(vec_edit_3).await?;
 
-        assert!(sst_factory.has_gen(1).unwrap());
-        assert!(sst_factory.has_gen(2).unwrap());
+        assert!(sst_factory.has_gen(1)?);
+        assert!(sst_factory.has_gen(2)?);
 
         drop(version_2);
 
-        assert!(sst_factory.has_gen(1).unwrap());
-        assert!(sst_factory.has_gen(2).unwrap());
+        assert!(sst_factory.has_gen(1)?);
+        assert!(sst_factory.has_gen(2)?);
 
         drop(version_1);
         time::sleep(Duration::from_secs(1)).await;
 
-        assert!(!sst_factory.has_gen(1).unwrap());
-        assert!(sst_factory.has_gen(2).unwrap());
+        assert!(!sst_factory.has_gen(1)?);
+        assert!(sst_factory.has_gen(2)?);
 
         drop(ver_status);
         time::sleep(Duration::from_secs(1)).await;
 
-        assert!(!sst_factory.has_gen(1).unwrap());
-        assert!(!sst_factory.has_gen(2).unwrap());
+        assert!(!sst_factory.has_gen(1)?);
+        assert!(!sst_factory.has_gen(2)?);
 
-    });
+        Ok(())
+    })
 }
 
 #[test]
-fn test_version_apply_and_log() {
+fn test_version_apply_and_log() -> Result<()> {
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::SSTable;
@@ -875,24 +891,24 @@ fn test_version_apply_and_log() {
 
     tokio_test::block_on(async move {
 
-        let config = Arc::new(Config::new(temp_dir.into_path()));
+        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
 
         let wal = LogLoader::reload(
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
-        ).await.unwrap();
+        ).await?;
 
         // 注意：将ss_table的创建防止VersionStatus的创建前
         // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
         let ver_status_1 =
-            VersionStatus::load_with_path(&config, &wal).await.unwrap();
+            VersionStatus::load_with_path(&config, &wal).await?;
 
 
         let sst_factory = IOHandlerFactory::new(
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable
-        ).unwrap();
+        )?;
 
         let ss_table_1 = SSTable::create_for_immutable_table(
             &config,
@@ -900,7 +916,7 @@ fn test_version_apply_and_log() {
             &sst_factory,
             vec![CommandData::get(b"test".to_vec())],
             0
-        ).await.unwrap();
+        ).await?;
 
         let ss_table_2 = SSTable::create_for_immutable_table(
             &config,
@@ -908,7 +924,7 @@ fn test_version_apply_and_log() {
             &sst_factory,
             vec![CommandData::get(b"test".to_vec())],
             0
-        ).await.unwrap();
+        ).await?;
 
         let vec_edit = vec![
             VersionEdit::NewFile((vec![1], 0),0),
@@ -917,23 +933,25 @@ fn test_version_apply_and_log() {
             VersionEdit::LastSequenceId(4),
         ];
 
-        ver_status_1.insert_vec_ss_table(vec![ss_table_1], false).await.unwrap();
-        ver_status_1.insert_vec_ss_table(vec![ss_table_2], false).await.unwrap();
-        ver_status_1.log_and_apply(vec_edit).await.unwrap();
+        ver_status_1.insert_vec_ss_table(vec![ss_table_1], false).await?;
+        ver_status_1.insert_vec_ss_table(vec![ss_table_2], false).await?;
+        ver_status_1.log_and_apply(vec_edit).await?;
 
         let version_1 = Version::clone(ver_status_1.current().await.as_ref());
 
         drop(ver_status_1);
 
         let ver_status_2 =
-            VersionStatus::load_with_path(&config, &wal).await.unwrap();
+            VersionStatus::load_with_path(&config, &wal).await?;
         let version_2 = ver_status_2.current().await;
 
         assert_eq!(version_1.last_sequence_id, 4);
         assert_eq!(version_2.last_sequence_id, 4);
         assert_eq!(version_1.level_slice, version_2.level_slice);
         assert_eq!(version_1.meta_data, version_2.meta_data);
-    });
+
+        Ok(())
+    })
 }
 
 
