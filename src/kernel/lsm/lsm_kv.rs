@@ -18,7 +18,7 @@ use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::version::VersionStatus;
 use crate::kernel::Result;
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED: u64 = 8 * 1024 * 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_LEN: usize = 2333;
 
 pub(crate) const DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE: u64 = 4;
 
@@ -131,14 +131,14 @@ impl KVStore for LsmStore {
     async fn len(&self) -> Result<usize> {
         Ok(self.ver_status.current().await
             .get_len()
-            + self.mem_table.mem_table_len())
+            + self.mem_table.len())
     }
 
     #[inline]
     async fn is_empty(&self) -> bool {
         self.ver_status.current().await
             .is_empty()
-            && self.mem_table.mem_table_is_empty()
+            && self.mem_table.is_empty()
     }
 }
 
@@ -239,8 +239,8 @@ impl LsmStore {
                     // 倒序唯一化，保留最新的数据
                     vec_data.into_iter()
                         .rev()
-                        .unique()
-                        .map(|cmd| (cmd.get_key_clone(), vec![(cmd, create_seq_id)]))
+                        .unique_by(CommandData::get_key_clone)
+                        .map(|cmd| (cmd.get_key_clone(), (cmd, create_seq_id)))
                 )
             }
         };
@@ -274,24 +274,25 @@ impl LsmStore {
     /// 异步持久化immutable_table为SSTable
     #[inline]
     pub async fn minor_compaction(&self) -> Result<()> {
-        let (values, last_seq_id) = self.mem_table.table_swap_and_sort();
-        if !values.is_empty() {
-            let compactor = Arc::clone(&self.compactor);
-            let gen = self.create_gen().await?;
-            let sender = self.live_tag().await;
+        if let Some((values, last_seq_id)) = self.mem_table.table_swap_and_sort() {
+            if !values.is_empty() {
+                let compactor = Arc::clone(&self.compactor);
+                let gen = self.create_gen().await?;
+                let sender = self.live_tag().await;
 
-            let _ignore = tokio::spawn(async move {
-                let start = Instant::now();
-                // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
-                if let Err(err) = compactor
-                    .lock().await
-                    .minor_compaction(gen, last_seq_id, values, true).await
-                {
-                    error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
-                }
-                sender.send(()).expect("send err!");
-                info!("[LsmStore][Compaction Drop][Time: {:?}]", start.elapsed());
-            });
+                let _ignore = tokio::spawn(async move {
+                    let start = Instant::now();
+                    // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
+                    if let Err(err) = compactor
+                        .lock().await
+                        .minor_compaction(gen, last_seq_id, values, true).await
+                    {
+                        error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
+                    }
+                    sender.send(()).expect("send err!");
+                    info!("[LsmStore][Compaction Drop][Time: {:?}]", start.elapsed());
+                });
+            }
         }
         Ok(())
     }
@@ -307,14 +308,18 @@ impl LsmStore {
     /// 同步持久化immutable_table为SSTable
     #[inline]
     pub async fn minor_compaction_sync(&self, is_drop: bool) -> Result<()> {
-        let (values, last_seq_id) = self.mem_table.table_swap_and_sort();
-        let gen = self.create_gen().await?;
+        if let Some((values, last_seq_id)) = self.mem_table.table_swap_and_sort() {
+            let gen = self.create_gen().await?;
 
-        self.compactor
-            .lock()
-            .await
-            .minor_compaction(gen, last_seq_id, values, !is_drop)
-            .await
+            if !values.is_empty() {
+                self.compactor
+                    .lock()
+                    .await
+                    .minor_compaction(gen, last_seq_id, values, !is_drop)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// 同步进行SSTable基于Level的层级压缩
@@ -348,7 +353,7 @@ impl LsmStore {
 
     pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
         self.wal.flush().await?;
-        if !self.mem_table.mem_table_is_empty() {
+        if !self.mem_table.is_empty() {
             self.minor_compaction_sync(is_drop).await?;
         }
         self.wait_for_compression_down().await?;
@@ -367,8 +372,8 @@ pub struct Config {
     pub(crate) sparse_index_interval_block_size: u64,
     /// SSTable文件大小
     pub(crate) sst_file_size: usize,
-    /// 持久化阈值(单位: 字节)
-    pub(crate) minor_threshold_with_data_size: u64,
+    /// Minor触发数据长度
+    pub(crate) minor_threshold_with_len: usize,
     /// Major压缩触发阈值
     pub(crate) major_threshold_with_sst_size: usize,
     /// Major压缩选定文件数
@@ -403,7 +408,7 @@ impl Config {
     pub fn new(path: impl Into<PathBuf> + Send, machine_id: i32, node_id: i32) -> Config {
         Config {
             dir_path: path.into(),
-            minor_threshold_with_data_size: DEFAULT_MINOR_THRESHOLD_WITH_DATA_OCCUPIED,
+            minor_threshold_with_len: DEFAULT_MINOR_THRESHOLD_WITH_LEN,
             wal_threshold: DEFAULT_WAL_THRESHOLD,
             sparse_index_interval_block_size: DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
@@ -428,8 +433,8 @@ impl Config {
     }
 
     #[inline]
-    pub fn minor_threshold_with_data_size(mut self, minor_threshold_with_data_size: u64) -> Self {
-        self.minor_threshold_with_data_size = minor_threshold_with_data_size;
+    pub fn minor_threshold_with_len(mut self, minor_threshold_with_len: usize) -> Self {
+        self.minor_threshold_with_len = minor_threshold_with_len;
         self
     }
 
@@ -552,7 +557,7 @@ fn test_lsm_major_compactor() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
-        let times = 40000;
+        let times = 5000;
 
         let value = b"Stray birds of summer come to my window to sing and fly away.
             And yellow leaves of autumn, which have no songs, flutter and fall
@@ -560,7 +565,7 @@ fn test_lsm_major_compactor() -> Result<()> {
 
         let config = Config::new(temp_dir.into_path(), 0, 0)
             .wal_enable(false)
-            .minor_threshold_with_data_size(4 * 512 * 1024)
+            .minor_threshold_with_len(1000)
             .major_threshold_with_sst_size(4);
         let kv_store = LsmStore::open_with_config(config).await?;
         let mut vec_kv = Vec::new();

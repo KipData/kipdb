@@ -1,10 +1,13 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{Bound, HashMap};
 use std::collections::hash_map::{Iter, RandomState, Values};
+use std::mem;
+use std::sync::Arc;
+use crossbeam_skiplist::SkipMap;
 use growable_bloom_filter::GrowableBloom;
+use itertools::Itertools;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use skiplist::SkipMap;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::io::{IOHandler, IOHandlerFactory, IOType};
 use crate::kernel::lsm::compactor::MergeShardingVec;
@@ -19,7 +22,12 @@ mod version;
 mod log;
 
 /// Value为此Key的Records(CommandData与seq_id)
-pub(crate) type MemMap = SkipMap<Vec<u8>, Vec<(CommandData, i64)>>;
+pub(crate) type MemMap = SkipMap<Vec<u8>, (CommandData, i64)>;
+
+/// seq_id的上限值
+///
+/// 用于默认的key的填充(补充使UserKey为高位，因此默认获取最新的seq_id数据)
+const SEQ_MAX: [u8; 8] = [u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, 127];
 
 /// MetaInfo序列化长度定长
 /// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
@@ -43,8 +51,144 @@ struct MetaBlock {
 
 #[derive(Debug)]
 struct MemTable {
-    // MemTable切片，管理MemTable和ImmutableMemTable
-    mem_table_slice: RwLock<[(MemMap, u64, i64); 2]>
+    // 此读写锁锁仅用于切换mem_table和immut_table
+    // 在大部分情况下应该算作为无锁(读锁并行)
+    inner: RwLock<TableInner>
+}
+
+#[derive(Debug)]
+struct TableInner {
+    mem_table: MemMap,
+    immut_table: Option<Arc<MemMap>>
+}
+
+impl MemTable {
+    pub(crate) fn new(mem_map: MemMap) -> Self {
+        MemTable {
+            inner: RwLock::new(
+                TableInner {
+                    mem_table: mem_map,
+                    immut_table: None,
+                }
+            ),
+        }
+    }
+
+    /// 插入并判断是否溢出
+    ///
+    /// 插入时不会去除重复键值，而是进行追加
+    pub(crate) fn insert_data_and_is_exceeded(
+        &self,
+        cmd: CommandData,
+        config: &Config,
+    ) -> bool {
+        // 将seq_id作为低位
+        let seq_id = config.create_gen();
+        let key = Self::key_encode_with_seq(cmd.get_key_clone(), seq_id);
+
+        let inner = self.inner.read();
+        let _ignore = inner.mem_table.insert(key, (cmd, seq_id));
+
+        inner.mem_table.len() >= config.minor_threshold_with_len
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.inner.read()
+            .mem_table.is_empty()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.inner.read()
+            .mem_table.len()
+    }
+
+    /// MemTable交换并分解,弹出有序数据
+    fn table_swap_and_sort(&self) -> Option<(Vec<CommandData>, i64)> {
+        // TODO: 事务开启后需要持有读锁
+        // 以try_write以判断是否存在事务进行读取而防止发送Minor Compaction而导致MemTable数据异常
+        if let Some(mut inner) = self.inner.try_write() {
+            let mut last_seq_id = 0;
+            let vec_data = inner.mem_table.iter()
+                .map(|entry| {
+                    let (cmd, seq_id) = entry.value().clone();
+                    if seq_id > last_seq_id {
+                        last_seq_id = seq_id
+                    }
+                    cmd
+                })
+                .collect_vec();
+
+            inner.immut_table = Some(Arc::new(
+                mem::replace(&mut inner.mem_table, SkipMap::new())
+            ));
+
+            Some((vec_data, last_seq_id)  )
+        } else { None }
+    }
+
+    fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let inner = self.inner.read();
+
+        // 填充SEQ_MAX使其变为最高位以尽可能获取最新数据
+        let mut encode_key = key.to_vec();
+        encode_key.append(
+            &mut SEQ_MAX.to_vec()
+        );
+
+        Self::find_(&encode_key, key, &inner.mem_table)
+            .or_else(|| {
+                inner.immut_table.as_ref()
+                    .map(|mem_map|
+                        Self::find_(&encode_key, key, &mem_map))
+                    .flatten()
+            })
+    }
+
+    /// 查询时附带sequence_id进行历史数据查询
+    #[allow(dead_code)]
+    fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Option<Vec<u8>> {
+        let inner = self.inner.read();
+
+        return find_with_seq_(key, sequence_id, &inner.mem_table)
+            .or_else(|| {
+                inner.immut_table.as_ref()
+                    .map(|mem_map| find_with_seq_(key, sequence_id, &mem_map))
+                    .flatten()
+            });
+
+
+        /// 通过sequence_id对mem_table的数据进行获取
+        ///
+        /// 获取第一个小于等于sequence_id的数据
+        fn find_with_seq_(key: &[u8], sequence_id: i64, mem_map: &MemMap) -> Option<Vec<u8>> {
+            MemTable::find_(
+                &MemTable::key_encode_with_seq(key.to_vec(), sequence_id),
+                key,
+                mem_map
+            )
+        }
+    }
+
+    fn find_(seq_key: &[u8], user_key: &[u8], mem_map: &MemMap) -> Option<Vec<u8>> {
+        mem_map.upper_bound(Bound::Included(seq_key))
+            .map(|entry| {
+                let (data, _) = entry.value();
+                if user_key == data.get_key() {
+                    data.get_value_clone()
+                } else { None }
+            })
+            .flatten()
+    }
+
+    /// 将key与seq_id进行混合编码
+    ///
+    /// key在高位，seq_id在低位
+    fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Vec<u8> {
+        key.append(
+            &mut bincode::serialize(&seq_id).unwrap()
+        );
+        key
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Hash, PartialOrd, Eq)]
@@ -110,139 +254,6 @@ impl SSTableMap {
     }
 }
 
-impl MemTable {
-    /// 初始化时进行last_seq_id的建立和数据大小统计
-    pub(crate) fn new(mem_map: MemMap) -> Self {
-        let mut last_seq_id: i64 = 0;
-        let mem_occupied = mem_map.iter()
-            .map(|(key, vec_record)| {
-                vec_record.into_iter()
-                    .map(|(record, record_seq_id)| {
-                        //找出最新seq_id
-                        if &last_seq_id < record_seq_id {
-                            last_seq_id = *record_seq_id;
-                        }
-                        record.bytes_len() as u64
-                    })
-                    .sum::<u64>() + key.len() as u64
-            })
-            .sum();
-        MemTable {
-            mem_table_slice: RwLock::new([
-                (mem_map, mem_occupied, last_seq_id),
-                (MemMap::new(), 0, 0)
-            ])
-        }
-    }
-
-    /// 插入并判断是否溢出
-    ///
-    /// 插入时不会去除重复键值，而是进行追加
-    pub(crate) fn insert_data_and_is_exceeded(
-        &self,
-        cmd: CommandData,
-        config: &Config,
-    ) -> bool {
-        let mut mem_table_slice = self.mem_table_slice.write();
-        let sequence_id = config.create_gen();
-
-        let key = cmd.get_key_clone();
-
-        mem_table_slice[0].2 = sequence_id;
-        mem_table_slice[0].1 += (key.len() + cmd.bytes_len()) as u64;
-
-        match mem_table_slice[0].0.get_mut(&key) {
-            None => {
-                let _ignore = mem_table_slice[0].0.insert(key, vec![(cmd, sequence_id)]);
-            },
-            Some(vec_record) => {
-                vec_record.push((cmd, sequence_id));
-            }
-        }
-
-        mem_table_slice[0].1 >= config.minor_threshold_with_data_size
-    }
-
-    pub(crate) fn mem_table_is_empty(&self) -> bool {
-        let mem_table_slice = self.mem_table_slice.read();
-
-        mem_table_slice[0].0.is_empty()
-    }
-
-    pub(crate) fn mem_table_len(&self) -> usize {
-        let mem_table_slice = self.mem_table_slice.read();
-
-        mem_table_slice[0].0.len()
-    }
-
-    #[allow(dead_code)]
-    fn is_threshold_exceeded_minor(&self, threshold_size_with_mem_table: u64) -> bool {
-        self.mem_table_slice
-            .read()[0].1 > threshold_size_with_mem_table
-    }
-
-    /// MemTable交换并分解,弹出有序数据
-    fn table_swap_and_sort(&self) -> (Vec<CommandData>, i64) {
-        let mut mem_table_slice = self.mem_table_slice.write();
-
-        mem_table_slice.swap(0, 1);
-        mem_table_slice[0] = (MemMap::new(), 0, 0);
-        // 这里看起来需要clone所有的value看起来开销很大，不过实际上CommandData的Value是使用Arc指针封装
-        // SkipMap的values自带排序
-        (mem_table_slice[1].0.values()
-            .filter_map(|vec_record| {
-                // 只获取最新的值，其他旧值抛弃
-                vec_record.last()
-                    .map(|(record, _)| record)
-            })
-            .cloned()
-            .collect(), mem_table_slice[1].2)
-    }
-
-    fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let mem_table_slice = self.mem_table_slice.read();
-
-        Self::find_(key, &mem_table_slice[0].0)
-            .or_else(|| Self::find_(key, &mem_table_slice[1].0))
-    }
-
-    /// 查询时附带sequence_id进行历史数据查询
-    #[allow(dead_code)]
-    fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Option<Vec<u8>> {
-        let mem_table_slice = self.mem_table_slice.read();
-
-        return find_with_seq_(key, sequence_id, &mem_table_slice[0])
-            .or_else(|| find_with_seq_(key, sequence_id, &mem_table_slice[1]));
-
-
-        /// 通过sequence_id对mem_table的数据进行获取
-        ///
-        /// 获取第一个小于等于sequence_id的数据
-        fn find_with_seq_(key: &[u8], sequence_id: i64, mem_table: &(MemMap, u64, i64)) -> Option<Vec<u8>> {
-            let (mem_map, _, last_seq_id) = mem_table;
-            if &sequence_id < last_seq_id {
-                return mem_map.get(key)
-                    .unwrap_or(&vec![])
-                    .into_iter()
-                    .rfind(|(_, record_seq_id)| &sequence_id >= record_seq_id)
-                    .map(|(record, _)| record.get_value_clone())
-                    .flatten();
-            } else {
-                MemTable::find_(key, mem_map)
-            }
-        }
-    }
-
-    fn find_(key: &[u8], mem_map: &MemMap) -> Option<Vec<u8>> {
-        mem_map.get(key)
-            .and_then(|vec_record| {
-                vec_record.last()
-                    .map(|(record, _)| record.get_value_clone())
-                    .flatten()
-            })
-    }
-}
-
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
     async fn write_to_file_and_flush(&self, io_handler: &Box<dyn IOHandler>) -> Result<()>{
@@ -262,11 +273,11 @@ impl MetaInfo {
 
 impl Position {
     /// 通过稀疏索引与指定Key进行获取对应Position
-    pub(crate) fn from_sparse_index_with_key<'a>(sparse_index: &'a SkipMap<Vec<u8>, Position>, key: &'a [u8]) -> Option<&'a Self> {
+    pub(crate) fn from_sparse_index_with_key(sparse_index: &SkipMap<Vec<u8>, Position>, key: &[u8]) -> Option<Self> {
         sparse_index.into_iter()
             .rev()
-            .find(|(key_item, _)| !key.cmp(key_item).eq(&Ordering::Less))
-            .map(|(_, value_item)| value_item)
+            .find(|entry| !key.cmp(entry.key()).eq(&Ordering::Less))
+            .map(|entry| entry.value().clone())
     }
 }
 

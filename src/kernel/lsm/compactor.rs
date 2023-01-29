@@ -49,28 +49,30 @@ impl Compactor {
         vec_values: Vec<CommandData>,
         enable_caching: bool
     ) -> Result<()> {
-        // 从内存表中将数据持久化为ss_table
-        let ss_table = SSTable::create_for_immutable_table(
-            &self.config,
-            gen,
-            &self.sst_factory,
-            vec_values,
-            LEVEL_0
-        ).await?;
+        if !vec_values.is_empty() {
+            // 从内存表中将数据持久化为ss_table
+            let ss_table = SSTable::create_for_immutable_table(
+                &self.config,
+                gen,
+                &self.sst_factory,
+                vec_values,
+                LEVEL_0
+            ).await?;
 
-        self.ver_status
-            .insert_vec_ss_table(vec![ss_table], enable_caching)
-            .await?;
+            self.ver_status
+                .insert_vec_ss_table(vec![ss_table], enable_caching)
+                .await?;
 
-        // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
-        if let Err(err) = self.major_compaction(
-            LEVEL_0,
-            vec![
-                VersionEdit::NewFile((vec![gen], 0), 0),
-                VersionEdit::LastSequenceId(last_seq_id)
-            ]
-        ).await {
-            error!("[LSMStore][major_compaction][error happen]: {:?}", err);
+            // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
+            if let Err(err) = self.major_compaction(
+                LEVEL_0,
+                vec![
+                    VersionEdit::NewFile((vec![gen], 0), 0),
+                    VersionEdit::LastSequenceId(last_seq_id)
+                ]
+            ).await {
+                error!("[LSMStore][major_compaction][error happen]: {:?}", err);
+            }
         }
         Ok(())
     }
