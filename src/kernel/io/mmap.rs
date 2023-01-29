@@ -7,23 +7,43 @@ use memmap2::{Mmap, MmapMut};
 use tokio::sync::Mutex;
 use async_trait::async_trait;
 use crate::kernel::Result;
-use crate::kernel::io::{FileExtension,IOHandler, IOType};
-use crate::KvsError::UnSupportError;
+use crate::kernel::io::{FileExtension, IoType, IoReader, IoWriter};
 
 /// 使用MMap作为实现的IOHandler
 /// 目前主要用途是作为缓存读取器，尽可能减少磁盘IO弥补BufHandler读取性能上的不足
 /// 不建议用于写数据，原因:
 /// https://zhuanlan.zhihu.com/p/470109297
 #[derive(Debug)]
-pub(crate) struct MMapHandler {
+pub(crate) struct MMapIoReader {
     gen: i64,
     dir_path: Arc<PathBuf>,
-    writer: Mutex<MMapWriter>,
     reader: MMapReader,
     extension: Arc<FileExtension>,
 }
 
-impl MMapHandler {
+impl MMapIoReader {
+    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+        let path = extension.path_with_gen(&dir_path, gen);
+
+        let reader = MMapReader::new(&File::open(path)?)?;
+
+        Ok(MMapIoReader {
+            gen,
+            dir_path,
+            reader,
+            extension,
+        })
+    }
+}
+
+pub(crate) struct MMapIoWriter {
+    gen: i64,
+    dir_path: Arc<PathBuf>,
+    writer: Mutex<MMapWriter>,
+    extension: Arc<FileExtension>,
+}
+
+impl MMapIoWriter {
     pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
 
@@ -35,43 +55,18 @@ impl MMapHandler {
             .open(&path)?;
 
         let writer = Mutex::new(MMapWriter::new(&file)?);
-        let reader = MMapReader::new(&File::open(path)?)?;
 
-        Ok(MMapHandler {
+        Ok(MMapIoWriter {
             gen,
             dir_path,
             writer,
-            reader,
-            extension,
-        })
-    }
-}
-
-/// MMap只读器
-/// 因为比较喜欢用MMap做只读
-pub(crate) struct MMapIOReader {
-    gen: i64,
-    dir_path: Arc<PathBuf>,
-    reader: MMapReader,
-    extension: Arc<FileExtension>,
-}
-
-impl MMapIOReader {
-    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
-        let path = extension.path_with_gen(&dir_path, gen);
-        let reader = MMapReader::new(&File::open(path)?)?;
-
-        Ok(MMapIOReader {
-            gen,
-            dir_path,
-            reader,
             extension,
         })
     }
 }
 
 #[async_trait]
-impl IOHandler for MMapHandler {
+impl IoWriter for MMapIoWriter {
     fn get_gen(&self) -> i64 {
         self.gen
     }
@@ -79,13 +74,6 @@ impl IOHandler for MMapHandler {
     fn get_path(&self) -> PathBuf {
         self.extension
             .path_with_gen(&self.dir_path, self.gen)
-    }
-
-    async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
-        let start_pos = start as usize;
-
-        self.reader.read_bytes(start_pos, len + start_pos)
-            .map(|slice| slice.to_vec())
     }
 
     async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
@@ -105,13 +93,13 @@ impl IOHandler for MMapHandler {
         Ok(())
     }
 
-    fn get_type(&self) -> IOType {
-        IOType::MMap
+    fn get_type(&self) -> IoType {
+        IoType::MMap
     }
 }
 
 #[async_trait]
-impl IOHandler for MMapIOReader {
+impl IoReader for MMapIoReader {
     fn get_gen(&self) -> i64 {
         self.gen
     }
@@ -128,16 +116,8 @@ impl IOHandler for MMapIOReader {
             .map(|slice| slice.to_vec())
     }
 
-    async fn write(&self, _buf: Vec<u8>) -> Result<(u64, usize)> {
-        Err(UnSupportError)
-    }
-
-    async fn flush(&self) -> Result<()> {
-        Err(UnSupportError)
-    }
-
-    fn get_type(&self) -> IOType {
-        IOType::MMapOnlyReader
+    fn get_type(&self) -> IoType {
+        IoType::MMap
     }
 }
 

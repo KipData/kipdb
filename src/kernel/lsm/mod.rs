@@ -9,7 +9,7 @@ use itertools::Itertools;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, Result};
-use crate::kernel::io::{IOHandler, IOHandlerFactory, IOType};
+use crate::kernel::io::{IoFactory, IoReader, IoType, IoWriter};
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
@@ -227,11 +227,11 @@ impl SSTableMap {
 
     /// 将指定gen通过MMapHandler进行读取以提高读取性能
     /// 创建MMapHandler成本较高，因此使用单独api控制缓存
-    pub(crate) async fn caching(&mut self, gen: i64, factory: &IOHandlerFactory) -> Result<Option<SSTable>> {
-        let mmap_handler = factory.create(gen.clone(), IOType::MMapOnlyReader)?;
+    pub(crate) async fn caching(&mut self, gen: i64, factory: &IoFactory) -> Result<Option<SSTable>> {
+        let reader = factory.reader(gen.clone(), IoType::MMap)?;
         Ok(self.cache.put(
             gen,
-            SSTable::load_from_file(mmap_handler).await?
+            SSTable::load_from_file(reader).await?
         ).await)
     }
 
@@ -256,16 +256,16 @@ impl SSTableMap {
 
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
-    async fn write_to_file_and_flush(&self, io_handler: &Box<dyn IOHandler>) -> Result<()>{
-        let _ignore = io_handler.write(bincode::serialize(&self)?).await?;
-        io_handler.flush().await?;
+    async fn write_to_file_and_flush(&self, writer: &Box<dyn IoWriter>) -> Result<()>{
+        let _ignore = writer.write(bincode::serialize(&self)?).await?;
+        writer.flush().await?;
         Ok(())
     }
 
     /// 从对应文件的IOHandler中将MetaInfo读取出来
-    async fn read_to_file(io_handler: &Box<dyn IOHandler>) -> Result<Self> {
-        let start_pos = io_handler.file_size()? - TABLE_META_INFO_SIZE as u64;
-        let table_meta_info = io_handler.read_with_pos(start_pos, TABLE_META_INFO_SIZE).await?;
+    async fn read_to_file(reader: &Box<dyn IoReader>) -> Result<Self> {
+        let start_pos = reader.file_size()? - TABLE_META_INFO_SIZE as u64;
+        let table_meta_info = reader.read_with_pos(start_pos, TABLE_META_INFO_SIZE).await?;
 
         Ok(bincode::deserialize(table_meta_info.as_slice())?)
     }
@@ -315,49 +315,55 @@ fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Conf
     vec_sharding
 }
 
-#[test]
-fn test_meta_info() -> Result<()> {
-    let info = MetaInfo {
-        level: 0,
-        data_part_len: 0,
-        index_len: 0,
-        crc_code: 0
-    };
-
-    let vec_u8 = bincode::serialize(&info)?;
-
-    assert_eq!(vec_u8.len(), TABLE_META_INFO_SIZE);
-
-    Ok(())
-}
-
-#[test]
-fn test_mem_table_find() -> Result<()> {
+#[cfg(test)]
+mod tests {
     use tempfile::TempDir;
+    use crate::kernel::lsm::{MemMap, MemTable, MetaInfo, TABLE_META_INFO_SIZE};
+    use crate::kernel::lsm::lsm_kv::Config;
+    use crate::kernel::{CommandData, Result};
 
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let config = Config::new(temp_dir.into_path(), 0, 0);
+    #[test]
+    fn test_meta_info() -> Result<()> {
+        let info = MetaInfo {
+            level: 0,
+            data_part_len: 0,
+            index_len: 0,
+            crc_code: 0
+        };
 
-    let mem_table = MemTable::new(MemMap::new());
+        let vec_u8 = bincode::serialize(&info)?;
 
-    let data_1 = CommandData::set(vec![b'k'], vec![b'1']);
-    let data_2 = CommandData::set(vec![b'k'], vec![b'2']);
+        assert_eq!(vec_u8.len(), TABLE_META_INFO_SIZE);
 
-    assert!(!mem_table.insert_data_and_is_exceeded(data_1.clone(), &config));
+        Ok(())
+    }
 
-    let old_seq_id = config.create_gen_lazy();
+    #[test]
+    fn test_mem_table_find() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let config = Config::new(temp_dir.into_path(), 0, 0);
 
-    assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'1']));
+        let mem_table = MemTable::new(MemMap::new());
 
-    assert!(!mem_table.insert_data_and_is_exceeded(data_2.clone(), &config));
+        let data_1 = CommandData::set(vec![b'k'], vec![b'1']);
+        let data_2 = CommandData::set(vec![b'k'], vec![b'2']);
 
-    assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'2']));
+        assert!(!mem_table.insert_data_and_is_exceeded(data_1.clone(), &config));
 
-    assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id), Some(vec![b'1']));
+        let old_seq_id = config.create_gen_lazy();
 
-    let new_seq_id = config.create_gen_lazy();
+        assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'1']));
 
-    assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id), Some(vec![b'2']));
+        assert!(!mem_table.insert_data_and_is_exceeded(data_2.clone(), &config));
 
-    Ok(())
+        assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'2']));
+
+        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id), Some(vec![b'1']));
+
+        let new_seq_id = config.create_gen_lazy();
+
+        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id), Some(vec![b'2']));
+
+        Ok(())
+    }
 }

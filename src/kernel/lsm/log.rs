@@ -3,20 +3,21 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::error;
 use crate::kernel::{CommandData, CommandPackage, Result, sorted_gen_list};
-use crate::kernel::io::{FileExtension, IOHandler, IOHandlerFactory, IOType};
+use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::lsm_kv::Config;
 
 const SUCCESS_FS_GEN: i64 = 000_000_000;
 
 pub(crate) struct LogLoader {
-    factory: IOHandlerFactory,
+    factory: IoFactory,
     config: Arc<Config>,
     inner: RwLock<Inner>,
     check_success: bool,
 }
 
 struct Inner {
-    inner: (i64, Box<dyn IOHandler>),
+    current_gen: i64,
+    writer: Box<dyn IoWriter>,
     vec_gen: VecDeque<i64>
 }
 
@@ -58,7 +59,7 @@ impl LogLoader {
         let wal_path = config.dir_path
             .join(path_name);
 
-        let factory = IOHandlerFactory::new(
+        let factory = IoFactory::new(
             wal_path.clone(),
             extension.clone()
         )?;
@@ -72,7 +73,8 @@ impl LogLoader {
 
         let inner = RwLock::new(
             Inner {
-                inner: (last_gen, factory.create(last_gen, IOType::Buf)?),
+                current_gen: last_gen,
+                writer: factory.writer(last_gen, IoType::Buf)?,
                 vec_gen,
             }
         );
@@ -87,12 +89,12 @@ impl LogLoader {
 
     /// 同时检测并恢复数据，防止数据异常而丢失
     async fn check_and_reload(
-        factory: &IOHandlerFactory,
+        factory: &IoFactory,
         last_gen: i64,
     ) -> Result<Option<Vec<CommandData>>> {
         // 当存在SUCCESS_FS时，代表Drop不正常，因此恢复最新的gen日志进行恢复
         if factory.has_gen(SUCCESS_FS_GEN)? {
-            let reader = factory.create(last_gen, IOType::MMapOnlyReader)?;
+            let reader = factory.reader(last_gen, IoType::MMap)?;
             return Ok(Some(CommandPackage::from_read_to_unpack_vec(&reader).await?));
         } else { let _ignore = factory.create_fs(SUCCESS_FS_GEN)?; }
 
@@ -101,19 +103,19 @@ impl LogLoader {
 
     pub(crate) async fn log(&self, cmd: &CommandData) -> Result<()> {
         let inner = self.inner.read().await;
-        let _ignore = CommandPackage::write(&inner.inner.1, cmd).await?;
+        let _ignore = CommandPackage::write(&inner.writer, cmd).await?;
         Ok(())
     }
 
     pub(crate) async fn log_batch(&self, vec_cmd: &Vec<CommandData>) -> Result<()> {
         let inner = self.inner.read().await;
-        let _ignore = CommandPackage::write_batch(&inner.inner.1, vec_cmd).await?;
+        let _ignore = CommandPackage::write_batch(&inner.writer, vec_cmd).await?;
         Ok(())
     }
 
     pub(crate) async fn flush(&self) -> Result<()> {
         self.inner.read().await
-            .inner.1.flush().await
+            .writer.flush().await
     }
 
     pub(crate) async fn last_gen(&self) -> Option<i64> {
@@ -132,11 +134,11 @@ impl LogLoader {
     pub(crate) async fn switch(&self) -> Result<i64> {
         let next_gen = self.config.create_gen_lazy();
 
-        let next_handler = self.factory.create(next_gen, IOType::Buf)?;
+        let next_writer = self.factory.writer(next_gen, IoType::Buf)?;
         let mut inner = self.inner.write().await;
 
-        let current_gen = inner.inner.0;
-        inner.inner.1.flush().await?;
+        let current_gen = inner.current_gen;
+        inner.writer.flush().await?;
 
         // 去除一半的SSTable
         let vec_len = inner.vec_gen.len();
@@ -150,7 +152,8 @@ impl LogLoader {
         }
 
         inner.vec_gen.push_back(next_gen);
-        inner.inner = (next_gen, next_handler);
+        inner.writer = next_writer;
+        inner.current_gen = next_gen;
 
         Ok(current_gen)
     }
@@ -158,7 +161,7 @@ impl LogLoader {
     /// 通过Gen载入数据进行读取
     pub(crate) async fn load(&self, gen: i64) -> Result<Option<Vec<CommandData>>> {
         Ok(if self.factory.has_gen(gen)? {
-            let reader = self.factory.create(gen, IOType::MMapOnlyReader)?;
+            let reader = self.factory.reader(gen, IoType::MMap)?;
             Some(CommandPackage::from_read_to_unpack_vec(&reader).await?)
         } else { None })
     }
@@ -176,81 +179,86 @@ impl Drop for LogLoader {
     }
 }
 
-#[test]
-fn test_log_load() -> Result<()> {
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
+    use crate::kernel::io::FileExtension;
+    use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::{CommandData, Result};
+    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
 
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    #[test]
+    fn test_log_load() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-    tokio_test::block_on(async move {
+        tokio_test::block_on(async move {
 
-        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+            let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
 
-        let wal = LogLoader::reload(
-            &config,
-            DEFAULT_WAL_PATH,
-            FileExtension::Log
-        ).await?;
+            let wal = LogLoader::reload(
+                &config,
+                DEFAULT_WAL_PATH,
+                FileExtension::Log
+            ).await?;
 
-        let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
-        let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
+            let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
+            let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
 
-        wal.log(&data_1).await?;
-        wal.log(&data_2).await?;
+            wal.log(&data_1).await?;
+            wal.log(&data_2).await?;
 
-        let gen = wal.switch().await?;
+            let gen = wal.switch().await?;
 
-        drop(wal);
+            drop(wal);
 
-        let wal = LogLoader::reload(
-            &config,
-            DEFAULT_WAL_PATH,
-            FileExtension::Log
-        ).await?;
-        let option = wal.load(gen).await?;
+            let wal = LogLoader::reload(
+                &config,
+                DEFAULT_WAL_PATH,
+                FileExtension::Log
+            ).await?;
+            let option = wal.load(gen).await?;
 
-        assert_eq!(option, Some(vec![data_1, data_2]));
+            assert_eq!(option, Some(vec![data_1, data_2]));
 
-        Ok(())
-    })
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_log_reload_check() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        tokio_test::block_on(async move {
+
+            let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+
+            let (wal_1, _) = LogLoader::reload_with_check(
+                &config,
+                DEFAULT_WAL_PATH,
+                FileExtension::Log
+            ).await?;
+
+            let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
+            let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
+
+            wal_1.log(&data_1).await?;
+            wal_1.log(&data_2).await?;
+
+            wal_1.flush().await?;
+            // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复
+
+            let (_, option_vec) = LogLoader::reload_with_check(
+                &config,
+                DEFAULT_WAL_PATH,
+                FileExtension::Log
+            ).await?;
+
+            assert_eq!(option_vec, Some(vec![data_1, data_2]));
+
+            Ok(())
+        })
+    }
 }
 
-#[test]
-fn test_log_reload_check() -> Result<()> {
-    use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
-
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-    tokio_test::block_on(async move {
-
-        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
-
-        let (wal_1, _) = LogLoader::reload_with_check(
-            &config,
-            DEFAULT_WAL_PATH,
-            FileExtension::Log
-        ).await?;
-
-        let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
-        let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
-
-        wal_1.log(&data_1).await?;
-        wal_1.log(&data_2).await?;
-
-        wal_1.flush().await?;
-        // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复
-
-        let (_, option_vec) = LogLoader::reload_with_check(
-            &config,
-            DEFAULT_WAL_PATH,
-            FileExtension::Log
-        ).await?;
-
-        assert_eq!(option_vec, Some(vec![data_1, data_2]));
-
-        Ok(())
-    })
-}
 

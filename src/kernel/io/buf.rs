@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use async_trait::async_trait;
-use crate::kernel::io::{FileExtension, IOHandler, IOType};
+use crate::kernel::io::{FileExtension, IoType, IoReader, IoWriter};
 use crate::kernel::Result;
 
 type SyncWriter = Mutex<BufWriterWithPos<File>>;
@@ -16,15 +16,37 @@ type SyncReader = Mutex<BufReaderWithPos<File>>;
 /// 目前是使用了Mutex实现其线程安全
 /// 读方面可能有优化空间
 #[derive(Debug)]
-pub(crate) struct BufHandler {
+pub(crate) struct BufIoReader {
     gen: i64,
     dir_path: Arc<PathBuf>,
-    writer: SyncWriter,
     reader: SyncReader,
     extension: Arc<FileExtension>,
 }
 
-impl BufHandler {
+impl BufIoReader {
+    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+        let path = extension.path_with_gen(&dir_path, gen);
+
+        let reader = Mutex::new(BufReaderWithPos::new(File::open(path)?)?);
+
+        Ok(BufIoReader {
+            gen,
+            dir_path,
+            reader,
+            extension,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct BufIoWriter {
+    gen: i64,
+    dir_path: Arc<PathBuf>,
+    writer: SyncWriter,
+    extension: Arc<FileExtension>,
+}
+
+impl BufIoWriter {
     pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
 
@@ -36,21 +58,17 @@ impl BufHandler {
             .open(&path)?;
 
         let writer = Mutex::new(BufWriterWithPos::new(file)?);
-        let reader = Mutex::new(BufReaderWithPos::new(File::open(path)?)?);
-
-        Ok(BufHandler {
+        Ok(BufIoWriter {
             gen,
             dir_path,
             writer,
-            reader,
             extension,
         })
     }
 }
 
 #[async_trait]
-impl IOHandler for BufHandler {
-
+impl IoReader for BufIoReader {
     fn get_gen(&self) -> i64 {
         self.gen
     }
@@ -71,6 +89,23 @@ impl IOHandler for BufHandler {
         Ok(buffer)
     }
 
+    fn get_type(&self) -> IoType {
+        IoType::Buf
+    }
+}
+
+#[async_trait]
+impl IoWriter for BufIoWriter {
+
+    fn get_gen(&self) -> i64 {
+        self.gen
+    }
+
+    fn get_path(&self) -> PathBuf {
+        self.extension
+            .path_with_gen(&self.dir_path, self.gen)
+    }
+
     async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
         let mut writer = self.writer.lock().await;
 
@@ -88,8 +123,8 @@ impl IOHandler for BufHandler {
         Ok(())
     }
 
-    fn get_type(&self) -> IOType {
-        IOType::Buf
+    fn get_type(&self) -> IoType {
+        IoType::Buf
     }
 }
 

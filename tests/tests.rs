@@ -1,7 +1,7 @@
 use tempfile::TempDir;
 use walkdir::WalkDir;
 use kip_db::kernel::hash_kv::HashStore;
-use kip_db::kernel::io::{FileExtension, IOHandlerFactory, IOType};
+use kip_db::kernel::io::{FileExtension, IoFactory, IoType};
 use kip_db::kernel::KVStore;
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::Result;
@@ -219,23 +219,24 @@ fn test_io() -> Result<()> {
     let temp_dir = TempDir::new()
         .expect("unable to create temporary working directory");
     tokio_test::block_on(async move {
-        let factory = IOHandlerFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
+        let factory = IoFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
 
-        io_type_test(&factory, IOType::Buf).await?;
-        io_type_test(&factory, IOType::MMap).await?;
+        io_type_test(&factory, IoType::Buf).await?;
+        io_type_test(&factory, IoType::MMap).await?;
 
         Ok(())
     })
 }
 
-async fn io_type_test(factory: &IOHandlerFactory, io_type: IOType) -> Result<()> {
-    let handler1 = factory.create(1, io_type)?;
+async fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
+    let writer = factory.writer(1, io_type)?;
+    let reader = factory.reader(1, io_type)?;
     let data_write1 = vec![b'1', b'2', b'3'];
     let data_write2 = vec![b'4', b'5', b'6'];
-    let (pos_1, len_1) = handler1.write(data_write1).await?;
-    let (pos_2, len_2) = handler1.write(data_write2).await?;
-    handler1.flush().await?;
-    let data_read = handler1.read_with_pos(0, 6).await?;
+    let (pos_1, len_1) = writer.write(data_write1).await?;
+    let (pos_2, len_2) = writer.write(data_write2).await?;
+    writer.flush().await?;
+    let data_read = reader.read_with_pos(0, 6).await?;
 
     assert_eq!(vec![b'1', b'2', b'3', b'4', b'5', b'6'], data_read);
     assert_eq!(pos_1, 0);
@@ -243,7 +244,7 @@ async fn io_type_test(factory: &IOHandlerFactory, io_type: IOType) -> Result<()>
     assert_eq!(len_1, 3);
     assert_eq!(len_2, 3);
 
-    assert_eq!(handler1.file_size()?, 6);
+    assert_eq!(reader.file_size()?, 6);
 
     Ok(())
 }

@@ -4,7 +4,7 @@ use futures::future;
 use itertools::Itertools;
 use tracing::{error, info};
 use crate::KvsError;
-use crate::kernel::io::IOHandlerFactory;
+use crate::kernel::io::IoFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::data_sharding;
@@ -26,7 +26,7 @@ pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
 pub(crate) struct Compactor {
     ver_status: Arc<VersionStatus>,
     config: Arc<Config>,
-    sst_factory: Arc<IOHandlerFactory>,
+    sst_factory: Arc<IoFactory>,
 }
 
 impl Compactor {
@@ -34,7 +34,7 @@ impl Compactor {
     pub(crate) fn new(
         ver_status: Arc<VersionStatus>,
         config: Arc<Config>,
-        sst_factory: Arc<IOHandlerFactory>
+        sst_factory: Arc<IoFactory>
     ) -> Self {
         Self { ver_status, config, sst_factory }
     }

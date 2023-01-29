@@ -550,51 +550,58 @@ pub(crate) async fn wal_put(wal: &Arc<LogLoader>, cmd: &CommandData, is_sync: bo
     }
 }
 
-#[test]
-fn test_lsm_major_compactor() -> Result<()> {
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+    use itertools::Itertools;
     use tempfile::TempDir;
+    use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
+    use crate::kernel::{KVStore, Result};
 
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    #[test]
+    fn test_lsm_major_compactor() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-    tokio_test::block_on(async move {
-        let times = 5000;
+        tokio_test::block_on(async move {
+            let times = 5000;
 
-        let value = b"Stray birds of summer come to my window to sing and fly away.
+            let value = b"Stray birds of summer come to my window to sing and fly away.
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-        let config = Config::new(temp_dir.into_path(), 0, 0)
-            .wal_enable(false)
-            .minor_threshold_with_len(1000)
-            .major_threshold_with_sst_size(4);
-        let kv_store = LsmStore::open_with_config(config).await?;
-        let mut vec_kv = Vec::new();
+            let config = Config::new(temp_dir.into_path(), 0, 0)
+                .wal_enable(false)
+                .minor_threshold_with_len(1000)
+                .major_threshold_with_sst_size(4);
+            let kv_store = LsmStore::open_with_config(config).await?;
+            let mut vec_kv = Vec::new();
 
-        for i in 0..times {
-            let vec_u8 = bincode::serialize(&i)?;
-            vec_kv.push((
-                vec_u8.clone(),
-                vec_u8.into_iter()
-                    .chain(value.to_vec())
-                    .collect_vec()
+            for i in 0..times {
+                let vec_u8 = bincode::serialize(&i)?;
+                vec_kv.push((
+                    vec_u8.clone(),
+                    vec_u8.into_iter()
+                        .chain(value.to_vec())
+                        .collect_vec()
                 ));
-        }
+            }
 
-        let start = Instant::now();
-        for i in 0..times {
-            kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?
-        }
-        println!("[set_for][Time: {:?}]", start.elapsed());
+            let start = Instant::now();
+            for i in 0..times {
+                kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?
+            }
+            println!("[set_for][Time: {:?}]", start.elapsed());
 
-        kv_store.flush().await?;
+            kv_store.flush().await?;
 
-        let start = Instant::now();
-        for i in 0..times {
-            assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
-        }
-        println!("[get_for][Time: {:?}]", start.elapsed());
-        kv_store.flush().await?;
+            let start = Instant::now();
+            for i in 0..times {
+                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
+            }
+            println!("[get_for][Time: {:?}]", start.elapsed());
+            kv_store.flush().await?;
 
-        Ok(())
-    })
+            Ok(())
+        })
+    }
 }

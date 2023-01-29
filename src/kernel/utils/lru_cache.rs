@@ -369,46 +369,52 @@ impl<K, V> Drop for LruCache<K, V> {
     }
 }
 
-#[test]
-fn test_lru_cache() {
-    tokio_test::block_on(async move {
-        let mut lru = LruCache::new(3).unwrap();
-        assert_eq!(lru.put(1, 10), None);
-        assert_eq!(lru.put(2, 20), None);
-        assert_eq!(lru.put(3, 30), None);
-        assert_eq!(lru.get(&1), Some(&10));
-        assert_eq!(lru.put(2, 200), Some(20));
-        assert_eq!(lru.put(4, 40), None);
-        assert_eq!(lru.get(&2), Some(&200));
-        assert_eq!(lru.get(&3), None);
+#[cfg(test)]
+mod tests {
+    use std::collections::hash_map::RandomState;
+    use crate::kernel::utils::lru_cache::{LruCache, ShardingLruCache};
 
-        assert_eq!(
-            lru.get_or_insert_async(
-                9,
-                async {Ok(9)}
-            ).await.unwrap(),
-            &9
-        );
+    #[test]
+    fn test_lru_cache() {
+        tokio_test::block_on(async move {
+            let mut lru = LruCache::new(3).unwrap();
+            assert_eq!(lru.put(1, 10), None);
+            assert_eq!(lru.put(2, 20), None);
+            assert_eq!(lru.put(3, 30), None);
+            assert_eq!(lru.get(&1), Some(&10));
+            assert_eq!(lru.put(2, 200), Some(20));
+            assert_eq!(lru.put(4, 40), None);
+            assert_eq!(lru.get(&2), Some(&200));
+            assert_eq!(lru.get(&3), None);
 
-        assert_eq!(lru.len(), 3);
-        assert!(!lru.is_empty())
-    })
-}
+            assert_eq!(
+                lru.get_or_insert_async(
+                    9,
+                    async {Ok(9)}
+                ).await.unwrap(),
+                &9
+            );
 
-#[test]
-fn test_sharding_cache() {
-    tokio_test::block_on(async move {
-        let lru = ShardingLruCache::new(4, 2, RandomState::default()).unwrap();
-        assert_eq!(lru.put(1, 10).await, None);
+            assert_eq!(lru.len(), 3);
+            assert!(!lru.is_empty())
+        })
+    }
 
-        assert_eq!(lru.get(&1).await, Some(&10));
+    #[test]
+    fn test_sharding_cache() {
+        tokio_test::block_on(async move {
+            let lru = ShardingLruCache::new(4, 2, RandomState::default()).unwrap();
+            assert_eq!(lru.put(1, 10).await, None);
 
-        assert_eq!(
-            lru.get_or_insert_async(
-                9,
-                async {Ok(9)}
-            ).await.unwrap(),
-            &9
-        );
-    })
+            assert_eq!(lru.get(&1).await, Some(&10));
+
+            assert_eq!(
+                lru.get_or_insert_async(
+                    9,
+                    async {Ok(9)}
+                ).await.unwrap(),
+                &9
+            );
+        })
+    }
 }

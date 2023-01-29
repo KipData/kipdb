@@ -1,13 +1,13 @@
-pub(crate) mod buf_handler;
-pub(crate) mod mmap_handler;
+pub(crate) mod buf;
+pub(crate) mod mmap;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use async_trait::async_trait;
-use crate::kernel::io::buf_handler::BufHandler;
-use crate::kernel::io::mmap_handler::{MMapHandler, MMapIOReader};
+use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
+use crate::kernel::io::mmap::{MMapIoReader, MMapIoWriter};
 use crate::kernel::Result;
 
 
@@ -35,29 +35,39 @@ impl FileExtension {
 }
 
 #[derive(Debug)]
-pub struct IOHandlerFactory {
+pub struct IoFactory {
     dir_path: Arc<PathBuf>,
     extension: Arc<FileExtension>,
 }
 
 #[derive(PartialEq, Copy, Clone, Debug)]
-pub enum IOType {
+pub enum IoType {
     Buf,
-    MMap,
-    MMapOnlyReader
+    MMap
 }
 
-impl IOHandlerFactory {
+impl IoFactory {
     #[inline]
-    pub fn create(&self, gen: i64, io_type: IOType) -> Result<Box<dyn IOHandler>>
+    pub fn reader(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoReader>>
     {
         let dir_path = Arc::clone(&self.dir_path);
         let extension = Arc::clone(&self.extension);
 
         Ok(match io_type {
-            IOType::Buf => Box::new(BufHandler::new(dir_path, gen, extension)?),
-            IOType::MMap => Box::new(MMapHandler::new(dir_path, gen, extension)?),
-            IOType::MMapOnlyReader => Box::new(MMapIOReader::new(dir_path, gen, extension)?)
+            IoType::Buf => Box::new(BufIoReader::new(dir_path, gen, extension)?),
+            IoType::MMap => Box::new(MMapIoReader::new(dir_path, gen, extension)?),
+        })
+    }
+
+    #[inline]
+    pub fn writer(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoWriter>>
+    {
+        let dir_path = Arc::clone(&self.dir_path);
+        let extension = Arc::clone(&self.extension);
+
+        Ok(match io_type {
+            IoType::Buf => Box::new(BufIoWriter::new(dir_path, gen, extension)?),
+            IoType::MMap => Box::new(MMapIoWriter::new(dir_path, gen, extension)?),
         })
     }
 
@@ -102,7 +112,7 @@ impl IOHandlerFactory {
 }
 
 #[async_trait]
-pub trait IOHandler: Send + Sync + 'static {
+pub trait IoReader: Send + Sync + 'static {
 
     fn get_gen(&self) -> i64;
 
@@ -115,14 +125,29 @@ pub trait IOHandler: Send + Sync + 'static {
 
     async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>>;
 
-    async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)>;
-
-    async fn flush(&self) -> Result<()>;
-
-    fn get_type(&self) -> IOType;
+    fn get_type(&self) -> IoType;
 
     async fn bytes(&self) -> Result<Vec<u8>> {
         let len = self.file_size()?;
         self.read_with_pos(0, len as usize).await
     }
+}
+
+#[async_trait]
+pub trait IoWriter: Send + Sync + 'static {
+
+    fn get_gen(&self) -> i64;
+
+    fn get_path(&self) -> PathBuf;
+
+    fn file_size(&self) -> Result<u64> {
+        let path_buf = self.get_path();
+        Ok(fs::metadata(path_buf)?.len())
+    }
+
+    async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)>;
+
+    async fn flush(&self) -> Result<()>;
+
+    fn get_type(&self) -> IoType;
 }

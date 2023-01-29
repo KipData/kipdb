@@ -7,7 +7,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use crate::kernel::{CommandData, Result, sorted_gen_list};
-use crate::kernel::io::{FileExtension, IOHandlerFactory, IOType};
+use crate::kernel::io::{FileExtension, IoFactory, IoType};
 use crate::kernel::lsm::{Position, SSTableMap};
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
@@ -49,7 +49,7 @@ enum CleanTag {
 /// 考虑过在Compactor中进行文件删除，但这样会需要进行额外的阈值判断以触发压缩(Compactor的阈值判断是通过传入的KV进行累计)
 struct Cleaner {
     ss_table_map: Arc<RwLock<SSTableMap>>,
-    sst_factory: Arc<IOHandlerFactory>,
+    sst_factory: Arc<IoFactory>,
     tag_rev: Receiver<CleanTag>,
     del_gens: Vec<(u64, Vec<i64>)>,
 
@@ -58,7 +58,7 @@ struct Cleaner {
 impl Cleaner {
     fn new(
         ss_table_map: &Arc<RwLock<SSTableMap>>,
-        sst_factory: &Arc<IOHandlerFactory>,
+        sst_factory: &Arc<IoFactory>,
         tag_rev: Receiver<CleanTag>
     ) -> Self {
         Self {
@@ -140,7 +140,7 @@ struct VersionInner {
 pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
     ss_table_map: Arc<RwLock<SSTableMap>>,
-    sst_factory: Arc<IOHandlerFactory>,
+    sst_factory: Arc<IoFactory>,
     /// TODO: 日志快照
     ver_log: LogLoader,
     /// 用于Drop时通知Cleaner drop
@@ -177,7 +177,7 @@ pub(crate) struct Version {
 }
 
 impl VersionStatus {
-    pub(crate) fn get_sst_factory(&self) -> Arc<IOHandlerFactory> {
+    pub(crate) fn get_sst_factory(&self) -> Arc<IoFactory> {
         Arc::clone(&self.sst_factory)
     }
 
@@ -197,7 +197,7 @@ impl VersionStatus {
         let mut ss_table_map = SSTableMap::new(&config)?;
 
         let sst_factory = Arc::new(
-            IOHandlerFactory::new(
+            IoFactory::new(
                 sst_path.clone(),
                 FileExtension::SSTable
             )?
@@ -209,9 +209,9 @@ impl VersionStatus {
             .copied()
             .rev()
         {
-            let io_handler = sst_factory.create(gen, IOType::Buf)?;
+            let reader = sst_factory.reader(gen, IoType::Buf)?;
 
-            if let Some(ss_table) = match SSTable::load_from_file(io_handler).await {
+            if let Some(ss_table) = match SSTable::load_from_file(reader).await {
                 Ok(ss_table) => Some(ss_table),
                 Err(err) => {
                     warn!(
@@ -288,7 +288,7 @@ impl VersionStatus {
     async fn reload_with_wal(
         config: &Config,
         wal: &LogLoader,
-        sst_factory: &Arc<IOHandlerFactory>,
+        sst_factory: &Arc<IoFactory>,
         gen: i64
     ) -> Result<Option<SSTable>> {
         Ok(if let Some(vec_mem_data) = wal.load(gen).await? {
@@ -307,7 +307,7 @@ impl VersionStatus {
 
     async fn ss_table_insert(
         ss_table_map: &mut SSTableMap,
-        sst_factory: &Arc<IOHandlerFactory>,
+        sst_factory: &Arc<IoFactory>,
         ss_table: SSTable,
         enable_cache: bool
     ) -> Result<()> {
@@ -783,175 +783,179 @@ fn version_display(new_version: &Version, method: &str) {
         );
 }
 
-#[test]
-fn test_version_clean() -> Result<()> {
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::TempDir;
     use tokio::time;
-    use std::time::Duration;
-    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
+    use crate::kernel::io::{FileExtension, IoFactory};
+    use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
     use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, Version, VersionEdit, VersionStatus};
+    use crate::kernel::{CommandData, Result};
 
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    #[test]
+    fn test_version_clean() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-    tokio_test::block_on(async move {
+        tokio_test::block_on(async move {
 
-        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+            let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
 
-        let (wal, _) = LogLoader::reload_with_check(
-            &config,
-            DEFAULT_WAL_PATH,
-            FileExtension::Log
-        ).await?;
+            let (wal, _) = LogLoader::reload_with_check(
+                &config,
+                DEFAULT_WAL_PATH,
+                FileExtension::Log
+            ).await?;
 
-        // 注意：将ss_table的创建防止VersionStatus的创建前
-        // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
-        let ver_status =
-            VersionStatus::load_with_path(&config, &wal).await?;
-
-
-        let sst_factory = IOHandlerFactory::new(
-            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-            FileExtension::SSTable
-        )?;
-
-        let ss_table_1 = SSTable::create_for_immutable_table(
-            &config,
-            1,
-            &sst_factory,
-            vec![CommandData::get(b"test".to_vec())],
-            0
-        ).await?;
-
-        let ss_table_2 = SSTable::create_for_immutable_table(
-            &config,
-            2,
-            &sst_factory,
-            vec![CommandData::get(b"test".to_vec())],
-            0
-        ).await?;
-
-        ver_status.insert_vec_ss_table(vec![ss_table_1], false).await?;
-        ver_status.insert_vec_ss_table(vec![ss_table_2], false).await?;
-
-        let vec_edit_1 = vec![
-            VersionEdit::NewFile((vec![1], 0),0),
-        ];
-
-        ver_status.log_and_apply(vec_edit_1).await?;
-
-        let version_1 = Arc::clone(&ver_status.current().await);
-
-        let vec_edit_2 = vec![
-            VersionEdit::NewFile((vec![2], 0),0),
-            VersionEdit::DeleteFile((vec![1], 0)),
-        ];
-
-        ver_status.log_and_apply(vec_edit_2).await?;
-
-        let version_2 = Arc::clone(&ver_status.current().await);
-
-        let vec_edit_3 = vec![
-            VersionEdit::DeleteFile((vec![2], 0)),
-        ];
-
-        // 用于去除version2的引用计数
-        ver_status.log_and_apply(vec_edit_3).await?;
-
-        assert!(sst_factory.has_gen(1)?);
-        assert!(sst_factory.has_gen(2)?);
-
-        drop(version_2);
-
-        assert!(sst_factory.has_gen(1)?);
-        assert!(sst_factory.has_gen(2)?);
-
-        drop(version_1);
-        time::sleep(Duration::from_secs(1)).await;
-
-        assert!(!sst_factory.has_gen(1)?);
-        assert!(sst_factory.has_gen(2)?);
-
-        drop(ver_status);
-        time::sleep(Duration::from_secs(1)).await;
-
-        assert!(!sst_factory.has_gen(1)?);
-        assert!(!sst_factory.has_gen(2)?);
-
-        Ok(())
-    })
-}
-
-#[test]
-fn test_version_apply_and_log() -> Result<()> {
-    use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::DEFAULT_WAL_PATH;
-    use crate::kernel::lsm::ss_table::SSTable;
-
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-    tokio_test::block_on(async move {
-
-        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
-
-        let wal = LogLoader::reload(
-            &config,
-            DEFAULT_WAL_PATH,
-            FileExtension::Log
-        ).await?;
-
-        // 注意：将ss_table的创建防止VersionStatus的创建前
-        // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
-        let ver_status_1 =
-            VersionStatus::load_with_path(&config, &wal).await?;
+            // 注意：将ss_table的创建防止VersionStatus的创建前
+            // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
+            let ver_status =
+                VersionStatus::load_with_path(&config, &wal).await?;
 
 
-        let sst_factory = IOHandlerFactory::new(
-            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-            FileExtension::SSTable
-        )?;
+            let sst_factory = IoFactory::new(
+                config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+                FileExtension::SSTable
+            )?;
 
-        let ss_table_1 = SSTable::create_for_immutable_table(
-            &config,
-            1,
-            &sst_factory,
-            vec![CommandData::get(b"test".to_vec())],
-            0
-        ).await?;
+            let ss_table_1 = SSTable::create_for_immutable_table(
+                &config,
+                1,
+                &sst_factory,
+                vec![CommandData::get(b"test".to_vec())],
+                0
+            ).await?;
 
-        let ss_table_2 = SSTable::create_for_immutable_table(
-            &config,
-            2,
-            &sst_factory,
-            vec![CommandData::get(b"test".to_vec())],
-            0
-        ).await?;
+            let ss_table_2 = SSTable::create_for_immutable_table(
+                &config,
+                2,
+                &sst_factory,
+                vec![CommandData::get(b"test".to_vec())],
+                0
+            ).await?;
 
-        let vec_edit = vec![
-            VersionEdit::NewFile((vec![1], 0),0),
-            VersionEdit::NewFile((vec![2], 0),0),
-            VersionEdit::DeleteFile((vec![2], 0)),
-            VersionEdit::LastSequenceId(4),
-        ];
+            ver_status.insert_vec_ss_table(vec![ss_table_1], false).await?;
+            ver_status.insert_vec_ss_table(vec![ss_table_2], false).await?;
 
-        ver_status_1.insert_vec_ss_table(vec![ss_table_1], false).await?;
-        ver_status_1.insert_vec_ss_table(vec![ss_table_2], false).await?;
-        ver_status_1.log_and_apply(vec_edit).await?;
+            let vec_edit_1 = vec![
+                VersionEdit::NewFile((vec![1], 0),0),
+            ];
 
-        let version_1 = Version::clone(ver_status_1.current().await.as_ref());
+            ver_status.log_and_apply(vec_edit_1).await?;
 
-        drop(ver_status_1);
+            let version_1 = Arc::clone(&ver_status.current().await);
 
-        let ver_status_2 =
-            VersionStatus::load_with_path(&config, &wal).await?;
-        let version_2 = ver_status_2.current().await;
+            let vec_edit_2 = vec![
+                VersionEdit::NewFile((vec![2], 0),0),
+                VersionEdit::DeleteFile((vec![1], 0)),
+            ];
 
-        assert_eq!(version_1.last_sequence_id, 4);
-        assert_eq!(version_2.last_sequence_id, 4);
-        assert_eq!(version_1.level_slice, version_2.level_slice);
-        assert_eq!(version_1.meta_data, version_2.meta_data);
+            ver_status.log_and_apply(vec_edit_2).await?;
 
-        Ok(())
-    })
+            let version_2 = Arc::clone(&ver_status.current().await);
+
+            let vec_edit_3 = vec![
+                VersionEdit::DeleteFile((vec![2], 0)),
+            ];
+
+            // 用于去除version2的引用计数
+            ver_status.log_and_apply(vec_edit_3).await?;
+
+            assert!(sst_factory.has_gen(1)?);
+            assert!(sst_factory.has_gen(2)?);
+
+            drop(version_2);
+
+            assert!(sst_factory.has_gen(1)?);
+            assert!(sst_factory.has_gen(2)?);
+
+            drop(version_1);
+            time::sleep(Duration::from_secs(1)).await;
+
+            assert!(!sst_factory.has_gen(1)?);
+            assert!(sst_factory.has_gen(2)?);
+
+            drop(ver_status);
+            time::sleep(Duration::from_secs(1)).await;
+
+            assert!(!sst_factory.has_gen(1)?);
+            assert!(!sst_factory.has_gen(2)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_version_apply_and_log() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        tokio_test::block_on(async move {
+
+            let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+
+            let wal = LogLoader::reload(
+                &config,
+                DEFAULT_WAL_PATH,
+                FileExtension::Log
+            ).await?;
+
+            // 注意：将ss_table的创建防止VersionStatus的创建前
+            // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
+            let ver_status_1 =
+                VersionStatus::load_with_path(&config, &wal).await?;
+
+
+            let sst_factory = IoFactory::new(
+                config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+                FileExtension::SSTable
+            )?;
+
+            let ss_table_1 = SSTable::create_for_immutable_table(
+                &config,
+                1,
+                &sst_factory,
+                vec![CommandData::get(b"test".to_vec())],
+                0
+            ).await?;
+
+            let ss_table_2 = SSTable::create_for_immutable_table(
+                &config,
+                2,
+                &sst_factory,
+                vec![CommandData::get(b"test".to_vec())],
+                0
+            ).await?;
+
+            let vec_edit = vec![
+                VersionEdit::NewFile((vec![1], 0),0),
+                VersionEdit::NewFile((vec![2], 0),0),
+                VersionEdit::DeleteFile((vec![2], 0)),
+                VersionEdit::LastSequenceId(4),
+            ];
+
+            ver_status_1.insert_vec_ss_table(vec![ss_table_1], false).await?;
+            ver_status_1.insert_vec_ss_table(vec![ss_table_2], false).await?;
+            ver_status_1.log_and_apply(vec_edit).await?;
+
+            let version_1 = Version::clone(ver_status_1.current().await.as_ref());
+
+            drop(ver_status_1);
+
+            let ver_status_2 =
+                VersionStatus::load_with_path(&config, &wal).await?;
+            let version_2 = ver_status_2.current().await;
+
+            assert_eq!(version_1.last_sequence_id, 4);
+            assert_eq!(version_2.last_sequence_id, 4);
+            assert_eq!(version_1.level_slice, version_2.level_slice);
+            assert_eq!(version_1.meta_data, version_2.meta_data);
+
+            Ok(())
+        })
+    }
 }
 
 

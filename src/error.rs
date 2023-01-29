@@ -49,9 +49,6 @@ pub enum KvsError {
 
     #[fail(display = "Process already exists")]
     ProcessExistsError,
-
-    #[fail(display = "Not support the function")]
-    UnSupportError,
 }
 
 #[derive(Fail, Debug)]
