@@ -148,10 +148,10 @@ impl SSTable {
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
-    pub(crate) async fn load_from_file(reader: Box<dyn IoReader>) -> Result<Self>{
+    pub(crate) fn load_from_file(reader: Box<dyn IoReader>) -> Result<Self>{
         let gen = reader.get_gen();
 
-        let meta_info = MetaInfo::read_to_file(&reader).await?;
+        let meta_info = MetaInfo::read_to_file(&reader)?;
         let size_of_disk = reader.file_size()?;
         info!(
             "[SsTable: {gen}][load_from_file][TableMetaInfo]: {meta_info:?}, Size of Disk: {size_of_disk}, IO Type: {:?}"
@@ -162,10 +162,10 @@ impl SSTable {
         let index_pos = meta_info.data_part_len + 4;
         let index_len = meta_info.index_len as usize;
 
-        let buffer = reader.read_with_pos(0, meta_info.data_part_len as usize).await?;
+        let buffer = reader.read_with_pos(0, meta_info.data_part_len as usize)?;
         let loaded_crc_code = crc32fast::hash(buffer.as_slice());
 
-        if let Some(meta_block_cmd) = CommandPackage::from_pos_unpack(&reader, index_pos, index_len).await? {
+        if let Some(meta_block_cmd) = CommandPackage::from_pos_unpack(&reader, index_pos, index_len)? {
             match meta_block_cmd {
                 CommandData::Get { key: meta_block_bytes } => {
                     let MetaBlock { vec_index, scope, filter , len }
@@ -199,9 +199,9 @@ impl SSTable {
 
     /// 写入CommandData数据段
     #[allow(clippy::pattern_type_mismatch)]
-    async fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, writer: &Box<dyn IoWriter>) -> Result<(Vec<(Vec<u8>, Position)>, u32)> {
+    fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, writer: &Box<dyn IoWriter>) -> Result<(Vec<(Vec<u8>, Position)>, u32)> {
         let (start_pos, batch_len, vec_sharding_len, crc_code) =
-            CommandPackage::write_batch_first_pos_with_sharding(writer, &vec_cmd_data).await?;
+            CommandPackage::write_batch_first_pos_with_sharding(writer, &vec_cmd_data)?;
         info!("[SSTable][write_data_batch][data_zone]: start_pos: {}, batch_len: {}, vec_sharding_len: {:?}", start_pos, batch_len, vec_sharding_len);
 
         let keys = vec_cmd_data.into_iter()
@@ -226,7 +226,7 @@ impl SSTable {
 
     /// 从该sstable中获取指定key对应数据可能存在的CommandData段
     #[allow(clippy::expect_used)]
-    pub(crate) async fn query_with_key(
+    pub(crate) fn query_with_key(
         &self,
         key: &[u8],
         block_cache: &ShardingLruCache<(i64, Position), Vec<CommandData>>
@@ -237,16 +237,15 @@ impl SSTable {
                 info!("[SsTable: {}][query_with_key]: {:?}", inner.gen, position);
                 let key_position = (inner.gen, position.clone());
 
-                return Ok(block_cache.get_or_insert_async(
+                return Ok(block_cache.get_or_insert(
                     key_position,
-                    async {
+                    || {
                         let bytes = inner
                             .reader
-                            .read_with_pos(position.start, position.len)
-                            .await?;
+                            .read_with_pos(position.start, position.len)?;
                         Ok(CommandPackage::from_bytes_to_unpack_vec(&bytes)?)
                     }
-                ).await?
+                )?
                     .iter()
                     .find(|cmd_data| cmd_data.get_key() == key)
                     .map(CommandData::clone));
@@ -256,11 +255,11 @@ impl SSTable {
     }
 
     /// 获取SsTable内所有的正常数据
-    pub(crate) async fn get_all_data(&self) -> Result<Vec<CommandData>> {
+    pub(crate) async fn get_all_data_async(&self) -> Result<Vec<CommandData>> {
         let info = &self.inner.meta_info;
         let data_len = info.data_part_len;
 
-        let all_data_u8 = self.inner.reader.read_with_pos(0, data_len as usize).await?;
+        let all_data_u8 = self.inner.reader.read_with_pos(0, data_len as usize)?;
         CommandPackage::from_bytes_to_unpack_vec(all_data_u8.as_slice())
     }
 
@@ -285,7 +284,7 @@ impl SSTable {
 
     /// 通过内存表构建持久化并构建SSTable
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) async fn create_for_immutable_table(
+    pub(crate) fn create_for_immutable_table(
         config: &Config,
         gen: i64,
         io_factory: &IoFactory,
@@ -310,7 +309,7 @@ impl SSTable {
         ).into_iter()
             .map(|(_, sharding)| sharding)
             .collect();
-        let (vec_index, crc_code) = Self::write_data_batch(vec_sharding, &writer).await?;
+        let (vec_index, crc_code) = Self::write_data_batch(vec_sharding, &writer)?;
 
         let meta_block = MetaBlock {
             vec_index,
@@ -324,7 +323,7 @@ impl SSTable {
         // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
         let cmd_sparse_index = CommandData::Get { key: bincode::serialize(&meta_block)?};
         // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
-        let (sparse_index_pos, sparse_index_len) = CommandPackage::write(&writer, &cmd_sparse_index).await?;
+        let (sparse_index_pos, sparse_index_len) = CommandPackage::write(&writer, &cmd_sparse_index)?;
 
         // 将以上持久化信息封装为MetaInfo
         // data_part_len跳过sparse_index_pos的len_head所以-4
@@ -334,7 +333,7 @@ impl SSTable {
             index_len: sparse_index_len as u64,
             crc_code
         };
-        meta_info.write_to_file_and_flush(&writer).await?;
+        meta_info.write_to_file_and_flush(&writer)?;
 
         let size_of_disk = writer.file_size()?;
 

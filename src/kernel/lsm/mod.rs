@@ -214,28 +214,28 @@ impl SSTableMap {
         })
     }
 
-    pub(crate) async fn insert(&mut self, ss_table: SSTable) -> Option<SSTable> {
+    pub(crate) fn insert(&mut self, ss_table: SSTable) -> Option<SSTable> {
         self.inner.insert(ss_table.get_gen(), ss_table)
     }
 
-    pub(crate) async fn get(&self, gen: &i64) -> Option<SSTable> {
-        self.cache.get(gen).await
+    pub(crate) fn get(&self, gen: &i64) -> Option<SSTable> {
+        self.cache.get(gen)
             .or_else(|| self.inner.get(gen))
             .map(SSTable::clone)
     }
 
     /// 将指定gen通过MMapHandler进行读取以提高读取性能
     /// 创建MMapHandler成本较高，因此使用单独api控制缓存
-    pub(crate) async fn caching(&mut self, gen: i64, factory: &IoFactory) -> Result<Option<SSTable>> {
+    pub(crate) fn caching(&mut self, gen: i64, factory: &IoFactory) -> Result<Option<SSTable>> {
         let reader = factory.reader(gen.clone(), IoType::MMap)?;
         Ok(self.cache.put(
             gen,
-            SSTable::load_from_file(reader).await?
-        ).await)
+            SSTable::load_from_file(reader)?
+        ))
     }
 
-    pub(crate) async fn remove(&mut self, gen: &i64) -> Option<SSTable> {
-        let _ignore = self.cache.remove(gen).await;
+    pub(crate) fn remove(&mut self, gen: &i64) -> Option<SSTable> {
+        let _ignore = self.cache.remove(gen);
         self.inner.remove(gen)
     }
 
@@ -255,16 +255,16 @@ impl SSTableMap {
 
 impl MetaInfo {
     /// 将MetaInfo自身写入对应的IOHandler之中
-    async fn write_to_file_and_flush(&self, writer: &Box<dyn IoWriter>) -> Result<()>{
-        let _ignore = writer.write(bincode::serialize(&self)?).await?;
-        writer.flush().await?;
+    fn write_to_file_and_flush(&self, writer: &Box<dyn IoWriter>) -> Result<()>{
+        let _ignore = writer.write(bincode::serialize(&self)?)?;
+        writer.flush()?;
         Ok(())
     }
 
     /// 从对应文件的IOHandler中将MetaInfo读取出来
-    async fn read_to_file(reader: &Box<dyn IoReader>) -> Result<Self> {
+    fn read_to_file(reader: &Box<dyn IoReader>) -> Result<Self> {
         let start_pos = reader.file_size()? - TABLE_META_INFO_SIZE as u64;
-        let table_meta_info = reader.read_with_pos(start_pos, TABLE_META_INFO_SIZE).await?;
+        let table_meta_info = reader.read_with_pos(start_pos, TABLE_META_INFO_SIZE)?;
 
         Ok(bincode::deserialize(table_meta_info.as_slice())?)
     }

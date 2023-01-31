@@ -226,7 +226,7 @@ impl LsmStore {
             &config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
-        ).await?;
+        )?;
 
         let mem_map = match option_success {
             None => MemMap::new(),
@@ -277,7 +277,7 @@ impl LsmStore {
         if let Some((values, last_seq_id)) = self.mem_table.table_swap_and_sort() {
             if !values.is_empty() {
                 let compactor = Arc::clone(&self.compactor);
-                let gen = self.create_gen().await?;
+                let gen = self.create_gen()?;
                 let sender = self.live_tag().await;
 
                 let _ignore = tokio::spawn(async move {
@@ -297,9 +297,9 @@ impl LsmStore {
         Ok(())
     }
 
-    async fn create_gen(&self) -> Result<i64> {
+    fn create_gen(&self) -> Result<i64> {
         Ok(if self.is_enable_wal() {
-            self.wal.switch().await?
+            self.wal.switch()?
         } else {
             self.config.create_gen_lazy()
         })
@@ -309,7 +309,7 @@ impl LsmStore {
     #[inline]
     pub async fn minor_compaction_sync(&self, is_drop: bool) -> Result<()> {
         if let Some((values, last_seq_id)) = self.mem_table.table_swap_and_sort() {
-            let gen = self.create_gen().await?;
+            let gen = self.create_gen()?;
 
             if !values.is_empty() {
                 self.compactor
@@ -352,7 +352,7 @@ impl LsmStore {
     }
 
     pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
-        self.wal.flush().await?;
+        self.wal.flush()?;
         if !self.mem_table.is_empty() {
             self.minor_compaction_sync(is_drop).await?;
         }
@@ -547,16 +547,16 @@ impl Config {
 pub(crate) async fn wal_put(wal: &Arc<LogLoader>, cmd: &CommandData, is_sync: bool) {
     let wal = Arc::clone(wal);
     if is_sync {
-        wal_put_(&wal, cmd).await;
+        wal_put_(&wal, cmd);
     } else {
         let cmd_clone = cmd.clone();
         let _ignore = tokio::spawn(async move {
-            wal_put_(&wal, &cmd_clone).await;
+            wal_put_(&wal, &cmd_clone);
         });
     }
 
-    async fn wal_put_(wal: &Arc<LogLoader>, cmd: &CommandData) {
-        if let Err(err) = wal.log(&cmd).await {
+    fn wal_put_(wal: &Arc<LogLoader>, cmd: &CommandData) {
+        if let Err(err) = wal.log(&cmd) {
             error!("[LsmStore][wal_put][error happen]: {:?}", err);
         }
     }

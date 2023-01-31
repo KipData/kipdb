@@ -211,7 +211,7 @@ impl VersionStatus {
         {
             let reader = sst_factory.reader(gen, IoType::Buf)?;
 
-            if let Some(ss_table) = match SSTable::load_from_file(reader).await {
+            if let Some(ss_table) = match SSTable::load_from_file(reader) {
                 Ok(ss_table) => Some(ss_table),
                 Err(err) => {
                     warn!(
@@ -226,7 +226,7 @@ impl VersionStatus {
                     &sst_factory,
                     ss_table,
                     true
-                ).await?
+                )?
             }
         }
 
@@ -236,11 +236,10 @@ impl VersionStatus {
             config,
             DEFAULT_VERSION_PATH,
             FileExtension::Manifest
-        ).await?;
+        )?;
 
 
-        let vec_edit = ver_log.load_last()
-            .await?
+        let vec_edit = ver_log.load_last()?
             .unwrap_or(vec![])
             .into_iter()
             .filter_map(|cmd| {
@@ -291,21 +290,21 @@ impl VersionStatus {
         sst_factory: &Arc<IoFactory>,
         gen: i64
     ) -> Result<Option<SSTable>> {
-        Ok(if let Some(vec_mem_data) = wal.load(gen).await? {
+        Ok(if let Some(vec_mem_data) = wal.load(gen)? {
             Some(SSTable::create_for_immutable_table(
                 config,
                 gen,
                 &sst_factory,
                 vec_mem_data,
                 LEVEL_0
-            ).await?)
+            )?)
         } else {
             None
         })
 
     }
 
-    async fn ss_table_insert(
+    fn ss_table_insert(
         ss_table_map: &mut SSTableMap,
         sst_factory: &Arc<IoFactory>,
         ss_table: SSTable,
@@ -313,18 +312,16 @@ impl VersionStatus {
     ) -> Result<()> {
         // 对Level 0的SSTable进行MMap映射
         if ss_table.get_level() == LEVEL_0 && enable_cache {
-            let _ignore = ss_table_map.caching(ss_table.get_gen(), &sst_factory).await?;
+            let _ignore = ss_table_map.caching(ss_table.get_gen(), &sst_factory)?;
         }
         // 初始化成功时直接传入SSTable的索引中
-        let _ignore1 = ss_table_map.insert(ss_table).await;
+        let _ignore1 = ss_table_map.insert(ss_table);
         Ok(())
     }
 
     pub(crate) async fn current(&self) -> Arc<Version> {
         Arc::clone(
-            &self.inner
-                .read().await
-                .inner
+            &self.inner.read().await.inner
         )
     }
 
@@ -336,7 +333,7 @@ impl VersionStatus {
                 &self.sst_factory,
                 ss_table,
                 enable_cache
-            ).await?;
+            )?;
         }
 
         Ok(())
@@ -364,7 +361,7 @@ impl VersionStatus {
         version_display(&new_version, "log_and_apply");
 
         self.ver_log
-            .log_batch(&vec_cmd_data).await?;
+            .log_batch(&vec_cmd_data)?;
         self.inner
             .write().await
             .inner = Arc::new(new_version);
@@ -618,7 +615,7 @@ impl Version {
         where F: Fn(&SSTable) -> bool
     {
         for gen in level_slice[level].iter() {
-            if let Some(ss_table) = ss_table_map.get(gen).await {
+            if let Some(ss_table) = ss_table_map.get(gen) {
                 if fn_rfind(&ss_table) {
                     return Some(ss_table);
                 }
@@ -640,7 +637,7 @@ impl Version {
             .iter()
             .take(size)
         {
-            if let Some(ss_table) = ss_table_map.get(gen).await {
+            if let Some(ss_table) = ss_table_map.get(gen) {
                 vec.push(ss_table);
             }
         }
@@ -654,7 +651,7 @@ impl Version {
 
         for gen in self.level_slice[level].iter()
         {
-            if let Some(ss_table) = ss_table_map.get(gen).await {
+            if let Some(ss_table) = ss_table_map.get(gen) {
                 if ss_table.get_scope().meet(scope) {
                     vec.push(ss_table);
                 }
@@ -673,9 +670,9 @@ impl Version {
             .iter()
             .rev()
         {
-            if let Some(ss_table) = ss_table_map.get(gen).await {
+            if let Some(ss_table) = ss_table_map.get(gen) {
                 if let Some(value) =
-                    Self::query_with_ss_table(key, block_cache, &ss_table).await?
+                    Self::query_with_ss_table(key, block_cache, &ss_table)?
                 {
                     return Ok(Some(value))
                 }
@@ -691,7 +688,7 @@ impl Version {
                 |ss_table| ss_table.get_scope().meet(&key_scope)
             ).await {
                 if let Some(value) =
-                    Self::query_with_ss_table(key, block_cache, &ss_table).await?
+                    Self::query_with_ss_table(key, block_cache, &ss_table)?
                 {
                     return Ok(Some(value))
                 }
@@ -701,15 +698,12 @@ impl Version {
         Ok(None)
     }
 
-    async fn query_with_ss_table(
+    fn query_with_ss_table(
         key: &[u8],
         block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
         ss_table: &SSTable
     ) -> Result<Option<Vec<u8>>> {
-        if let Some(cmd_data) = ss_table
-            .query_with_key(key, block_cache)
-            .await?
-        {
+        if let Some(cmd_data) = ss_table.query_with_key(key, block_cache)? {
             return Ok(cmd_data.get_value_clone());
         }
         Ok(None)
@@ -733,7 +727,7 @@ impl VersionMeta {
         where F: Fn(&mut VersionMeta, &SSTable)
     {
         for gen in vec_gen.iter() {
-            let ss_table = ss_table_map.get(gen).await
+            let ss_table = ss_table_map.get(gen)
                 .ok_or_else(|| SSTableLostError)?;
             fn_process(self, &ss_table);
         }
@@ -808,7 +802,7 @@ mod tests {
                 &config,
                 DEFAULT_WAL_PATH,
                 FileExtension::Log
-            ).await?;
+            )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
@@ -827,7 +821,7 @@ mod tests {
                 &sst_factory,
                 vec![CommandData::get(b"test".to_vec())],
                 0
-            ).await?;
+            )?;
 
             let ss_table_2 = SSTable::create_for_immutable_table(
                 &config,
@@ -835,7 +829,7 @@ mod tests {
                 &sst_factory,
                 vec![CommandData::get(b"test".to_vec())],
                 0
-            ).await?;
+            )?;
 
             ver_status.insert_vec_ss_table(vec![ss_table_1], false).await?;
             ver_status.insert_vec_ss_table(vec![ss_table_2], false).await?;
@@ -900,7 +894,7 @@ mod tests {
                 &config,
                 DEFAULT_WAL_PATH,
                 FileExtension::Log
-            ).await?;
+            )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
@@ -919,7 +913,7 @@ mod tests {
                 &sst_factory,
                 vec![CommandData::get(b"test".to_vec())],
                 0
-            ).await?;
+            )?;
 
             let ss_table_2 = SSTable::create_for_immutable_table(
                 &config,
@@ -927,7 +921,7 @@ mod tests {
                 &sst_factory,
                 vec![CommandData::get(b"test".to_vec())],
                 0
-            ).await?;
+            )?;
 
             let vec_edit = vec![
                 VersionEdit::NewFile((vec![1], 0),0),

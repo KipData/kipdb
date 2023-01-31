@@ -57,11 +57,10 @@ impl Compactor {
                 &self.sst_factory,
                 vec_values,
                 LEVEL_0
-            ).await?;
+            )?;
 
             self.ver_status
-                .insert_vec_ss_table(vec![ss_table], enable_caching)
-                .await?;
+                .insert_vec_ss_table(vec![ss_table], enable_caching).await?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             if let Err(err) = self.major_compaction(
@@ -116,13 +115,15 @@ impl Compactor {
                 // 并行创建SSTable
                 let ss_table_futures = vec_sharding.into_iter()
                     .map(|(gen, sharding)| {
-                        SSTable::create_for_immutable_table(
-                            config,
-                            gen,
-                            &self.sst_factory,
-                            sharding,
-                            level + 1
-                        )
+                        async move {
+                            SSTable::create_for_immutable_table(
+                                config,
+                                gen,
+                                &self.sst_factory,
+                                sharding,
+                                level + 1
+                            )
+                        }
                     });
                 let vec_new_ss_table: Vec<SSTable> = future::try_join_all(ss_table_futures).await?;
 
@@ -161,8 +162,7 @@ impl Compactor {
         // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
         if let Some(mut vec_ss_table_l) = version
-            .get_first_vec_ss_table_with_size(level, major_select_file_size)
-            .await
+            .get_first_vec_ss_table_with_size(level, major_select_file_size).await
         {
             let start = Instant::now();
 
@@ -222,7 +222,7 @@ impl Compactor {
         // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
         let map_futures = vec_ss_table.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(SSTable::get_all_data);
+            .map(SSTable::get_all_data_async);
         let vec_cmd_data = future::try_join_all(map_futures)
             .await?
             .into_iter()

@@ -2,13 +2,12 @@ use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::future::Future;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 use crate::error::CacheError;
 
 pub type Result<T> = std::result::Result<T, CacheError>;
@@ -49,7 +48,6 @@ unsafe impl<K: Send, V: Send, S: Send> Send for ShardingLruCache<K, V, S> {}
 unsafe impl<K: Sync, V: Sync, S: Sync> Sync for ShardingLruCache<K, V, S> {}
 
 pub(crate) struct ShardingLruCache<K, V, S = RandomState> {
-    // TODO: 替换Tokio锁
     sharding_vec: Vec<Arc<RwLock<LruCache<K, V>>>>,
     hasher: S,
 }
@@ -135,10 +133,9 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn get(&self, key: &K) -> Option<&V> {
+    pub(crate) fn get(&self, key: &K) -> Option<&V> {
         self.shard(key)
             .write()
-            .await
             .get_node(key)
             .map(|node| {
                 unsafe { &node.as_ref().value }
@@ -146,31 +143,29 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn put(&self, key: K, value: V) -> Option<V> {
+    pub(crate) fn put(&self, key: K, value: V) -> Option<V> {
         self.shard(&key)
             .write()
-            .await
             .put(key, value)
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn remove(&self, key: &K) -> Option<V> {
+    pub(crate) fn remove(&self, key: &K) -> Option<V> {
         self.shard(&key)
             .write()
-            .await
             .remove(key)
     }
 
-    pub(crate) async fn get_or_insert_async(
+    pub(crate) fn get_or_insert<F>(
         &self,
         key: K,
-        future: impl Future<Output = Result<V>>
-    ) -> Result<&V> {
+        fn_once: F
+    ) -> Result<&V>
+        where F: FnOnce() -> Result<V>
+    {
         self.shard(&key)
             .write()
-            .await
-            .get_or_insert_async_node(key, future)
-            .await
+            .get_or_insert_node(key, fn_once)
             .map(|node| unsafe { &node.as_ref().value })
     }
 
@@ -311,18 +306,20 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             })
     }
 
-    async fn get_or_insert_async_node(
+    fn get_or_insert_node<F>(
         &mut self,
         key: K,
-        future: impl Future<Output = Result<V>>
-    ) -> Result<NodeReadPtr<K, V>> {
+        fn_once: F
+    ) -> Result<NodeReadPtr<K, V>>
+        where F: FnOnce() -> Result<V>
+    {
         if let Some(node) = self.inner.get(&key) {
             let node = *node;
             self.detach(node);
             self.attach(node);
             Ok(node)
         } else {
-            let value = future.await?;
+            let value = fn_once()?;
             let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
             let _ignore = self.inner.remove(&KeyRef(node))
                 .map(|node| {
@@ -337,14 +334,14 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn get_or_insert_async(
+    pub(crate) fn get_or_insert<F>(
         &mut self,
         key: K,
-        future: impl Future<Output = Result<V>>
+        fn_once: F
     ) -> Result<&V>
+        where F: FnOnce() -> Result<V>
     {
-        self.get_or_insert_async_node(key, future)
-            .await
+        self.get_or_insert_node(key, fn_once)
             .map(|node| unsafe { &node.as_ref().value })
     }
 
@@ -377,45 +374,41 @@ mod tests {
 
     #[test]
     fn test_lru_cache() {
-        tokio_test::block_on(async move {
-            let mut lru = LruCache::new(3).unwrap();
-            assert_eq!(lru.put(1, 10), None);
-            assert_eq!(lru.put(2, 20), None);
-            assert_eq!(lru.put(3, 30), None);
-            assert_eq!(lru.get(&1), Some(&10));
-            assert_eq!(lru.put(2, 200), Some(20));
-            assert_eq!(lru.put(4, 40), None);
-            assert_eq!(lru.get(&2), Some(&200));
-            assert_eq!(lru.get(&3), None);
+        let mut lru = LruCache::new(3).unwrap();
+        assert_eq!(lru.put(1, 10), None);
+        assert_eq!(lru.put(2, 20), None);
+        assert_eq!(lru.put(3, 30), None);
+        assert_eq!(lru.get(&1), Some(&10));
+        assert_eq!(lru.put(2, 200), Some(20));
+        assert_eq!(lru.put(4, 40), None);
+        assert_eq!(lru.get(&2), Some(&200));
+        assert_eq!(lru.get(&3), None);
 
-            assert_eq!(
-                lru.get_or_insert_async(
-                    9,
-                    async {Ok(9)}
-                ).await.unwrap(),
-                &9
-            );
+        assert_eq!(
+            lru.get_or_insert(
+                9,
+                || Ok(9)
+            ).unwrap(),
+            &9
+        );
 
-            assert_eq!(lru.len(), 3);
-            assert!(!lru.is_empty())
-        })
+        assert_eq!(lru.len(), 3);
+        assert!(!lru.is_empty())
     }
 
     #[test]
     fn test_sharding_cache() {
-        tokio_test::block_on(async move {
-            let lru = ShardingLruCache::new(4, 2, RandomState::default()).unwrap();
-            assert_eq!(lru.put(1, 10).await, None);
+        let lru = ShardingLruCache::new(4, 2, RandomState::default()).unwrap();
+        assert_eq!(lru.put(1, 10), None);
 
-            assert_eq!(lru.get(&1).await, Some(&10));
+        assert_eq!(lru.get(&1), Some(&10));
 
-            assert_eq!(
-                lru.get_or_insert_async(
-                    9,
-                    async {Ok(9)}
-                ).await.unwrap(),
-                &9
-            );
-        })
+        assert_eq!(
+            lru.get_or_insert(
+                9,
+                || Ok(9)
+            ).unwrap(),
+            &9
+        );
     }
 }

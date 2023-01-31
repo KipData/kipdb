@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use async_trait::async_trait;
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
 use crate::kernel::io::mmap::{MMapIoReader, MMapIoWriter};
 use crate::kernel::Result;
@@ -111,7 +110,6 @@ impl IoFactory {
     }
 }
 
-#[async_trait]
 pub trait IoReader: Send + Sync + 'static {
 
     fn get_gen(&self) -> i64;
@@ -123,17 +121,16 @@ pub trait IoReader: Send + Sync + 'static {
         Ok(fs::metadata(path_buf)?.len())
     }
 
-    async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>>;
+    fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>>;
 
     fn get_type(&self) -> IoType;
 
-    async fn bytes(&self) -> Result<Vec<u8>> {
+    fn bytes(&self) -> Result<Vec<u8>> {
         let len = self.file_size()?;
-        self.read_with_pos(0, len as usize).await
+        self.read_with_pos(0, len as usize)
     }
 }
 
-#[async_trait]
 pub trait IoWriter: Send + Sync + 'static {
 
     fn get_gen(&self) -> i64;
@@ -145,9 +142,9 @@ pub trait IoWriter: Send + Sync + 'static {
         Ok(fs::metadata(path_buf)?.len())
     }
 
-    async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)>;
+    fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)>;
 
-    async fn flush(&self) -> Result<()>;
+    fn flush(&self) -> Result<()>;
 
     fn get_type(&self) -> IoType;
 }

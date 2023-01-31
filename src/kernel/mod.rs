@@ -110,19 +110,19 @@ impl CommandPackage {
 
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
-    pub(crate) async fn write(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
-        let (start, len) = Self::write_back_real_pos(writer, cmd).await?;
+    pub(crate) fn write(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
+        let (start, len) = Self::write_back_real_pos(writer, cmd)?;
         Ok((start + 4, len - 4))
     }
 
     /// 写入一个Command
     /// 写入完成后该cmd的真实写入起始位置与长度
-    pub(crate) async fn write_back_real_pos(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
-        writer.write(Self::trans_to_vec_u8(cmd)?).await
+    pub(crate) fn write_back_real_pos(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
+        writer.write(Self::trans_to_vec_u8(cmd)?)
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn write_batch(
+    pub(crate) fn write_batch(
         writer: &Box<dyn IoWriter>,
         vec_cmd: &Vec<CommandData>
     ) -> Result<(u64, usize)> {
@@ -131,11 +131,11 @@ impl CommandPackage {
             .flatten()
             .collect_vec();
 
-        writer.write(bytes).await
+        writer.write(bytes)
     }
 
     /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
-    pub(crate) async fn write_batch_first_pos_with_sharding(
+    pub(crate) fn write_batch_first_pos_with_sharding(
         writer: &Box<dyn IoWriter>,
         vec_sharding: &Vec<Vec<CommandData>>
     ) -> Result<(u64, usize, Vec<usize>, u32)>{
@@ -154,7 +154,7 @@ impl CommandPackage {
 
         let crc_code = crc32fast::hash(vec_sharding_u8.as_slice());
 
-        let (start_pos, batch_len) = writer.write(vec_sharding_u8).await?;
+        let (start_pos, batch_len) = writer.write(vec_sharding_u8)?;
 
         Ok((start_pos, batch_len, vec_sharding_len, crc_code))
     }
@@ -171,8 +171,8 @@ impl CommandPackage {
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
-    pub(crate) async fn from_pos_unpack(reader: &Box<dyn IoReader>, start: u64, len: usize) -> Result<Option<CommandData>> {
-        let cmd_u8 = reader.read_with_pos(start, len).await?;
+    pub(crate) fn from_pos_unpack(reader: &Box<dyn IoReader>, start: u64, len: usize) -> Result<Option<CommandData>> {
+        let cmd_u8 = reader.read_with_pos(start, len)?;
         Ok(bincode::deserialize(cmd_u8.as_slice()).ok())
     }
 
@@ -199,22 +199,20 @@ impl CommandPackage {
     }
 
     /// 获取reader之中所有的CommandPackage
-    pub(crate) async fn from_read_to_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandPackage>> {
+    pub(crate) fn from_read_to_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandPackage>> {
         Self::from_bytes_to_vec(
             reader
-                .bytes()
-                .await?
+                .bytes()?
                 .as_slice()
         )
     }
 
     #[allow(dead_code)]
     /// 获取reader之中所有的CommandData
-    pub(crate) async fn from_read_to_unpack_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandData>> {
+    pub(crate) fn from_read_to_unpack_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandData>> {
         Self::from_bytes_to_unpack_vec(
             reader
-                .bytes()
-                .await?
+                .bytes()?
                 .as_slice()
         )
     }

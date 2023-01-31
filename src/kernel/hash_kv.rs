@@ -5,7 +5,7 @@ use std::sync::Arc;
 use itertools::Itertools;
 use async_trait::async_trait;
 use fslock::LockFile;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 use tracing::error;
 
 use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_LOCK_FILE, FileExtension, KVStore, lock_or_time_out, Result, sorted_gen_list};
@@ -37,7 +37,7 @@ impl HashStore {
     /// 获取索引中的所有keys
     #[inline]
     pub async fn keys_from_index(&self) -> Vec<Vec<u8>> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
         manifest.clone_index_keys()
     }
@@ -45,12 +45,12 @@ impl HashStore {
     /// 获取数据指令
     #[inline]
     pub async fn get_cmd_data(&self, key: &[u8]) -> Result<Option<CommandData>> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = manifest.get_pos_with_key(key) {
             let reader = manifest.current_io_reader()?;
-            Ok(CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len).await?)
+            Ok(CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len)?)
         } else {
             Ok(None)
         }
@@ -81,7 +81,7 @@ impl HashStore {
         for &gen in &gen_list {
             let writer = io_factory.writer(gen, IoType::Buf)?;
             let reader = io_factory.reader(gen, IoType::Buf)?;
-            un_compacted += load(&reader, &mut index).await? as u64;
+            un_compacted += load(&reader, &mut index)? as u64;
             let _ignore1 = io_index.insert(gen, (writer, reader));
         }
         let last_gen = *gen_list.last().unwrap_or(&0);
@@ -107,19 +107,19 @@ impl HashStore {
             manifest,
             lock_file,
         };
-        store.compact().await?;
+        store.compact()?;
 
         Ok(store)
     }
 
     /// 核心压缩方法
     /// 通过compaction_gen决定压缩位置
-    async fn compact(&self) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+    fn compact(&self) -> Result<()> {
+        let mut manifest = self.manifest.write();
 
         let compaction_threshold = manifest.compaction_threshold;
 
-        let (compact_gen, compact_handler) = manifest.compaction_increment(&self.io_factory).await?;
+        let (compact_gen, compact_handler) = manifest.compaction_increment(&self.io_factory)?;
         // 压缩时对values进行顺序排序
         // 以gen,pos为最新数据的指标
         let (mut vec_cmd_pos, io_handler_index) = manifest.sort_by_last_vec_mut();
@@ -137,8 +137,8 @@ impl HashStore {
                     match io_handler_index.get(&cmd_pos.gen) {
                         Some((_, reader)) => {
                             if let Some(cmd_data) =
-                            CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len).await? {
-                                let (pos, len) = CommandPackage::write(&compact_handler.0, &cmd_data).await?;
+                            CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len)? {
+                                let (pos, len) = CommandPackage::write(&compact_handler.0, &cmd_data)?;
                                 write_len += len;
                                 cmd_pos.change(compact_gen, pos, len);
                             }
@@ -151,7 +151,7 @@ impl HashStore {
             }
 
             // 将所有写入刷入压缩文件中
-            compact_handler.0.flush().await?;
+            compact_handler.0.flush()?;
             manifest.insert_io_handler(compact_gen, compact_handler);
             // 清除过期文件等信息
             manifest.retain(compact_gen, &self.io_factory)?;
@@ -195,22 +195,22 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn flush(&self) -> Result<()> {
-        let manifest = self.manifest.write().await;
+        let manifest = self.manifest.write();
 
         Ok(manifest.current_io_writer()?
-            .flush().await?)
+            .flush()?)
     }
 
     #[inline]
     async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+        let mut manifest = self.manifest.write();
 
         //将数据包装为命令
         let gen = manifest.current_gen;
         let cmd = CommandData::Set { key: key.to_vec(), value: Arc::new(value) };
         // 获取写入器当前地址
         let io_handler = manifest.current_io_writer()?;
-        let (pos, cmd_len) = CommandPackage::write(io_handler, &cmd).await?;
+        let (pos, cmd_len) = CommandPackage::write(io_handler, &cmd)?;
 
         // 模式匹配获取key值
         if let CommandData::Set { key: cmd_key, .. } = cmd {
@@ -224,7 +224,7 @@ impl KVStore for HashStore {
             }
             // 阈值过高进行压缩
             if manifest.is_threshold_exceeded() {
-                self.compact().await?
+                self.compact()?
             }
         }
 
@@ -233,12 +233,12 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = manifest.get_pos_with_key(key) {
             if let Some(reader) = manifest.get_reader(&cmd_pos.gen) {
-                if let Some(cmd) = CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len).await? {
+                if let Some(cmd) = CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len)? {
                     // 将命令进行转换
                     return if let CommandData::Set { value, .. } = cmd {
                         //返回匹配成功的数据
@@ -256,13 +256,13 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn remove(&self, key: &[u8]) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+        let mut manifest = self.manifest.write();
 
         // 若index中存在这个key
         if manifest.contains_key_with_pos(key) {
             // 对这个key做命令封装
             let cmd = CommandData::Remove { key: key.to_vec() };
-            let _ignore = CommandPackage::write(manifest.current_io_writer()?, &cmd).await?;
+            let _ignore = CommandPackage::write(manifest.current_io_writer()?, &cmd)?;
             let _ignore1 = manifest.remove_key_with_pos(key);
             Ok(())
         } else {
@@ -272,7 +272,7 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn size_of_disk(&self) -> Result<u64> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
         Ok(manifest.io_index
             .values()
@@ -283,23 +283,23 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn len(&self) -> Result<usize> {
-        Ok(self.manifest.read().await
+        Ok(self.manifest.read()
             .index.len())
     }
 
     #[inline]
     async fn is_empty(&self) -> bool {
-        self.manifest.read().await
+        self.manifest.read()
             .index.is_empty()
     }
 }
 
 /// 通过目录地址加载数据并返回数据总大小
-async fn load(reader: &Box<dyn IoReader>, index: &mut HashMap<Vec<u8>, CommandPos>) -> Result<usize> {
+fn load(reader: &Box<dyn IoReader>, index: &mut HashMap<Vec<u8>, CommandPos>) -> Result<usize> {
     let gen = reader.get_gen();
 
     // 流式读取将数据序列化为Command
-    let vec_package = CommandPackage::from_read_to_vec(reader).await?;
+    let vec_package = CommandPackage::from_read_to_vec(reader)?;
     // 初始化空间占用为0
     let mut un_compacted = 0;
     // 迭代数据
@@ -414,10 +414,10 @@ impl Manifest {
     }
     /// 压缩前gen自增
     /// 用于数据压缩前将最新写入位置偏移至新位置
-    pub(crate) async fn compaction_increment(&mut self, factory: &IoFactory) -> Result<(i64, (Box<dyn IoWriter>, Box<dyn IoReader>))> {
+    pub(crate) fn compaction_increment(&mut self, factory: &IoFactory) -> Result<(i64, (Box<dyn IoWriter>, Box<dyn IoReader>))> {
         // 将数据刷入硬盘防止丢失
         self.current_io_writer()?
-            .flush().await?;
+            .flush()?;
         // 获取当前current
         let current = self.current_gen;
         let next_gen = current + 2;

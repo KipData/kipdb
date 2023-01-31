@@ -218,25 +218,23 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
 fn test_io() -> Result<()> {
     let temp_dir = TempDir::new()
         .expect("unable to create temporary working directory");
-    tokio_test::block_on(async move {
-        let factory = IoFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
+    let factory = IoFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
 
-        io_type_test(&factory, IoType::Buf).await?;
-        io_type_test(&factory, IoType::MMap).await?;
+    io_type_test(&factory, IoType::Buf)?;
+    io_type_test(&factory, IoType::MMap)?;
 
-        Ok(())
-    })
+    Ok(())
 }
 
-async fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
+fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     let writer = factory.writer(1, io_type)?;
     let reader = factory.reader(1, io_type)?;
     let data_write1 = vec![b'1', b'2', b'3'];
     let data_write2 = vec![b'4', b'5', b'6'];
-    let (pos_1, len_1) = writer.write(data_write1).await?;
-    let (pos_2, len_2) = writer.write(data_write2).await?;
-    writer.flush().await?;
-    let data_read = reader.read_with_pos(0, 6).await?;
+    let (pos_1, len_1) = writer.write(data_write1)?;
+    let (pos_2, len_2) = writer.write(data_write2)?;
+    writer.flush()?;
+    let data_read = reader.read_with_pos(0, 6)?;
 
     assert_eq!(vec![b'1', b'2', b'3', b'4', b'5', b'6'], data_read);
     assert_eq!(pos_1, 0);

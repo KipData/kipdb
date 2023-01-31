@@ -3,8 +3,7 @@ use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use async_trait::async_trait;
+use parking_lot::Mutex;
 use crate::kernel::io::{FileExtension, IoType, IoReader, IoWriter};
 use crate::kernel::Result;
 
@@ -67,7 +66,6 @@ impl BufIoWriter {
     }
 }
 
-#[async_trait]
 impl IoReader for BufIoReader {
     fn get_gen(&self) -> i64 {
         self.gen
@@ -78,8 +76,8 @@ impl IoReader for BufIoReader {
             .path_with_gen(&self.dir_path, self.gen)
     }
 
-    async fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
-        let mut reader = self.reader.lock().await;
+    fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
+        let mut reader = self.reader.lock();
 
         let mut buffer = vec![0;len];
         // 使用Vec buffer获取数据
@@ -94,7 +92,6 @@ impl IoReader for BufIoReader {
     }
 }
 
-#[async_trait]
 impl IoWriter for BufIoWriter {
 
     fn get_gen(&self) -> i64 {
@@ -106,8 +103,8 @@ impl IoWriter for BufIoWriter {
             .path_with_gen(&self.dir_path, self.gen)
     }
 
-    async fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
-        let mut writer = self.writer.lock().await;
+    fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
+        let mut writer = self.writer.lock();
 
         let start_pos = writer.pos;
         let slice_buf = buf.as_slice();
@@ -116,9 +113,8 @@ impl IoWriter for BufIoWriter {
         Ok((start_pos, slice_buf.len()))
     }
 
-    async fn flush(&self) -> Result<()> {
+    fn flush(&self) -> Result<()> {
         self.writer.lock()
-            .await
             .flush()?;
         Ok(())
     }
