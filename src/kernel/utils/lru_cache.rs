@@ -49,6 +49,7 @@ unsafe impl<K: Send, V: Send, S: Send> Send for ShardingLruCache<K, V, S> {}
 unsafe impl<K: Sync, V: Sync, S: Sync> Sync for ShardingLruCache<K, V, S> {}
 
 pub(crate) struct ShardingLruCache<K, V, S = RandomState> {
+    // TODO: 替换Tokio锁
     sharding_vec: Vec<Arc<RwLock<LruCache<K, V>>>>,
     hasher: S,
 }

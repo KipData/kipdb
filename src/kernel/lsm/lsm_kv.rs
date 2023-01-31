@@ -15,6 +15,7 @@ use crate::kernel::io::FileExtension;
 use crate::kernel::lsm::{MemMap, MemTable};
 use crate::kernel::lsm::compactor::Compactor;
 use crate::kernel::lsm::log::LogLoader;
+use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::VersionStatus;
 use crate::kernel::Result;
 
@@ -45,10 +46,10 @@ pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 pub struct LsmStore {
     /// MemTable
     /// https://zhuanlan.zhihu.com/p/79064869
-    mem_table: MemTable,
+    pub(crate) mem_table: MemTable,
     /// VersionVec
     /// 用于管理内部多版本状态
-    ver_status: Arc<VersionStatus>,
+    pub(crate) ver_status: Arc<VersionStatus>,
     /// LSM全局参数配置
     config: Arc<Config>,
     /// WAL载入器
@@ -86,7 +87,9 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data(CommandData::Set { key: key.to_vec(), value: Arc::new(value) }, true).await
+        self.append_cmd_data(
+            CommandData::set(key.to_vec(), value), true
+        ).await
     }
 
     #[inline]
@@ -115,7 +118,9 @@ impl KVStore for LsmStore {
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
             Some(_) => {
-                self.append_cmd_data(CommandData::Remove { key: key.to_vec() }, true).await
+                self.append_cmd_data(
+                   CommandData::remove(key.to_vec()), true
+                ).await
             }
             None => { Err(KvsError::KeyNotFound) }
         }
@@ -165,16 +170,11 @@ impl LsmStore {
         // Wal与MemTable双写
         if self.is_enable_wal() && wal_write {
             wal_put(
-                &self.wal,
-                &cmd,
-                !self.is_async_wal()
+                &self.wal, &cmd, !self.is_async_wal()
             ).await;
         }
 
-        if mem_table.insert_data_and_is_exceeded(
-            cmd,
-            &self.config
-        ) {
+        if mem_table.insert_data_and_is_exceeded(cmd, &self.config) {
             self.minor_compaction().await?;
         }
 
@@ -202,7 +202,7 @@ impl LsmStore {
     }
 
     /// 等待所有压缩结束
-    async fn wait_for_compression_down(&self) -> Result<()> {
+    pub(crate) async fn wait_for_compression_down(&self) -> Result<()> {
         // 监听异步任务是否执行完毕
         let mut vec_rev = self.vec_rev.lock().await;
         while let Some(rev) = vec_rev.pop() {
@@ -342,11 +342,11 @@ impl LsmStore {
     pub(crate) fn ver_status(&self) -> &Arc<VersionStatus> {
         &self.ver_status
     }
-    #[allow(dead_code)]
+
     pub(crate) fn config(&self) -> &Arc<Config> {
         &self.config
     }
-    #[allow(dead_code)]
+
     pub(crate) fn wal(&self) -> &Arc<LogLoader> {
         &self.wal
     }
@@ -359,6 +359,18 @@ impl LsmStore {
         self.wait_for_compression_down().await?;
 
         Ok(())
+    }
+
+    /// 创建事务
+    pub async fn new_trans(&self) -> Result<Transaction> {
+        self.wait_for_compression_down().await?;
+
+        Ok(Transaction::new(
+            self.config(),
+            self.ver_status.current().await,
+            self.mem_table.inner.read(),
+            self.wal()
+        )?)
     }
 }
 

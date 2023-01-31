@@ -20,6 +20,7 @@ pub mod lsm_kv;
 mod compactor;
 mod version;
 mod log;
+mod mvcc;
 
 /// Value为此Key的Records(CommandData与seq_id)
 pub(crate) type MemMap = SkipMap<Vec<u8>, (CommandData, i64)>;
@@ -50,15 +51,15 @@ struct MetaBlock {
 }
 
 #[derive(Debug)]
-struct MemTable {
+pub(crate) struct MemTable {
     // 此读写锁锁仅用于切换mem_table和immut_table
     // 在大部分情况下应该算作为无锁(读锁并行)
     inner: RwLock<TableInner>
 }
 
 #[derive(Debug)]
-struct TableInner {
-    mem_table: MemMap,
+pub(crate) struct TableInner {
+    mem_table: Arc<MemMap>,
     immut_table: Option<Arc<MemMap>>
 }
 
@@ -67,7 +68,7 @@ impl MemTable {
         MemTable {
             inner: RwLock::new(
                 TableInner {
-                    mem_table: mem_map,
+                    mem_table: Arc::new(mem_map),
                     immut_table: None,
                 }
             ),
@@ -84,7 +85,7 @@ impl MemTable {
     ) -> bool {
         // 将seq_id作为低位
         let seq_id = config.create_gen();
-        let key = Self::key_encode_with_seq(cmd.get_key_clone(), seq_id);
+        let key = key_encode_with_seq(cmd.get_key_clone(), seq_id);
 
         let inner = self.inner.read();
         let _ignore = inner.mem_table.insert(key, (cmd, seq_id));
@@ -118,22 +119,19 @@ impl MemTable {
                 })
                 .collect_vec();
 
-            inner.immut_table = Some(Arc::new(
-                mem::replace(&mut inner.mem_table, SkipMap::new())
-            ));
+            inner.immut_table = Some(mem::replace(&mut inner.mem_table, Arc::new(SkipMap::new())));
 
             Some((vec_data, last_seq_id)  )
         } else { None }
     }
 
     fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let inner = self.inner.read();
-
         // 填充SEQ_MAX使其变为最高位以尽可能获取最新数据
         let mut encode_key = key.to_vec();
         encode_key.append(
             &mut SEQ_MAX.to_vec()
         );
+        let inner = self.inner.read();
 
         Self::find_(&encode_key, key, &inner.mem_table)
             .or_else(|| {
@@ -144,29 +142,30 @@ impl MemTable {
             })
     }
 
-    /// 查询时附带sequence_id进行历史数据查询
-    #[allow(dead_code)]
-    fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Option<Vec<u8>> {
-        let inner = self.inner.read();
-
-        return find_with_seq_(key, sequence_id, &inner.mem_table)
+    pub(crate) fn find_with_inner(key: &[u8], seq_id: i64, inner: &TableInner) -> Option<Vec<u8>> {
+        return find_with_seq_(key, seq_id, &inner.mem_table)
             .or_else(|| {
                 inner.immut_table.as_ref()
-                    .map(|mem_map| find_with_seq_(key, sequence_id, &mem_map))
+                    .map(|mem_map| find_with_seq_(key, seq_id, &mem_map))
                     .flatten()
             });
-
 
         /// 通过sequence_id对mem_table的数据进行获取
         ///
         /// 获取第一个小于等于sequence_id的数据
         fn find_with_seq_(key: &[u8], sequence_id: i64, mem_map: &MemMap) -> Option<Vec<u8>> {
             MemTable::find_(
-                &MemTable::key_encode_with_seq(key.to_vec(), sequence_id),
+                &key_encode_with_seq(key.to_vec(), sequence_id),
                 key,
                 mem_map
             )
         }
+    }
+
+    /// 查询时附带sequence_id进行历史数据查询
+    #[allow(dead_code)]
+    fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Option<Vec<u8>> {
+        return Self::find_with_inner(key, sequence_id, &self.inner.read());
     }
 
     fn find_(seq_key: &[u8], user_key: &[u8], mem_map: &MemMap) -> Option<Vec<u8>> {
@@ -179,16 +178,16 @@ impl MemTable {
             })
             .flatten()
     }
+}
 
-    /// 将key与seq_id进行混合编码
-    ///
-    /// key在高位，seq_id在低位
-    fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Vec<u8> {
-        key.append(
-            &mut bincode::serialize(&seq_id).unwrap()
-        );
-        key
-    }
+/// 将key与seq_id进行混合编码
+///
+/// key在高位，seq_id在低位
+pub(crate) fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Vec<u8> {
+    key.append(
+        &mut bincode::serialize(&seq_id).unwrap()
+    );
+    key
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Hash, PartialOrd, Eq)]
