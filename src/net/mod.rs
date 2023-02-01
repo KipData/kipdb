@@ -1,6 +1,7 @@
 use crate::error::ConnectionError;
 
 use prost::Message;
+use crate::kernel::ByteUtils;
 use crate::KvsError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
@@ -35,22 +36,14 @@ fn key_value_from_option(option: &CommandOption) -> Result<KeyValue> {
     }
 }
 
-/// 模拟`CommandPackage::trans_to_vec_u8`方法的序列化
-/// 与`CommandPackage::get_vec_bytes`可以对应使用
 fn kv_encode_with_len(key_value: &KeyValue) -> Result<Vec<u8>> {
     let mut vec = vec![];
-    key_value
-        .encode(&mut vec)
+
+    key_value.encode(&mut vec)
         .map_err(|_| ConnectionError::EncodeError)?;
 
     if !vec.is_empty() {
-        let i = vec.len();
-        let mut vec_head = vec![(i >> 24) as u8,
-                                (i >> 16) as u8,
-                                (i >> 8) as u8,
-                                i as u8];
-        vec_head.append(&mut vec);
-        Ok(vec_head)
+        Ok(ByteUtils::tag_with_head(vec))
     } else {
         Err(ConnectionError::KvStoreError(KvsError::DataEmpty))
     }

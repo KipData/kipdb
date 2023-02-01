@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
 use tracing::{error, info};
 use prost::Message;
-use crate::kernel::{CommandData, CommandPackage, KVStore, options_none};
+use crate::kernel::{ByteUtils, CommandData, KVStore, options_none};
 use crate::kernel::lsm::lsm_kv::LsmStore;
 use crate::net::connection::Connection;
 use crate::net::{key_value_from_option, kv_encode_with_len, Result};
@@ -179,7 +179,7 @@ impl Handler {
                     self.connection.write(res_option).await?;
                 }
                 1 => {
-                    let vec_cmd = CommandPackage::get_vec_bytes(&client_option.bytes)
+                    let vec_cmd = ByteUtils::sharding_tag_bytes(&client_option.bytes)
                         .into_iter()
                         .filter_map(|vec_u8| {
                             KeyValue::decode(vec_u8).ok()

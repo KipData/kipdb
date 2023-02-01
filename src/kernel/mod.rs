@@ -111,14 +111,10 @@ impl CommandPackage {
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
     pub(crate) fn write(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
-        let (start, len) = Self::write_back_real_pos(writer, cmd)?;
+        let (start, len) = writer.write(
+            ByteUtils::tag_with_head(bincode::serialize(cmd)?)
+        )?;
         Ok((start + 4, len - 4))
-    }
-
-    /// 写入一个Command
-    /// 写入完成后该cmd的真实写入起始位置与长度
-    pub(crate) fn write_back_real_pos(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
-        writer.write(Self::trans_to_vec_u8(cmd)?)
     }
 
     #[allow(dead_code)]
@@ -127,7 +123,10 @@ impl CommandPackage {
         vec_cmd: &Vec<CommandData>
     ) -> Result<(u64, usize)> {
         let bytes = vec_cmd.iter()
-            .filter_map(|cmd_data| Self::trans_to_vec_u8(cmd_data).ok())
+            .filter_map(|cmd_data| {
+                bincode::serialize(cmd_data)
+                    .map(ByteUtils::tag_with_head).ok()
+            })
             .flatten()
             .collect_vec();
 
@@ -144,7 +143,10 @@ impl CommandPackage {
         let vec_sharding_u8  = vec_sharding.iter()
             .flat_map(|sharding| {
                 let sharding_u8 = sharding.iter()
-                    .filter_map(|cmd_data| Self::trans_to_vec_u8(cmd_data).ok())
+                    .filter_map(|cmd_data| {
+                        bincode::serialize(cmd_data)
+                            .map(ByteUtils::tag_with_head).ok()
+                    })
                     .flatten()
                     .collect_vec();
                 vec_sharding_len.push(sharding_u8.len());
@@ -159,27 +161,40 @@ impl CommandPackage {
         Ok((start_pos, batch_len, vec_sharding_len, crc_code))
     }
 
-    pub(crate) fn trans_to_vec_u8(cmd: &CommandData) -> Result<Vec<u8>> {
-        let mut vec = bincode::serialize(cmd)?;
-        let i = vec.len();
-        let mut vec_head = vec![(i >> 24) as u8,
-                                (i >> 16) as u8,
-                                (i >> 8) as u8,
-                                i as u8];
-        vec_head.append(&mut vec);
-        Ok(vec_head)
-    }
-
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub(crate) fn from_pos_unpack(reader: &Box<dyn IoReader>, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = reader.read_with_pos(start, len)?;
         Ok(bincode::deserialize(cmd_u8.as_slice()).ok())
     }
 
+    /// 获取bytes之中所有的CommandData
+    pub(crate) fn from_bytes_to_unpack_vec(bytes: &[u8]) -> Result<Vec<CommandData>> {
+        Ok(ByteUtils::sharding_tag_bytes(bytes).into_iter()
+            .filter_map(|cmd_u8| bincode::deserialize(cmd_u8).ok())
+            .collect_vec())
+    }
+
+    /// 获取reader之中所有的CommandPackage
+    pub(crate) fn from_read_to_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandPackage>> {
+        Self::from_bytes_to_vec(
+            reader.bytes()?
+                .as_slice()
+        )
+    }
+
+    /// 获取reader之中所有的CommandData
+    pub(crate) fn from_read_to_unpack_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandData>> {
+        Self::from_bytes_to_unpack_vec(
+            reader
+                .bytes()?
+                .as_slice()
+        )
+    }
+
     /// 获取bytes之中所有的CommandPackage
     pub(crate) fn from_bytes_to_vec(bytes: &[u8]) -> Result<Vec<CommandPackage>> {
         let mut pos = 4;
-        Ok(Self::get_vec_bytes(bytes).into_iter()
+        Ok(ByteUtils::sharding_tag_bytes(bytes).into_iter()
             .filter_map(|cmd_u8| {
                 let len = cmd_u8.len();
                 let option = bincode::deserialize::<CommandData>(cmd_u8).ok()
@@ -190,38 +205,26 @@ impl CommandPackage {
             })
             .collect_vec())
     }
+}
 
-    /// 获取bytes之中所有的CommandData
-    pub(crate) fn from_bytes_to_unpack_vec(bytes: &[u8]) -> Result<Vec<CommandData>> {
-        Ok(Self::get_vec_bytes(bytes).into_iter()
-            .filter_map(|cmd_u8| bincode::deserialize(cmd_u8).ok())
-            .collect_vec())
+pub(crate) struct ByteUtils;
+
+impl ByteUtils {
+    /// 从u8的slice中前四位获取数据的长度
+    pub(crate) fn from_4_bit_with_start(len_u8: &[u8]) -> usize {
+        usize::from(len_u8[3])
+            | usize::from(len_u8[2]) << 8
+            | usize::from(len_u8[1]) << 16
+            | usize::from(len_u8[0]) << 24
     }
 
-    /// 获取reader之中所有的CommandPackage
-    pub(crate) fn from_read_to_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandPackage>> {
-        Self::from_bytes_to_vec(
-            reader
-                .bytes()?
-                .as_slice()
-        )
-    }
-
-    #[allow(dead_code)]
-    /// 获取reader之中所有的CommandData
-    pub(crate) fn from_read_to_unpack_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandData>> {
-        Self::from_bytes_to_unpack_vec(
-            reader
-                .bytes()?
-                .as_slice()
-        )
-    }
-
-    /// 获取此reader的所有命令对应的字节数组段落
     /// 返回字节数组Vec与对应的字节数组长度Vec
-    pub(crate) fn get_vec_bytes(bytes: &[u8]) -> Vec<&[u8]> {
+    ///
+    /// bytes必须使用'ByteUtils::tag_with_head'进行标记
+    pub(crate) fn sharding_tag_bytes(bytes: &[u8]) -> Vec<&[u8]> {
         let mut vec_cmd_u8 = Vec::new();
         let mut last_pos = 0;
+
         if bytes.len() < 4 {
             return vec_cmd_u8;
         }
@@ -244,12 +247,15 @@ impl CommandPackage {
         vec_cmd_u8
     }
 
-    /// 从u8的slice中前四位获取数据的长度
-    fn from_4_bit_with_start(len_u8: &[u8]) -> usize {
-        usize::from(len_u8[3])
-            | usize::from(len_u8[2]) << 8
-            | usize::from(len_u8[1]) << 16
-            | usize::from(len_u8[0]) << 24
+    /// 标记bytes以支持'ByteUtils::sharding_tag_bytes'方法
+    pub(crate) fn tag_with_head(mut bytes: Vec<u8>) -> Vec<u8> {
+        let i = bytes.len();
+        let mut vec_head = vec![(i >> 24) as u8,
+                                (i >> 16) as u8,
+                                (i >> 8) as u8,
+                                i as u8];
+        vec_head.append(&mut bytes);
+        vec_head
     }
 }
 
