@@ -35,7 +35,6 @@ prost = "0.9"
 prost-derive = "0.9"
 serde = { version = "1.0.89", features = ["derive", "rc"] }
 bincode = "1.3.3"
-rmp-serde = "1.1.0"
 # tokio异步
 tokio = { version="1.21.2", features = ["full", "signal"] }
 futures = "0.3"
@@ -53,8 +52,9 @@ growable-bloom-filter = "2.0.1"
 itertools = "0.10.3"
 chrono = "0.4.19"
 rs-snowflake = "0.6.0"
+parking_lot = "0.12.1"
 crc32fast = "1.3.2"
-skiplist = "0.4.0"
+crossbeam-skiplist = "0.1.1"
 fslock = "0.2.1"
 memmap2 = "0.5.4"
 # 其他数据库内核

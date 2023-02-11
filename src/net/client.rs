@@ -2,7 +2,7 @@ use itertools::Itertools;
 use tokio::net::{TcpStream, ToSocketAddrs};
 use prost::Message;
 use crate::error::ConnectionError;
-use crate::kernel::{CommandData, CommandPackage};
+use crate::kernel::{ByteUtils, CommandData};
 use crate::KvsError;
 use crate::net::connection::Connection;
 use crate::net::{kv_encode_with_len, option_from_key_value, Result};
@@ -89,7 +89,7 @@ impl Client {
         let result_option = self.send_cmd(send_option).await?;
 
         if result_option.r#type == 1 {
-            Ok(CommandPackage::get_vec_bytes(&result_option.bytes)
+            Ok(ByteUtils::sharding_tag_bytes(&result_option.bytes)
                 .into_iter()
                 .map(|vec_u8| {
                     KeyValue::decode(vec_u8).ok()

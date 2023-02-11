@@ -67,7 +67,7 @@ client.batch(vec_batch_cmd, true).await?
 
 ## 内置多种持久化内核👍
 - LsmStore: LSM存储，使用Leveled Compaction策略(默认内核)
-- HashStore: 类Bitcask，在LSM存储内核中作为WAL防灾日志使用
+- HashStore: 类Bitcask
 - SledStore: 基于Sled数据库进行封装
 
 ## 操作示例⌨️

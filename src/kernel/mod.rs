@@ -2,12 +2,15 @@ use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
+use fslock::LockFile;
 use futures::future;
 use itertools::Itertools;
+use tokio::time;
 
-use crate::kernel::io::IOHandler;
+use crate::kernel::io::{FileExtension, IoReader, IoWriter};
 use crate::KvsError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
@@ -20,27 +23,6 @@ pub mod utils;
 pub type Result<T> = std::result::Result<T, KvsError>;
 
 pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
-
-#[derive(Debug, Copy, Clone)]
-pub enum FileExtension {
-    Log,
-    SSTable,
-}
-
-impl FileExtension {
-    
-    pub(crate) fn extension_str(&self) -> &'static str {
-        match self {
-            FileExtension::Log => "log",
-            FileExtension::SSTable => "sst"
-        }
-    }
-
-    /// 对文件夹路径填充日志文件名
-    pub(crate) fn path_with_gen(&self, dir: &Path, gen: i64) -> PathBuf {
-        dir.join(format!("{gen}.{}", self.extension_str()))
-    }
-}
 
 /// KV持久化内核 操作定义
 #[async_trait]
@@ -121,14 +103,6 @@ impl CommandPos {
 
 impl CommandPackage {
 
-    pub(crate) fn encode(cmd: &CommandData) -> Result<Vec<u8>> {
-        Ok(rmp_serde::to_vec(cmd)?)
-    }
-
-    pub(crate) fn decode(vec: &[u8]) -> Result<CommandData> {
-        Ok(rmp_serde::from_slice(vec)?)
-    }
-
     /// 实例化一个Command
     pub(crate) fn new(cmd: CommandData, pos: u64, len: usize) -> Self {
         CommandPackage{ cmd, pos, len }
@@ -136,20 +110,32 @@ impl CommandPackage {
 
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
-    pub(crate) async fn write(io_handler: &Box<dyn IOHandler>, cmd: &CommandData) -> Result<(u64, usize)> {
-        let (start, len) = Self::write_back_real_pos(io_handler, cmd).await?;
+    pub(crate) fn write(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
+        let (start, len) = writer.write(
+            ByteUtils::tag_with_head(bincode::serialize(cmd)?)
+        )?;
         Ok((start + 4, len - 4))
     }
 
-    /// 写入一个Command
-    /// 写入完成后该cmd的真实写入起始位置与长度
-    pub(crate) async fn write_back_real_pos(io_handler: &Box<dyn IOHandler>, cmd: &CommandData) -> Result<(u64, usize)> {
-        io_handler.write(Self::trans_to_vec_u8(cmd)?).await
+    #[allow(dead_code)]
+    pub(crate) fn write_batch(
+        writer: &Box<dyn IoWriter>,
+        vec_cmd: &Vec<CommandData>
+    ) -> Result<(u64, usize)> {
+        let bytes = vec_cmd.iter()
+            .filter_map(|cmd_data| {
+                bincode::serialize(cmd_data)
+                    .map(ByteUtils::tag_with_head).ok()
+            })
+            .flatten()
+            .collect_vec();
+
+        writer.write(bytes)
     }
 
     /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
-    pub(crate) async fn write_batch_first_pos_with_sharding(
-        io_handler: &Box<dyn IOHandler>,
+    pub(crate) fn write_batch_first_pos_with_sharding(
+        writer: &Box<dyn IoWriter>,
         vec_sharding: &Vec<Vec<CommandData>>
     ) -> Result<(u64, usize, Vec<usize>, u32)>{
         let mut vec_sharding_len = Vec::with_capacity(vec_sharding.len());
@@ -157,7 +143,10 @@ impl CommandPackage {
         let vec_sharding_u8  = vec_sharding.iter()
             .flat_map(|sharding| {
                 let sharding_u8 = sharding.iter()
-                    .filter_map(|cmd_data| Self::trans_to_vec_u8(cmd_data).ok())
+                    .filter_map(|cmd_data| {
+                        bincode::serialize(cmd_data)
+                            .map(ByteUtils::tag_with_head).ok()
+                    })
                     .flatten()
                     .collect_vec();
                 vec_sharding_len.push(sharding_u8.len());
@@ -167,35 +156,48 @@ impl CommandPackage {
 
         let crc_code = crc32fast::hash(vec_sharding_u8.as_slice());
 
-        let (start_pos, batch_len) = io_handler.write(vec_sharding_u8).await?;
+        let (start_pos, batch_len) = writer.write(vec_sharding_u8)?;
 
         Ok((start_pos, batch_len, vec_sharding_len, crc_code))
     }
 
-    pub(crate) fn trans_to_vec_u8(cmd: &CommandData) -> Result<Vec<u8>> {
-        let mut vec = rmp_serde::to_vec(cmd)?;
-        let i = vec.len();
-        let mut vec_head = vec![(i >> 24) as u8,
-                                (i >> 16) as u8,
-                                (i >> 8) as u8,
-                                i as u8];
-        vec_head.append(&mut vec);
-        Ok(vec_head)
+    /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
+    pub(crate) fn from_pos_unpack(reader: &Box<dyn IoReader>, start: u64, len: usize) -> Result<Option<CommandData>> {
+        let cmd_u8 = reader.read_with_pos(start, len)?;
+        Ok(bincode::deserialize(cmd_u8.as_slice()).ok())
     }
 
-    /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
-    pub(crate) async fn from_pos_unpack(io_handler: &Box<dyn IOHandler>, start: u64, len: usize) -> Result<Option<CommandData>> {
-        let cmd_u8 = io_handler.read_with_pos(start, len).await?;
-        Ok(rmp_serde::from_slice(cmd_u8.as_slice()).ok())
+    /// 获取bytes之中所有的CommandData
+    pub(crate) fn from_bytes_to_unpack_vec(bytes: &[u8]) -> Result<Vec<CommandData>> {
+        Ok(ByteUtils::sharding_tag_bytes(bytes).into_iter()
+            .filter_map(|cmd_u8| bincode::deserialize(cmd_u8).ok())
+            .collect_vec())
+    }
+
+    /// 获取reader之中所有的CommandPackage
+    pub(crate) fn from_read_to_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandPackage>> {
+        Self::from_bytes_to_vec(
+            reader.bytes()?
+                .as_slice()
+        )
+    }
+
+    /// 获取reader之中所有的CommandData
+    pub(crate) fn from_read_to_unpack_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandData>> {
+        Self::from_bytes_to_unpack_vec(
+            reader
+                .bytes()?
+                .as_slice()
+        )
     }
 
     /// 获取bytes之中所有的CommandPackage
     pub(crate) fn from_bytes_to_vec(bytes: &[u8]) -> Result<Vec<CommandPackage>> {
         let mut pos = 4;
-        Ok(Self::get_vec_bytes(bytes).into_iter()
+        Ok(ByteUtils::sharding_tag_bytes(bytes).into_iter()
             .filter_map(|cmd_u8| {
                 let len = cmd_u8.len();
-                let option = rmp_serde::from_slice::<CommandData>(cmd_u8).ok()
+                let option = bincode::deserialize::<CommandData>(cmd_u8).ok()
                     .map(|cmd_data| CommandPackage::new(cmd_data, pos, len));
                 // 对pos进行长度自增并对占位符进行跳过
                 pos += len as u64 + 4;
@@ -203,27 +205,26 @@ impl CommandPackage {
             })
             .collect_vec())
     }
+}
 
-    /// 获取bytes之中所有的CommandData
-    pub(crate) fn from_bytes_to_unpack_vec(bytes: &[u8]) -> Result<Vec<CommandData>> {
-        Ok(Self::get_vec_bytes(bytes).into_iter()
-            .filter_map(|cmd_u8| rmp_serde::from_slice(cmd_u8).ok())
-            .collect_vec())
+pub(crate) struct ByteUtils;
+
+impl ByteUtils {
+    /// 从u8的slice中前四位获取数据的长度
+    pub(crate) fn from_4_bit_with_start(len_u8: &[u8]) -> usize {
+        usize::from(len_u8[3])
+            | usize::from(len_u8[2]) << 8
+            | usize::from(len_u8[1]) << 16
+            | usize::from(len_u8[0]) << 24
     }
 
-    /// 获取reader之中所有的Command
-    pub(crate) async fn from_read_to_vec(io_handler: &Box<dyn IOHandler>) -> Result<Vec<CommandPackage>> {
-        let len = io_handler.file_size()?;
-
-        let bytes = io_handler.read_with_pos(0, len as usize).await?;
-        Self::from_bytes_to_vec(bytes.as_slice())
-    }
-
-    /// 获取此reader的所有命令对应的字节数组段落
     /// 返回字节数组Vec与对应的字节数组长度Vec
-    pub(crate) fn get_vec_bytes(bytes: &[u8]) -> Vec<&[u8]> {
+    ///
+    /// bytes必须使用'ByteUtils::tag_with_head'进行标记
+    pub(crate) fn sharding_tag_bytes(bytes: &[u8]) -> Vec<&[u8]> {
         let mut vec_cmd_u8 = Vec::new();
         let mut last_pos = 0;
+
         if bytes.len() < 4 {
             return vec_cmd_u8;
         }
@@ -246,12 +247,15 @@ impl CommandPackage {
         vec_cmd_u8
     }
 
-    /// 从u8的slice中前四位获取数据的长度
-    fn from_4_bit_with_start(len_u8: &[u8]) -> usize {
-        usize::from(len_u8[3])
-            | usize::from(len_u8[2]) << 8
-            | usize::from(len_u8[1]) << 16
-            | usize::from(len_u8[0]) << 24
+    /// 标记bytes以支持'ByteUtils::sharding_tag_bytes'方法
+    pub(crate) fn tag_with_head(mut bytes: Vec<u8>) -> Vec<u8> {
+        let i = bytes.len();
+        let mut vec_head = vec![(i >> 24) as u8,
+                                (i >> 16) as u8,
+                                (i >> 8) as u8,
+                                i as u8];
+        vec_head.append(&mut bytes);
+        vec_head
     }
 }
 
@@ -297,21 +301,14 @@ impl CommandData {
     }
 
     #[inline]
-    pub fn get_data_len_for_rmp(&self) -> usize {
+    pub fn bytes_len(&self) -> usize {
         self.get_key().len()
-            + self.get_value().map_or(0, |value| value.len())
-            + self.get_cmd_len_for_rmp()
-    }
-
-    /// 使用下方的测试方法对每个指令类型做测试得出的常量值
-    /// 测试并非为准确的常量值，但大多数情况下该值，且极端情况下也不会超过该值
-    #[inline]
-    pub fn get_cmd_len_for_rmp(&self) -> usize {
-        match self {
-            CommandData::Set { .. } => { 10 }
-            CommandData::Remove { .. } => { 12 }
-            CommandData::Get { .. } => { 9 }
-        }
+            + self.get_value().map_or(0, Vec::len)
+            + match self {
+                CommandData::Set { .. } => { 20 }
+                CommandData::Remove { .. } => { 12 }
+                CommandData::Get { .. } => { 12 }
+            }
     }
 
     /// 命令消费
@@ -432,9 +429,27 @@ fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64
     Ok(gen_list)
 }
 
+/// 尝试锁定文件或超时
+async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
+    let mut lock_file = LockFile::open(path)?;
+
+    let mut backoff = 1;
+
+    loop {
+        if lock_file.try_lock()? {
+            return Ok(lock_file)
+        } else if backoff > 4 {
+            return Err(KvsError::ProcessExistsError);
+        }
+
+        time::sleep(Duration::from_millis(backoff * 100)).await;
+
+        backoff *= 2;
+    };
+}
+
 // #[test]
 // fn test_cmd_len() -> Result<()>{
-//     use tracing::info;
 //
 //     let data_big_p = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
 //                             abcdefghijklmnopqrstuvwxyz
@@ -450,20 +465,21 @@ fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64
 //
 //     let data_smail = CommandData::set(vec![b'1'], vec![b'1']);
 //
-//     let data_smail_len = data_smail.get_data_len_for_rmp();
-//     let data_middle_len = data_middle.get_data_len_for_rmp();
-//     let data_big_len = data_big.get_data_len_for_rmp();
-//     let data_big_p_len = data_big_p.get_data_len_for_rmp();
-//     let data0_len = rmp_serde::to_vec(&CommandData::get(vec![]))?.len();
-//     let data1_len = rmp_serde::to_vec(&data_smail)?.len() - data_smail_len;
-//     let data2_len = rmp_serde::to_vec(&data_middle)?.len() - data_middle_len;
-//     let data3_len = rmp_serde::to_vec(&data_big)?.len() - data_big_len;
-//     let data4_len = rmp_serde::to_vec(&data_big_p)?.len() - data_big_p_len;
+//     let data_smail_len = data_smail.get_data_len();
+//     let data_middle_len = data_middle.get_data_len();
+//     let data_big_len = data_big.get_data_len();
+//     let data_big_p_len = data_big_p.get_data_len();
+//     let data0_len = bincode::serialize(&CommandData::set(vec![], vec![]))?.len();
+//     let data1_len = bincode::serialize(&data_smail)?.len() - data_smail_len;
+//     let data2_len = bincode::serialize(&data_middle)?.len() - data_middle_len;
+//     let data3_len = bincode::serialize(&data_big)?.len() - data_big_len;
+//     let data4_len = bincode::serialize(&data_big_p)?.len() - data_big_p_len;
 //     let cmd_len = vec![data0_len, data1_len, data2_len, data3_len, data4_len].into_iter()
 //         .counts().into_iter()
 //         .max_by_key(|(_, count)| count.clone())
 //         .map(|(len, _)| len).unwrap();
-//     info!("{}", cmd_len);
+//     println!("{}", cmd_len);
+//
 //
 //     Ok(())
 // }

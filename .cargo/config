@@ -2,9 +2,13 @@
 registry = "https://github.com/rust-lang/crates.io-index"
 # 指定镜像
 # 发布时注释
-#replace-with = 'tuna' # 如：tuna、sjtu、ustc，或者 rustcc
+replace-with = 'gitee' # 如：tuna、sjtu、ustc，或者 rustcc
 
 # 注：以下源配置一个即可，无需全部
+
+# Gitee镜像站
+[source.gitee]
+registry = "https://gitee.com/gitee_mirrors_group/crates.io-index.git"
 
 # 中国科学技术大学
 [source.ustc]

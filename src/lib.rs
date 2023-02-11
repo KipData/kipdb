@@ -1,3 +1,4 @@
+#![feature(fs_try_exists)]
 #![deny(
 // The following are allowed by default lints according to
 // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
@@ -24,7 +25,7 @@ trivial_casts,
 trivial_numeric_casts,
 unreachable_pub,
 unsafe_op_in_unsafe_fn,
-unstable_features,
+// unstable_features,
 // unused_crate_dependencies, the false positive case blocks us
 unused_extern_crates,
 unused_import_braces,

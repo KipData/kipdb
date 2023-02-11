@@ -1,15 +1,15 @@
-use std::{path::PathBuf, collections::HashMap, fs};
+use std::{path::PathBuf, collections::HashMap};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use itertools::Itertools;
 use async_trait::async_trait;
 use fslock::LockFile;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 use tracing::error;
 
-use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_LOCK_FILE, FileExtension, KVStore, Result, sorted_gen_list};
-use crate::kernel::io::{IOHandler, IOHandlerFactory, IOType};
+use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_LOCK_FILE, FileExtension, KVStore, lock_or_time_out, Result, sorted_gen_list};
+use crate::kernel::io::{IoFactory, IoReader, IoType, IoWriter};
 use crate::KvsError;
 
 /// 默认压缩大小触发阈值
@@ -17,7 +17,7 @@ pub(crate) const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 64;
 
 /// The `HashKvStore` stores string key/value pairs.
 pub struct HashStore {
-    io_handler_factory: IOHandlerFactory,
+    io_factory: IoFactory,
     manifest: RwLock<Manifest>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
@@ -29,7 +29,7 @@ pub(crate) struct Manifest {
     current_gen: i64,
     un_compacted: u64,
     compaction_threshold: u64,
-    io_handler_index: BTreeMap<i64, Box<dyn IOHandler>>
+    io_index: BTreeMap<i64, (Box<dyn IoWriter>, Box<dyn IoReader>)>
 }
 
 impl HashStore {
@@ -37,7 +37,7 @@ impl HashStore {
     /// 获取索引中的所有keys
     #[inline]
     pub async fn keys_from_index(&self) -> Vec<Vec<u8>> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
         manifest.clone_index_keys()
     }
@@ -45,12 +45,12 @@ impl HashStore {
     /// 获取数据指令
     #[inline]
     pub async fn get_cmd_data(&self, key: &[u8]) -> Result<Option<CommandData>> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = manifest.get_pos_with_key(key) {
-            let io_handler = manifest.current_io_handler()?;
-            Ok(CommandPackage::from_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await?)
+            let reader = manifest.current_io_reader()?;
+            Ok(CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len)?)
         } else {
             Ok(None)
         }
@@ -64,38 +64,34 @@ impl HashStore {
     ) -> Result<Self> where Self: Sized {
         // 获取地址
         let path = path.into();
-        // 创建文件夹（如果他们缺失）
-        fs::create_dir_all(&path)?;
+        // 创建IOHandlerFactory
+        let io_factory =
+            IoFactory::new(path.clone(), FileExtension::Log)?;
+        let lock_file = lock_or_time_out(&path.join(DEFAULT_LOCK_FILE)).await?;
 
-        let mut lock_file = LockFile::open(&path.join(DEFAULT_LOCK_FILE))?;
-
-        if !lock_file.try_lock()? {
-            return Err(KvsError::ProcessExistsError);
-        }
-
-        let mut io_handler_index = BTreeMap::new();
+        let mut io_index = BTreeMap::new();
         // 创建索引
         let mut index = HashMap::<Vec<u8>, CommandPos>::new();
         // 通过path获取有序的log序名Vec
         let gen_list = sorted_gen_list(&path, FileExtension::Log)?;
-        // 创建IOHandlerFactory
-        let io_handler_factory =
-            IOHandlerFactory::new(path, FileExtension::Log);
+
         // 初始化压缩阈值
         let mut un_compacted = 0;
         // 对读入其Map进行初始化并计算对应的压缩阈值
         for &gen in &gen_list {
-            let handler = io_handler_factory.create(gen, IOType::Buf)?;
-            un_compacted += load(&handler, &mut index).await? as u64;
-            let _ignore1 = io_handler_index.insert(gen, handler);
+            let writer = io_factory.writer(gen, IoType::Buf)?;
+            let reader = io_factory.reader(gen, IoType::Buf)?;
+            un_compacted += load(&reader, &mut index)? as u64;
+            let _ignore1 = io_index.insert(gen, (writer, reader));
         }
         let last_gen = *gen_list.last().unwrap_or(&0);
         // 获取当前最新的写入序名
         let current_gen = last_gen;
         // 以最新的写入序名创建新的日志文件
-        let _ignore2 = io_handler_index.insert(
+        let _ignore2 = io_index.insert(
             last_gen,
-            io_handler_factory.create(last_gen, IOType::Buf)?
+            (io_factory.writer(last_gen, IoType::Buf)?,
+                io_factory.reader(last_gen, IoType::Buf)?)
         );
 
         let manifest = RwLock::new(Manifest {
@@ -103,27 +99,27 @@ impl HashStore {
             current_gen,
             un_compacted,
             compaction_threshold,
-            io_handler_index
+            io_index
         });
 
         let store = HashStore {
-            io_handler_factory,
+            io_factory,
             manifest,
             lock_file,
         };
-        store.compact().await?;
+        store.compact()?;
 
         Ok(store)
     }
 
     /// 核心压缩方法
     /// 通过compaction_gen决定压缩位置
-    async fn compact(&self) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+    fn compact(&self) -> Result<()> {
+        let mut manifest = self.manifest.write();
 
         let compaction_threshold = manifest.compaction_threshold;
 
-        let (compact_gen,compact_handler) = manifest.compaction_increment(&self.io_handler_factory).await?;
+        let (compact_gen, compact_handler) = manifest.compaction_increment(&self.io_factory)?;
         // 压缩时对values进行顺序排序
         // 以gen,pos为最新数据的指标
         let (mut vec_cmd_pos, io_handler_index) = manifest.sort_by_last_vec_mut();
@@ -139,10 +135,10 @@ impl HashStore {
             for (i, cmd_pos) in vec_cmd_pos.iter_mut().enumerate() {
                 if i >= skip_index {
                     match io_handler_index.get(&cmd_pos.gen) {
-                        Some(io_handler) => {
+                        Some((_, reader)) => {
                             if let Some(cmd_data) =
-                            CommandPackage::from_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await? {
-                                let (pos, len) = CommandPackage::write(&compact_handler, &cmd_data).await?;
+                            CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len)? {
+                                let (pos, len) = CommandPackage::write(&compact_handler.0, &cmd_data)?;
                                 write_len += len;
                                 cmd_pos.change(compact_gen, pos, len);
                             }
@@ -155,10 +151,10 @@ impl HashStore {
             }
 
             // 将所有写入刷入压缩文件中
-            compact_handler.flush().await?;
-            manifest.insert_io_handler(compact_handler);
+            compact_handler.0.flush()?;
+            manifest.insert_io_handler(compact_gen, compact_handler);
             // 清除过期文件等信息
-            manifest.retain(compact_gen, &self.io_handler_factory)?;
+            manifest.retain(compact_gen, &self.io_factory)?;
             manifest.un_compacted_add(write_len as u64);
         }
 
@@ -199,22 +195,22 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn flush(&self) -> Result<()> {
-        let manifest = self.manifest.write().await;
+        let manifest = self.manifest.write();
 
-        Ok(manifest.current_io_handler()?
-            .flush().await?)
+        Ok(manifest.current_io_writer()?
+            .flush()?)
     }
 
     #[inline]
     async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+        let mut manifest = self.manifest.write();
 
         //将数据包装为命令
         let gen = manifest.current_gen;
         let cmd = CommandData::Set { key: key.to_vec(), value: Arc::new(value) };
         // 获取写入器当前地址
-        let io_handler = manifest.current_io_handler()?;
-        let (pos, cmd_len) = CommandPackage::write(io_handler, &cmd).await?;
+        let io_handler = manifest.current_io_writer()?;
+        let (pos, cmd_len) = CommandPackage::write(io_handler, &cmd)?;
 
         // 模式匹配获取key值
         if let CommandData::Set { key: cmd_key, .. } = cmd {
@@ -228,7 +224,7 @@ impl KVStore for HashStore {
             }
             // 阈值过高进行压缩
             if manifest.is_threshold_exceeded() {
-                self.compact().await?
+                self.compact()?
             }
         }
 
@@ -237,12 +233,12 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
         // 若index中获取到了该数据命令
         if let Some(cmd_pos) = manifest.get_pos_with_key(key) {
-            if let Some(io_handler) = manifest.get_io_handler(&cmd_pos.gen) {
-                if let Some(cmd) = CommandPackage::from_pos_unpack(io_handler, cmd_pos.pos, cmd_pos.len).await? {
+            if let Some(reader) = manifest.get_reader(&cmd_pos.gen) {
+                if let Some(cmd) = CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len)? {
                     // 将命令进行转换
                     return if let CommandData::Set { value, .. } = cmd {
                         //返回匹配成功的数据
@@ -260,13 +256,13 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn remove(&self, key: &[u8]) -> Result<()> {
-        let mut manifest = self.manifest.write().await;
+        let mut manifest = self.manifest.write();
 
         // 若index中存在这个key
         if manifest.contains_key_with_pos(key) {
             // 对这个key做命令封装
             let cmd = CommandData::Remove { key: key.to_vec() };
-            let _ignore = CommandPackage::write(manifest.current_io_handler()?, &cmd).await?;
+            let _ignore = CommandPackage::write(manifest.current_io_writer()?, &cmd)?;
             let _ignore1 = manifest.remove_key_with_pos(key);
             Ok(())
         } else {
@@ -276,34 +272,34 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn size_of_disk(&self) -> Result<u64> {
-        let manifest = self.manifest.read().await;
+        let manifest = self.manifest.read();
 
-        Ok(manifest.io_handler_index
+        Ok(manifest.io_index
             .values()
-            .filter_map(|io_handler| io_handler.file_size().ok())
+            .filter_map(|(reader, _)| reader.file_size().ok())
             .into_iter()
             .sum::<u64>())
     }
 
     #[inline]
     async fn len(&self) -> Result<usize> {
-        Ok(self.manifest.read().await
+        Ok(self.manifest.read()
             .index.len())
     }
 
     #[inline]
     async fn is_empty(&self) -> bool {
-        self.manifest.read().await
+        self.manifest.read()
             .index.is_empty()
     }
 }
 
 /// 通过目录地址加载数据并返回数据总大小
-async fn load(io_handler: &Box<dyn IOHandler>, index: &mut HashMap<Vec<u8>, CommandPos>) -> Result<usize> {
-    let gen = io_handler.get_gen();
+fn load(reader: &Box<dyn IoReader>, index: &mut HashMap<Vec<u8>, CommandPos>) -> Result<usize> {
+    let gen = reader.get_gen();
 
     // 流式读取将数据序列化为Command
-    let vec_package = CommandPackage::from_read_to_vec(io_handler).await?;
+    let vec_package = CommandPackage::from_read_to_vec(reader)?;
     // 初始化空间占用为0
     let mut un_compacted = 0;
     // 迭代数据
@@ -333,17 +329,20 @@ impl Manifest {
         self.index.get(key)
     }
     /// 获取当前最新的IOHandler
-    fn current_io_handler(&self) -> Result<&Box<dyn IOHandler>> {
-        self.io_handler_index.get(&self.current_gen)
+    fn current_io_writer(&self) -> Result<&Box<dyn IoWriter>> {
+        self.io_index.get(&self.current_gen)
+            .map(|(writer, _ )| writer)
             .ok_or(KvsError::FileNotFound)
     }
-    /// 通过Gen获取指定的IOHandler
-    fn get_io_handler(&self, gen: &i64) -> Option<&Box<dyn IOHandler>> {
-        self.io_handler_index.get(gen)
+    fn current_io_reader(&self) -> Result<&Box<dyn IoReader>> {
+        self.io_index.get(&self.current_gen)
+            .map(|(_, reader)| reader)
+            .ok_or(KvsError::FileNotFound)
     }
-    /// 通过Gen获取指定的可变IOHandler
-    fn get_mut_io_handler(&mut self, gen: &i64) -> Option<&mut Box<dyn IOHandler>> {
-        self.io_handler_index.get_mut(gen)
+    /// 通过Gen获取指定的IoReader
+    fn get_reader(&self, gen: &i64) -> Option<&Box<dyn IoReader>> {
+        self.io_index.get(gen)
+            .map(|(_, reader)| reader)
     }
     /// 判断Index中是否存在对应的Key
     fn contains_key_with_pos(&self, key: &[u8]) -> bool {
@@ -368,26 +367,26 @@ impl Manifest {
         self.index.insert(key, cmd_pos)
     }
     /// 插入新的IOHandler
-    fn insert_io_handler(&mut self, io_handler: Box<dyn IOHandler>) {
-        let _ignore = self.io_handler_index.insert(io_handler.get_gen(), io_handler);
+    fn insert_io_handler(&mut self, gen: i64, io_handler: (Box<dyn IoWriter>, Box<dyn IoReader>)) {
+        let _ignore = self.io_index.insert(gen, io_handler);
     }
     /// 保留压缩Gen及以上的IOHandler与文件，其余清除
-    fn retain(&mut self, expired_gen: i64, io_handler_factory: &IOHandlerFactory) -> Result<()> {
+    fn retain(&mut self, expired_gen: i64, io_handler_factory: &IoFactory) -> Result<()> {
         // 遍历过滤出小于压缩文件序号的文件号名收集为过期Vec
-        let stale_gens: HashSet<i64> = self.io_handler_index.keys()
+        let stale_gens: HashSet<i64> = self.io_index.keys()
             .filter(|&&stale_gen| stale_gen < expired_gen)
             .cloned()
             .collect();
 
         // 遍历过期Vec对数据进行旧文件删除
         for stale_gen in stale_gens.iter() {
-            if let Some(io_handler) = self.get_mut_io_handler(stale_gen) {
+            if let Some(io_handler) = self.get_reader(stale_gen) {
                 io_handler_factory.clean(io_handler.get_gen())?;
             }
         }
         // 清除索引中过期Key
         self.index.retain(|_, v| !stale_gens.contains(&v.gen));
-        self.io_handler_index.retain(|k, _| !stale_gens.contains(k));
+        self.io_index.retain(|k, _| !stale_gens.contains(k));
 
         Ok(())
     }
@@ -401,7 +400,7 @@ impl Manifest {
         self.un_compacted > self.compaction_threshold
     }
     /// 将Index中的CommandPos以最新为基准进行排序，由旧往新
-    fn sort_by_last_vec_mut(&mut self) -> (Vec<&mut CommandPos>, &BTreeMap<i64, Box<dyn IOHandler>>) {
+    fn sort_by_last_vec_mut(&mut self) -> (Vec<&mut CommandPos>, &BTreeMap<i64, (Box<dyn IoWriter>, Box<dyn IoReader>)>) {
         let vec_values = self.index.values_mut()
             .sorted_unstable_by(|a, b| {
                 match a.gen.cmp(&b.gen) {
@@ -411,22 +410,29 @@ impl Manifest {
                 }
             })
             .collect_vec();
-        (vec_values, &self.io_handler_index)
+        (vec_values, &self.io_index)
     }
     /// 压缩前gen自增
     /// 用于数据压缩前将最新写入位置偏移至新位置
-    pub(crate) async fn compaction_increment(&mut self, factory: &IOHandlerFactory) -> Result<(i64, Box<dyn IOHandler>)> {
+    pub(crate) fn compaction_increment(&mut self, factory: &IoFactory) -> Result<(i64, (Box<dyn IoWriter>, Box<dyn IoReader>))> {
         // 将数据刷入硬盘防止丢失
-        self.current_io_handler()?
-            .flush().await?;
+        self.current_io_writer()?
+            .flush()?;
         // 获取当前current
         let current = self.current_gen;
+        let next_gen = current + 2;
         // 插入新的写入IOHandler
-        self.insert_io_handler(factory.create(current + 2, IOType::Buf)?);
+        self.insert_io_handler(next_gen, (
+            factory.writer(next_gen, IoType::Buf)?,
+            factory.reader(next_gen, IoType::Buf)?
+        ));
         // 新的写入位置为原位置的向上两位
         self.gen_add(2);
 
         let compaction_gen = current + 1;
-        Ok((compaction_gen, factory.create(compaction_gen, IOType::Buf)?))
+        Ok((compaction_gen,
+            (factory.writer(compaction_gen, IoType::Buf)?,
+             factory.reader(compaction_gen, IoType::Buf)?)
+        ))
     }
 }
