@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crossbeam_skiplist::SkipMap;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
-use parking_lot::RwLock;
+use parking_lot::lock_api::RwLockWriteGuard;
+use parking_lot::{RawRwLock, RwLock};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, Result};
 use crate::kernel::io::{IoFactory, IoReader, IoType, IoWriter};
@@ -78,19 +79,18 @@ impl MemTable {
     /// 插入并判断是否溢出
     ///
     /// 插入时不会去除重复键值，而是进行追加
-    pub(crate) fn insert_data_and_is_exceeded(
+    #[allow(unused_results)]
+    pub(crate) fn insert_data(
         &self,
         cmd: CommandData,
         config: &Config,
-    ) -> bool {
+    ) {
         // 将seq_id作为低位
         let seq_id = config.create_gen();
         let key = key_encode_with_seq(cmd.get_key_clone(), seq_id);
 
-        let inner = self.inner.read();
-        let _ignore = inner.mem_table.insert(key, (cmd, seq_id));
-
-        inner.mem_table.len() >= config.minor_threshold_with_len
+        self.inner.read()
+            .mem_table.insert(key, (cmd, seq_id));
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -103,26 +103,43 @@ impl MemTable {
             .mem_table.len()
     }
 
-    /// MemTable交换并分解,弹出有序数据
-    fn table_swap_and_sort(&self) -> Option<(Vec<CommandData>, i64)> {
-        // TODO: 事务开启后需要持有读锁
+    /// 尝试判断至是否超出阈值并尝试获取写锁进行MemTable数据转移 (弹出数据为有序的)
+    fn try_exceeded_then_swap(&self, exceeded: usize) -> Option<(Vec<CommandData>, i64)> {
         // 以try_write以判断是否存在事务进行读取而防止发送Minor Compaction而导致MemTable数据异常
-        if let Some(mut inner) = self.inner.try_write() {
-            let mut last_seq_id = 0;
-            let vec_data = inner.mem_table.iter()
-                .map(|entry| {
-                    let (cmd, seq_id) = entry.value().clone();
-                    if seq_id > last_seq_id {
-                        last_seq_id = seq_id
-                    }
-                    cmd
-                })
-                .collect_vec();
+        self.inner.try_write()
+            .map(|mut inner| {
+                if inner.mem_table.len() >= exceeded {
+                    Self::swap_(&mut inner)
+                } else { None }
+            })
+            .flatten()
+    }
 
-            inner.immut_table = Some(mem::replace(&mut inner.mem_table, Arc::new(SkipMap::new())));
+    /// MemTable将数据弹出并转移到immutable中  (弹出数据为有序的)
+    fn swap(&self) -> Option<(Vec<CommandData>, i64)> {
+        let mut inner = self.inner.write();
+        Self::swap_(&mut inner)
+    }
 
-            Some((vec_data, last_seq_id)  )
-        } else { None }
+    fn swap_(inner: &mut RwLockWriteGuard<RawRwLock, TableInner>) -> Option<(Vec<CommandData>, i64)> {
+        (inner.mem_table.len() > 0)
+            .then(|| {
+                let mut last_seq_id = 0;
+                let vec_data = inner.mem_table.iter()
+                    .map(|entry| {
+                        let (cmd, seq_id) = entry.value().clone();
+                        if seq_id > last_seq_id {
+                            last_seq_id = seq_id
+                        }
+                        cmd
+                    })
+                    .collect_vec();
+
+                inner.immut_table = Some(mem::replace(
+                    &mut inner.mem_table, Arc::new(SkipMap::new())
+                ));
+                (vec_data, last_seq_id)
+            })
     }
 
     fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
@@ -347,13 +364,13 @@ mod tests {
         let data_1 = CommandData::set(vec![b'k'], vec![b'1']);
         let data_2 = CommandData::set(vec![b'k'], vec![b'2']);
 
-        assert!(!mem_table.insert_data_and_is_exceeded(data_1.clone(), &config));
+        mem_table.insert_data(data_1.clone(), &config);
 
         let old_seq_id = config.create_gen_lazy();
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'1']));
 
-        assert!(!mem_table.insert_data_and_is_exceeded(data_2.clone(), &config));
+        mem_table.insert_data(data_2.clone(), &config);
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'2']));
 

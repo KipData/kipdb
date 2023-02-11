@@ -1,6 +1,7 @@
 use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::mpsc::error::TrySendError;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
@@ -38,7 +39,6 @@ pub(crate) enum VersionEdit {
 
 #[derive(Debug)]
 enum CleanTag {
-    Drop,
     Clean(u64),
     Add(u64, Vec<i64>)
 }
@@ -50,7 +50,7 @@ enum CleanTag {
 struct Cleaner {
     ss_table_map: Arc<RwLock<SSTableMap>>,
     sst_factory: Arc<IoFactory>,
-    tag_rev: Receiver<CleanTag>,
+    tag_rx: Receiver<CleanTag>,
     del_gens: Vec<(u64, Vec<i64>)>,
 
 }
@@ -59,37 +59,37 @@ impl Cleaner {
     fn new(
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         sst_factory: &Arc<IoFactory>,
-        tag_rev: Receiver<CleanTag>
+        tag_rx: Receiver<CleanTag>
     ) -> Self {
         Self {
             ss_table_map: Arc::clone(&ss_table_map),
             sst_factory: Arc::clone(&sst_factory),
-            tag_rev,
+            tag_rx,
             del_gens: vec![],
         }
     }
 
+    /// 监听tag_rev传递的信号
+    ///
+    /// 当tag_tx drop后自动关闭
     async fn listen(&mut self) {
         loop {
-            if let Some(tag) = self.tag_rev.recv().await {
-                match tag {
-                    CleanTag::Drop => {
-                        for (_, vec_gen) in &self.del_gens {
-                            for gen in vec_gen {
-                                if let Err(err) = self.sst_factory.clean(*gen) {
-                                    error!("[Cleaner][drop][SSTables{}]: Remove Error!: {:?}", gen, err);
-                                };
-                            }
+            match self.tag_rx.recv().await {
+                Some(CleanTag::Clean(ver_num)) => self.clean(ver_num).await,
+                Some(CleanTag::Add(ver_num,  vec_gen)) => {
+                    self.del_gens
+                        .push((ver_num, vec_gen));
+                },
+                // 关闭时对此次运行中的暂存Version全部进行删除
+                None => {
+                    for (_, vec_gen) in &self.del_gens {
+                        for gen in vec_gen {
+                            if let Err(err) = self.sst_factory.clean(*gen) {
+                                error!("[Cleaner][drop][SSTables{}]: Remove Error!: {:?}", gen, err);
+                            };
                         }
-                        return
-                    },
-                    CleanTag::Clean(ver_num) => {
-                        self.clean(ver_num).await;
                     }
-                    CleanTag::Add(ver_num,  vec_gen) => {
-                        self.del_gens
-                            .push((ver_num, vec_gen));
-                    }
+                    return
                 }
             }
         }
@@ -144,7 +144,7 @@ pub(crate) struct VersionStatus {
     /// TODO: 日志快照
     ver_log: LogLoader,
     /// 用于Drop时通知Cleaner drop
-    tag_sender: Sender<CleanTag>,
+    _cleaner_tx: Sender<CleanTag>,
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -277,7 +277,7 @@ impl VersionStatus {
             ss_table_map,
             sst_factory,
             ver_log,
-            tag_sender,
+            _cleaner_tx: tag_sender,
         })
     }
 
@@ -736,31 +736,13 @@ impl VersionMeta {
     }
 }
 
-impl Drop for VersionStatus {
-    /// 将Cleaner关闭
-    fn drop(&mut self) {
-        // 自旋取进行发送，可能会导致线程一直占用
-        // Rust尚不支持Async Drop
-        loop {
-            if let Ok(()) = self.tag_sender
-                .try_send(CleanTag::Drop)
-            {
-                return;
-            }
-        }
-    }
-}
-
 impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
-        // 同上
         loop {
-            if let Ok(()) = self.clean_sender
+            if let Err(TrySendError::Full(_)) = self.clean_sender
                 .try_send(CleanTag::Clean(self.version_num))
-            {
-                return;
-            }
+            { continue } else { break }
         }
     }
 }

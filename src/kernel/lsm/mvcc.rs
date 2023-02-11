@@ -144,7 +144,7 @@ mod tests {
                 .major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;
 
-            let mut transaction = kv_store.new_trans().await?;
+            let mut transaction = kv_store.transaction().await?;
 
             let mut vec_kv = Vec::new();
 

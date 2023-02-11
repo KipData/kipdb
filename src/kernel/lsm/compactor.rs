@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use futures::future;
 use itertools::Itertools;
+use tokio::sync::oneshot;
 use tracing::{error, info};
 use crate::KvsError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::Config;
-use crate::kernel::lsm::data_sharding;
+use crate::kernel::lsm::{data_sharding, MemTable};
+use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
 
@@ -20,6 +22,13 @@ pub(crate) type MergeShardingVec = Vec<(i64, Vec<CommandData>)>;
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
 pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
 
+/// Store与Compactor的交互信息
+#[derive(Debug)]
+pub(crate) enum CompactTask {
+    Flush(oneshot::Sender<()>, bool),
+    Drop
+}
+
 /// 压缩器
 ///
 /// 负责Minor和Major压缩
@@ -27,6 +36,11 @@ pub(crate) struct Compactor {
     ver_status: Arc<VersionStatus>,
     config: Arc<Config>,
     sst_factory: Arc<IoFactory>,
+
+    // mem_table与wal都是用于管理LSMStore的写入控制
+    // XXX: 感觉共享状态比较多，可以进行统一封装？
+    mem_table: Arc<MemTable>,
+    wal: Arc<LogLoader>,
 }
 
 impl Compactor {
@@ -34,9 +48,73 @@ impl Compactor {
     pub(crate) fn new(
         ver_status: Arc<VersionStatus>,
         config: Arc<Config>,
-        sst_factory: Arc<IoFactory>
+        sst_factory: Arc<IoFactory>,
+        mem_table: Arc<MemTable>,
+        wal: Arc<LogLoader>
     ) -> Self {
-        Self { ver_status, config, sst_factory }
+        Compactor {
+            ver_status,
+            config,
+            sst_factory,
+            mem_table,
+            wal,
+        }
+    }
+
+    /// 检查并进行压缩 （默认为 异步、被动 的Lazy压缩）
+    ///
+    /// 默认为try检测是否超出阈值，主要思路为以被动定时检测的机制使
+    /// 多事务的commit脱离Compactor的耦合，
+    /// 同时减少高并发事务或写入时的频繁Compaction，优先写入后统一压缩，
+    /// 减少Level 0热数据的SSTable的冗余数据
+    pub(crate) async fn check_then_compaction(
+        &mut self,
+        enable_caching: bool,
+        mut option_tx: Option<oneshot::Sender<()>>
+    ) {
+        let exceeded_len = self.config.minor_threshold_with_len;
+
+        if let Some((values, last_seq_id)) =
+            // 当存在tx时则说明为阻塞压缩，因此不能使用try
+            // 并且不会判断阈值强制压缩
+            if option_tx.is_some() {
+                self.mem_table.swap()
+            } else {
+                self.mem_table.try_exceeded_then_swap(exceeded_len)
+            }
+        {
+            if !values.is_empty() {
+                let gen = self.create_gen()
+                    .expect("Log switch error!");
+                let start = Instant::now();
+                // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
+                if let Err(err) = self.minor_compaction(
+                    gen, last_seq_id, values, enable_caching
+                ).await {
+                    error!("[Compactor][minor_compaction][error happen]: {:?}", err);
+                }
+                info!("[Compactor][Compaction Drop][Time: {:?}]", start.elapsed());
+            }
+        }
+
+        // 压缩请求响应
+        let _ignore = option_tx.take()
+            .map(|tx| {
+                tx.send(()).expect("compactor response error!")
+            });
+    }
+
+    /// 创建gen
+    ///
+    /// 当wal配置启用时，使用预先记录的gen作为结果
+    fn create_gen(&self) -> Result<i64> {
+        let next_gen = self.config.create_gen_lazy();
+
+        Ok(if self.config.wal_enable {
+            self.wal.switch(next_gen)?
+        } else {
+            next_gen
+        })
     }
 
     /// 持久化immutable_table为SSTable
@@ -46,16 +124,16 @@ impl Compactor {
         &self,
         gen: i64,
         last_seq_id: i64,
-        vec_values: Vec<CommandData>,
+        values: Vec<CommandData>,
         enable_caching: bool
     ) -> Result<()> {
-        if !vec_values.is_empty() {
+        if !values.is_empty() {
             // 从内存表中将数据持久化为ss_table
             let ss_table = SSTable::create_for_immutable_table(
                 &self.config,
                 gen,
                 &self.sst_factory,
-                vec_values,
+                values,
                 LEVEL_0
             )?;
 
@@ -232,32 +310,5 @@ impl Compactor {
             .sorted_unstable_by_key(CommandData::get_key_clone)
             .collect();
         Ok(data_sharding(vec_cmd_data, config.sst_file_size, config))
-    }
-
-}
-
-// #[test]
-// fn test_sharding() -> Result<()> {
-//     tokio_test::block_on(async move {
-//         let mut vec_data_1 = Vec::new();
-//         for _ in 0..101 {
-//             vec_data_1.push(CommandData::Set { key: vec![b'1'], value: vec![b'1'] })
-//         }
-//
-//         let vec_sharding_1 =
-//             Compactor::data_sharding(vec_data_1, 10, &Config::new()).await;
-//         assert_eq!(vec_sharding_1.len(), 21);
-//
-//         Ok(())
-//     })
-// }
-
-impl Clone for Compactor {
-    fn clone(&self) -> Self {
-        Compactor {
-            ver_status: Arc::clone(&self.ver_status),
-            config: Arc::clone(&self.config),
-            sst_factory: Arc::clone(&self.sst_factory),
-        }
     }
 }

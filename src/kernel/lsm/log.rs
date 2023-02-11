@@ -130,9 +130,7 @@ impl LogLoader {
     }
 
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
-    pub(crate) fn switch(&self) -> Result<i64> {
-        let next_gen = self.config.create_gen_lazy();
-
+    pub(crate) fn switch(&self, next_gen: i64) -> Result<i64> {
         let next_writer = self.factory.writer(next_gen, IoType::Buf)?;
         let mut inner = self.inner.write();
 
@@ -205,7 +203,7 @@ mod tests {
         wal.log(&data_1)?;
         wal.log(&data_2)?;
 
-        let gen = wal.switch()?;
+        let gen = wal.switch(config.create_gen_lazy())?;
 
         drop(wal);
 

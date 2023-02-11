@@ -1,19 +1,21 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::Duration;
 use async_trait::async_trait;
 use fslock::LockFile;
 use itertools::Itertools;
 use snowflake::SnowflakeIdGenerator;
-use tokio::sync::{Mutex, oneshot};
-use tokio::sync::oneshot::Sender;
-use tracing::{error, info};
+use tokio::select;
+use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::oneshot;
+use tokio::time::sleep;
+use tracing::error;
 use crate::KvsError;
 use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
 use crate::kernel::lsm::{MemMap, MemTable};
-use crate::kernel::lsm::compactor::Compactor;
+use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::VersionStatus;
@@ -39,6 +41,8 @@ pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 112;
 
 pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
+pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 500;
+
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
 /// 基于LSM的KV Store存储内核
@@ -46,7 +50,7 @@ pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 pub struct LsmStore {
     /// MemTable
     /// https://zhuanlan.zhihu.com/p/79064869
-    pub(crate) mem_table: MemTable,
+    pub(crate) mem_table: Arc<MemTable>,
     /// VersionVec
     /// 用于管理内部多版本状态
     pub(crate) ver_status: Arc<VersionStatus>,
@@ -62,10 +66,8 @@ pub struct LsmStore {
     /// 多进程文件锁
     /// 避免多进程进行数据读写
     lock_file: LockFile,
-    /// 异步任务阻塞监听器
-    vec_rev: Mutex<Vec<oneshot::Receiver<()>>>,
-    /// 单线程压缩器
-    compactor: Arc<Mutex<Compactor>>
+    /// Compactor 通信器
+    compactor_tx: Sender<CompactTask>
 }
 
 #[async_trait]
@@ -97,12 +99,6 @@ impl KVStore for LsmStore {
         if let Some(value) = self.mem_table.find(key) {
             return Ok(Some(value));
         }
-
-        // 读取前等待压缩完毕
-        // 相对来说，消耗较小
-        // 当压缩时长高时，说明数据量非常大
-        // 此时直接去获取的话可能会既获取不到数据，也花费大量时间
-        self.wait_for_compression_down().await?;
 
         if let Some(value) = self.ver_status
             .current().await
@@ -149,15 +145,8 @@ impl KVStore for LsmStore {
 
 impl Drop for LsmStore {
     fn drop(&mut self) {
-        // 自旋获取Compactor的锁进行Drop
-        // tip: tokio的Mutex的lock方法是async的
-        loop {
-            if let Some(_compactor) = self.compactor.try_lock().ok() {
-                self.lock_file.unlock()
-                    .expect("LockFile unlock failed!");
-                break
-            }
-        }
+        self.lock_file.unlock()
+            .expect("LockFile unlock failed!");
     }
 }
 
@@ -174,10 +163,7 @@ impl LsmStore {
             ).await;
         }
 
-        if mem_table.insert_data_and_is_exceeded(cmd, &self.config) {
-            self.minor_compaction().await?;
-        }
-
+        mem_table.insert_data(cmd, &self.config);
         Ok(())
     }
 
@@ -187,29 +173,6 @@ impl LsmStore {
 
     fn is_async_wal(&self) -> bool {
         self.config.wal_async_put_enable
-    }
-
-    /// 存活标记
-    /// 返回一个Sender用于存活结束通知
-    async fn live_tag(&self) -> Sender<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.vec_rev.lock()
-            .await
-            .push(receiver);
-
-        sender
-    }
-
-    /// 等待所有压缩结束
-    pub(crate) async fn wait_for_compression_down(&self) -> Result<()> {
-        // 监听异步任务是否执行完毕
-        let mut vec_rev = self.vec_rev.lock().await;
-        while let Some(rev) = vec_rev.pop() {
-            rev.await?
-        }
-
-        Ok(())
     }
 
     /// 使用Config进行LsmStore初始化
@@ -227,6 +190,8 @@ impl LsmStore {
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
+
+        let wal = Arc::new(wal);
 
         let mem_map = match option_success {
             None => MemMap::new(),
@@ -250,92 +215,41 @@ impl LsmStore {
             VersionStatus::load_with_path(&config, &wal).await?
         );
 
-        let compactor = Arc::new(
-            Mutex::new(
-                Compactor::new(
-                    Arc::clone(&ver_status),
-                    Arc::clone(&config),
-                    ver_status.get_sst_factory(),
-                )
-            )
+        let mem_table = Arc::new(MemTable::new(mem_map));
+
+        let mut compactor = Compactor::new(
+            Arc::clone(&ver_status),
+            Arc::clone(&config),
+            ver_status.get_sst_factory(),
+            Arc::clone(&mem_table),
+            Arc::clone(&wal),
         );
 
+        let check_time = config.compactor_check_time;
+        let (task_tx, mut task_rx) = channel(20);
+
+        let _ignore = tokio::spawn(async move {
+            loop {
+                let option_task: Option<CompactTask> = select! {
+                    option_task = task_rx.recv() => Some(option_task.unwrap_or(CompactTask::Drop)),
+                    _ = sleep(Duration::from_millis(check_time)) => None,
+                };
+                if let Some(CompactTask::Flush(resp_tx, enable_caching)) = option_task {
+                    compactor.check_then_compaction(enable_caching, Some(resp_tx)).await;
+                } else {
+                    compactor.check_then_compaction(true, None).await;
+                }
+            }
+        });
+
         Ok(LsmStore {
-            mem_table: MemTable::new(mem_map),
+            mem_table,
             ver_status,
             config,
-            wal: Arc::new(wal),
+            wal,
             lock_file,
-            vec_rev: Mutex::new(Vec::new()),
-            compactor,
+            compactor_tx: task_tx,
         })
-    }
-
-    /// 异步持久化immutable_table为SSTable
-    #[inline]
-    pub async fn minor_compaction(&self) -> Result<()> {
-        if let Some((values, last_seq_id)) = self.mem_table.table_swap_and_sort() {
-            if !values.is_empty() {
-                let compactor = Arc::clone(&self.compactor);
-                let gen = self.create_gen()?;
-                let sender = self.live_tag().await;
-
-                let _ignore = tokio::spawn(async move {
-                    let start = Instant::now();
-                    // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
-                    if let Err(err) = compactor
-                        .lock().await
-                        .minor_compaction(gen, last_seq_id, values, true).await
-                    {
-                        error!("[LsmStore][minor_compaction][error happen]: {:?}", err);
-                    }
-                    sender.send(()).expect("send err!");
-                    info!("[LsmStore][Compaction Drop][Time: {:?}]", start.elapsed());
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn create_gen(&self) -> Result<i64> {
-        Ok(if self.is_enable_wal() {
-            self.wal.switch()?
-        } else {
-            self.config.create_gen_lazy()
-        })
-    }
-
-    /// 同步持久化immutable_table为SSTable
-    #[inline]
-    pub async fn minor_compaction_sync(&self, is_drop: bool) -> Result<()> {
-        if let Some((values, last_seq_id)) = self.mem_table.table_swap_and_sort() {
-            let gen = self.create_gen()?;
-
-            if !values.is_empty() {
-                self.compactor
-                    .lock()
-                    .await
-                    .minor_compaction(gen, last_seq_id, values, !is_drop)
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// 同步进行SSTable基于Level的层级压缩
-    #[inline]
-    pub async fn major_compaction_sync(&self, level: usize) -> Result<()> {
-        self.compactor
-            .lock()
-            .await
-            .major_compaction(level, vec![])
-            .await
-    }
-
-    /// 通过CommandData的引用解包并克隆出value值
-    #[allow(dead_code)]
-    fn value_unpack(cmd_data: &CommandData) -> Option<Vec<u8>> {
-        cmd_data.get_value_clone()
     }
 
     #[allow(dead_code)]
@@ -352,19 +266,18 @@ impl LsmStore {
     }
 
     pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.compactor_tx.send(CompactTask::Flush(tx, !is_drop)).await
+            .expect("flush task send error!");
+
         self.wal.flush()?;
-        if !self.mem_table.is_empty() {
-            self.minor_compaction_sync(is_drop).await?;
-        }
-        self.wait_for_compression_down().await?;
+        rx.await.expect("flush task recv error!");
 
         Ok(())
     }
 
     /// 创建事务
-    pub async fn new_trans(&self) -> Result<Transaction> {
-        self.wait_for_compression_down().await?;
-
+    pub async fn transaction(&self) -> Result<Transaction> {
         Ok(Transaction::new(
             self.config(),
             self.ver_status.current().await,
@@ -410,6 +323,9 @@ pub struct Config {
     /// wal写入时开启异步写入
     /// 可以提高写入响应速度，但可能会导致wal日志在某种情况下并落盘慢于LSM内核而导致该条wal日志无效
     pub(crate) wal_async_put_enable: bool,
+    /// Compactor循环检测时间
+    /// 单位为毫秒
+    pub(crate) compactor_check_time: u64,
     /// gen生成器
     /// 用于SSTable以及SequenceId的生成
     gen_generator: parking_lot::Mutex<SnowflakeIdGenerator>
@@ -432,6 +348,7 @@ impl Config {
             table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
             wal_enable: true,
             wal_async_put_enable: true,
+            compactor_check_time: DEFAULT_COMPACTOR_CHECK_TIME,
             gen_generator: parking_lot::Mutex::new(
                 SnowflakeIdGenerator::new(machine_id, node_id)
             ),
@@ -501,6 +418,12 @@ impl Config {
     #[inline]
     pub fn table_cache_size(mut self, cache_size: usize) -> Self {
         self.table_cache_size = cache_size;
+        self
+    }
+
+    #[inline]
+    pub fn compactor_check_time(mut self, compactor_check_time: u64) -> Self {
+        self.compactor_check_time = compactor_check_time;
         self
     }
 
