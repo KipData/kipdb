@@ -70,7 +70,7 @@ impl Compactor {
     pub(crate) async fn check_then_compaction(
         &mut self,
         enable_caching: bool,
-        mut option_tx: Option<oneshot::Sender<()>>
+        option_tx: Option<oneshot::Sender<()>>
     ) {
         let exceeded_len = self.config.minor_threshold_with_len;
 
@@ -98,14 +98,14 @@ impl Compactor {
         }
 
         // 压缩请求响应
-        let _ignore = option_tx.take()
-            .map(|tx| {
+        let _ignore = option_tx.map(|tx| {
                 tx.send(()).expect("compactor response error!")
             });
     }
 
     /// 创建gen
     ///
+    /// 需要保证获取到了MemTable的写锁以保证wal在switch时MemTable的数据和Wal不一致(多出几条)
     /// 当wal配置启用时，使用预先记录的gen作为结果
     fn create_gen(&self) -> Result<i64> {
         let next_gen = self.config.create_gen_lazy();

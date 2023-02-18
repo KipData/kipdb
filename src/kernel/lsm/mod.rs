@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 use std::collections::{Bound, HashMap};
 use std::collections::hash_map::{Iter, RandomState, Values};
 use std::mem;
-use std::sync::Arc;
 use crossbeam_skiplist::SkipMap;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
@@ -22,6 +21,7 @@ mod compactor;
 mod version;
 mod log;
 mod mvcc;
+mod block;
 
 /// Value为此Key的Records(CommandData与seq_id)
 pub(crate) type MemMap = SkipMap<Vec<u8>, (CommandData, i64)>;
@@ -60,8 +60,8 @@ pub(crate) struct MemTable {
 
 #[derive(Debug)]
 pub(crate) struct TableInner {
-    mem_table: Arc<MemMap>,
-    immut_table: Option<Arc<MemMap>>
+    mem_table: MemMap,
+    immut_table: Option<MemMap>
 }
 
 impl MemTable {
@@ -69,7 +69,7 @@ impl MemTable {
         MemTable {
             inner: RwLock::new(
                 TableInner {
-                    mem_table: Arc::new(mem_map),
+                    mem_table: mem_map,
                     immut_table: None,
                 }
             ),
@@ -136,7 +136,7 @@ impl MemTable {
                     .collect_vec();
 
                 inner.immut_table = Some(mem::replace(
-                    &mut inner.mem_table, Arc::new(SkipMap::new())
+                    &mut inner.mem_table, SkipMap::new()
                 ));
                 (vec_data, last_seq_id)
             })
@@ -347,9 +347,8 @@ mod tests {
             crc_code: 0
         };
 
-        let vec_u8 = bincode::serialize(&info)?;
 
-        assert_eq!(vec_u8.len(), TABLE_META_INFO_SIZE);
+        assert_eq!(bincode::serialize(&info)?.len(), TABLE_META_INFO_SIZE);
 
         Ok(())
     }

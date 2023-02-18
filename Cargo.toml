@@ -47,6 +47,8 @@ bytes = "1.2.1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 # 工具
+lz4 = "1.23.1"
+varuint = "0.6.0"
 clap = { version = "3.1.18", features = ["derive"] }
 growable-bloom-filter = "2.0.1"
 itertools = "0.10.3"
