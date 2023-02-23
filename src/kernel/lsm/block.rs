@@ -1,12 +1,17 @@
+use std::cmp::min;
 use std::io::{Cursor, Read, Write};
+use std::sync::Arc;
 use bytes::{Buf, BufMut};
 use itertools::Itertools;
 use lz4::Decoder;
 use serde::{Deserialize, Serialize};
 use varuint::{ReadVarint, WriteVarint};
-use crate::kernel::Result;
+use crate::kernel::{CommandData, Result};
 
 const DEFAULT_BLOCK_SIZE: usize = 64 * 1024;
+
+/// TODO: 不使用固定枚举值进行前缀查找, 而是动态查找合适的restart
+const DEFAULT_RESTART_SIZE: usize = 16;
 
 const BLOCK_INFO_SIZE: usize = 8;
 
@@ -16,7 +21,7 @@ struct Entry {
     shared_len: u32,
     value_len: u32,
     key: Vec<u8>,
-    value: Vec<u8>,
+    value: Arc<Vec<u8>>,
 }
 
 impl Entry {
@@ -24,7 +29,7 @@ impl Entry {
         shared_len: u32,
         unshared_len: u32,
         key: Vec<u8>,
-        value: Vec<u8>
+        value: Arc<Vec<u8>>
     ) -> Self {
         Entry {
             unshared_len,
@@ -57,7 +62,7 @@ impl Entry {
             let shared_len = cursor.read_varint()?;
             let value_len = cursor.read_varint()?;
 
-            let mut key = vec![0u8; (unshared_len + shared_len) as usize];
+            let mut key = vec![0u8; unshared_len as usize];
             let mut value = vec![0u8; value_len as usize];
 
             let _ignore = cursor.read(&mut key)?;
@@ -68,8 +73,8 @@ impl Entry {
                 shared_len,
                 value_len,
                 key,
-                value,
-            })
+                value: Arc::new(value),
+            });
         }
 
         Ok(vec_entry)
@@ -91,10 +96,91 @@ enum CompressType {
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Block {
     vec_entry: Vec<Entry>,
-    vec_restart: Vec<u32>,
+    vec_restart: Vec<usize>,
+}
+
+/// 由一组CommandData转换成一个Block
+///
+/// 注意：value需要传入前保证按Key有序
+impl From<Vec<CommandData>> for Block {
+    fn from(value: Vec<CommandData>) -> Self {
+        let mut vec_restart = Vec::with_capacity(
+            (value.len() + DEFAULT_RESTART_SIZE - 1) / DEFAULT_RESTART_SIZE
+        );
+        let none_value = Arc::new(vec![]);
+
+        let vec_entry = value.into_iter()
+            .filter_map(|cmd| {
+                match cmd {
+                    CommandData::Set { key, value } => Some((key, value)),
+                    CommandData::Remove { key } => Some((key, Arc::clone(&none_value))),
+                    CommandData::Get { .. } => None,
+                }
+            })
+            .enumerate()
+            // 使用DEFAULT_RESTART_SIZE进行求余以进行对应数量的分组
+            .group_by(|(i, _)| i / DEFAULT_RESTART_SIZE)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, group))| {
+                // group只能用一次有点坑爹
+                let sharding = group
+                    .map(|(_, kv)| kv)
+                    .collect_vec();
+                // 找出该组尽可能长的前缀
+                let common_shared_len = Self::longest_shared_len(&sharding);
+                // 填充restart到vec_restart中
+                vec_restart.push(i * DEFAULT_RESTART_SIZE);
+                // 通过common_shared_len进行key压缩
+                // Tips: 跳过第一条数据
+                sharding.into_iter()
+                    .enumerate()
+                    .map(|(j, (key, value))| {
+                        if common_shared_len > 1 {
+                            let _w = 1;
+                        }
+                        let shared_len = if j == 0 { 0 } else { common_shared_len };
+                        Entry::new(
+                            shared_len as u32,
+                            (key.len() - shared_len) as u32,
+                            key[shared_len..].into(),
+                            value
+                        )
+                    })
+                    .collect_vec()
+            })
+            .flatten()
+            .collect_vec();
+
+        Block {
+            vec_entry,
+            vec_restart,
+        }
+    }
 }
 
 impl Block {
+    /// 通过Key查询对应Value
+    pub(crate) fn find(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
+        let index = match self.vec_restart
+            .binary_search_by(|restart| {
+                self.vec_entry[*restart].key
+                    .cmp(key)
+            })
+        {
+            Ok(i) => i,
+            Err(i) => i - 1,
+        } * DEFAULT_RESTART_SIZE;
+        // 先使用二分查询找到对应Restart区间
+        Ok(self.vec_entry[index..min(index + DEFAULT_RESTART_SIZE, self.vec_entry.len())]
+            .binary_search_by(|entry| {
+                entry.key.as_slice()
+                    .cmp(&key[entry.shared_len as usize..])
+            })
+            .ok()
+            .map(|i| Vec::clone(&self.vec_entry[i].value)))
+    }
+
     pub(crate) fn encode(&self, compress_type: CompressType) -> Result<Vec<u8>> {
         let buf = self.to_raw()?;
         Ok(match compress_type {
@@ -161,12 +247,28 @@ impl Block {
 
         Ok(bytes_block)
     }
+
+    /// 查询一组KV的Key最长前缀计数
+    fn longest_shared_len(sharding: &Vec<(Vec<u8>, Arc<Vec<u8>>)>) -> usize {
+        let mut shared_len = 0;
+        for i in 0..sharding[0].0.len() {
+            for s in sharding.iter().map(|(key, _)| key) {
+                if s.len() == i || sharding[0].0[i] != s[i] {
+                    return shared_len;
+                }
+            }
+            shared_len += 1;
+        }
+        shared_len
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use bincode::Options;
     use itertools::Itertools;
-    use crate::kernel::Result;
+    use crate::kernel::{CommandData, Result};
     use crate::kernel::lsm::block::{Block, BLOCK_INFO_SIZE, BlockInfo, CompressType, Entry};
 
     #[test]
@@ -176,15 +278,15 @@ mod tests {
             check_crc: 0,
         };
 
-        assert_eq!(bincode::serialize(&info)?.len(), BLOCK_INFO_SIZE);
+        assert_eq!(bincode::options().with_big_endian().serialize(&info)?.len(), BLOCK_INFO_SIZE);
 
         Ok(())
     }
 
     #[test]
     fn test_entry_serialization() -> Result<()> {
-        let entry1 = Entry::new(0, 1,vec![b'1'], vec![b'1']);
-        let entry2 = Entry::new(0, 1,vec![b'1'], vec![b'1']);
+        let entry1 = Entry::new(0, 1,vec![b'1'], Arc::new(vec![b'1']));
+        let entry2 = Entry::new(0, 1,vec![b'1'], Arc::new(vec![b'1']));
 
         let bytes_vec_entry = entry1.encode()?
             .into_iter()
@@ -202,16 +304,23 @@ mod tests {
     }
 
     #[test]
-    fn test_block_serialization() -> Result<()> {
-        let vec_entry = vec![
-            Entry::new(0, 1, vec![b'1'], vec![b'1']),
-            Entry::new(0, 1, vec![b'1'], vec![b'1'])
-        ];
-        let vec_restart = vec![0];
-        let block = Block {
-            vec_entry,
-            vec_restart,
-        };
+    fn test_block() -> Result<()> {
+        let value = b"Let life be beautiful like summer flowers";
+        let mut vec_cmd = Vec::new();
+
+        let times = 1000;
+
+        // 默认使用大端序进行序列化，保证顺序正确性
+        for i in 0..times {
+            vec_cmd.push(
+                CommandData::set(bincode::options().with_big_endian().serialize(&i)?, value.to_vec())
+            );
+        }
+        let block = Block::from(vec_cmd.clone());
+
+        for i in 0..times {
+            assert_eq!(block.find(vec_cmd[i].get_key()).unwrap(), Some(value.to_vec()))
+        }
 
         test_block_serialization_(block.clone(), CompressType::None)?;
         test_block_serialization_(block.clone(), CompressType::LZ4)?;
@@ -220,9 +329,9 @@ mod tests {
     }
 
     fn test_block_serialization_(block: Block, compress_type: CompressType) -> Result<()> {
-        let bytes_block = block.encode(compress_type)?;
-        let de_block = Block::decode(bytes_block, compress_type)?;
-
+        let de_block = Block::decode(
+            block.encode(compress_type)?, compress_type
+        )?;
         assert_eq!(block, de_block);
 
         Ok(())
