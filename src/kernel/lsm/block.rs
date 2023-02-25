@@ -7,6 +7,10 @@ use lz4::Decoder;
 use serde::{Deserialize, Serialize};
 use varuint::{ReadVarint, WriteVarint};
 use crate::kernel::{CommandData, Result};
+use crate::kernel::utils::lru_cache::ShardingLruCache;
+use crate::KvsError;
+
+pub(crate) type BlockCache = ShardingLruCache<(i64, Vec<u8>), Option<Vec<u8>>>;
 
 const DEFAULT_BLOCK_SIZE: usize = 64 * 1024;
 
@@ -52,12 +56,12 @@ impl Entry {
         Ok(vector.into_inner())
     }
 
-    fn decode(bytes: Vec<u8>, end_pos: u64) -> Result<Vec<Self>> {
+    fn decode(bytes: Vec<u8>) -> Result<Vec<Self>> {
         let mut cursor = Cursor::new(bytes);
         cursor.set_position(0);
         let mut vec_entry = Vec::new();
 
-        while cursor.position() < end_pos {
+        while !cursor.is_empty() {
             let unshared_len = cursor.read_varint()?;
             let shared_len = cursor.read_varint()?;
             let value_len = cursor.read_varint()?;
@@ -88,13 +92,13 @@ struct BlockInfo {
 }
 
 #[derive(Clone, Copy)]
-enum CompressType {
+pub(crate) enum CompressType {
     None,
     LZ4
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Block {
+pub(crate) struct Block {
     vec_entry: Vec<Entry>,
     vec_restart: Vec<usize>,
 }
@@ -161,10 +165,11 @@ impl From<Vec<CommandData>> for Block {
 
 impl Block {
     /// 通过Key查询对应Value
-    pub(crate) fn find(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn find(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let index = match self.vec_restart
             .binary_search_by(|restart| {
                 self.vec_entry[*restart].key
+                    .as_slice()
                     .cmp(key)
             })
         {
@@ -211,16 +216,20 @@ impl Block {
         Self::from_raw(buf)
     }
 
-    pub(crate) fn from_raw(buf: Vec<u8>) -> Result<Self> {
+    pub(crate) fn from_raw(mut buf: Vec<u8>) -> Result<Self> {
         let info = bincode::deserialize::<BlockInfo>(
             &buf[buf.len() - BLOCK_INFO_SIZE..]
         )?;
+        let restart = info.restart as usize;
         let vec_restart = bincode::deserialize(
-            &buf[info.restart as usize ..]
+            &buf[restart..]
         )?;
-        let vec_entry = Entry::decode(
-            buf, info.restart as u64
-        )?;
+
+        buf.truncate(restart);
+        if crc32fast::hash(&buf) == info.check_crc {
+            return Err(KvsError::CrcMisMatch)
+        }
+        let vec_entry = Entry::decode(buf)?;
         Ok(Self {
             vec_entry,
             vec_restart,
@@ -241,7 +250,7 @@ impl Block {
         let restart = bytes_block.len() as u32;
         bytes_block.append(&mut bincode::serialize(&self.vec_restart)?);
 
-        let check_crc = crc32fast::hash(bytes_block.as_slice());
+        let check_crc = crc32fast::hash(&bytes_block);
         let info = BlockInfo { restart, check_crc };
         bytes_block.append(&mut bincode::serialize(&info)?);
 
@@ -293,10 +302,7 @@ mod tests {
             .chain(entry2.encode()?)
             .collect_vec();
 
-        let end_pos = (bytes_vec_entry.len() - 1) as u64;
-        let vec_entry = Entry::decode(
-            bytes_vec_entry, end_pos
-        )?;
+        let vec_entry = Entry::decode(bytes_vec_entry)?;
 
         assert_eq!(vec![entry1, entry2], vec_entry);
 
