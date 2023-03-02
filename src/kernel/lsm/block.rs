@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::cmp::min;
 use std::io::{Cursor, Read, Write};
 use std::mem;
 use std::sync::Arc;
@@ -167,6 +167,10 @@ impl BlockBuf {
     }
 
     fn add(&mut self, key_value: KeyValue) {
+        // 断言新插入的键值对的Key大于buf中最后的key
+        if let Some(last_key) = self.last_key() {
+            assert!(key_value.0.cmp(last_key).is_gt());
+        }
         self.bytes_size += key_value_bytes_len(&key_value);
         self.vec_key_value.push(key_value);
     }
@@ -181,16 +185,11 @@ impl BlockBuf {
     /// 刷新且弹出其缓存的键值对与其中最后的Key
     fn flush(&mut self) -> (Vec<KeyValue>, Option<Vec<u8>>) {
         self.bytes_size = 0;
-        let last_key = self.vec_key_value
-            .last()
-            .map(|key_value| key_value.0.clone());
+        let last_key = self.last_key()
+            .cloned();
         (mem::replace(
             &mut self.vec_key_value, Vec::new()
         ), last_key)
-    }
-
-    fn is_out_of_bytes_size(&self, bytes_size: usize) -> bool {
-        self.bytes_size >= bytes_size
     }
 }
 
@@ -241,19 +240,17 @@ impl BlockBuilder {
     /// 请注意add的键值对需要自行保证key顺序插入,否则可能会出现问题
     pub(crate) fn add<T>(&mut self, into_key_value: T) where T: Into<Option<KeyValue>> {
         if let Some(key_value) = into_key_value.into() {
-            // 断言新插入的键值对的Key大于buf中最后的key
-            if let Some(last_key) = self.buf.last_key() {
-                assert_eq!(key_value.0.cmp(last_key), Ordering::Greater);
-            }
+            self.buf.add(key_value);
             self.len += 1;
-            self.buf.add(key_value)
         }
         // 超过指定的Block大小后进行Block构建(默认为4K大小)
-        if self.buf.is_out_of_bytes_size(
-            self.options.block_size
-        ) {
+        if self.is_out_of_byte() {
             self.build_();
         }
+    }
+
+    fn is_out_of_byte(&self) -> bool {
+        self.buf.bytes_size >= self.options.block_size
     }
 
     /// 封装用的构建Block方法
@@ -330,16 +327,37 @@ impl BlockBuilder {
 
     /// 查询一组KV的Key最长前缀计数
     fn longest_shared_len(sharding: Vec<&KeyValue>) -> usize {
-        let mut shared_len = 0;
-        for i in 0..sharding[0].0.len() {
-            for s in sharding.iter().map(|(key, _)| key) {
-                if s.len() == i || sharding[0].0[i] != s[i] {
-                    return shared_len;
+        if sharding.is_empty() {
+            return 0
+        }
+        let mut min_len = usize::MAX;
+        for kv in &sharding {
+            min_len = min(min_len, kv.0.len());
+        }
+        let mut low = 0;
+        let mut high = min_len;
+        while low < high {
+            let mid = (high - low + 1) / 2 + low;
+            if is_common_prefix(&sharding, mid) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return low;
+
+        fn is_common_prefix(sharding: &Vec<&KeyValue>, len: usize) -> bool {
+            let first = sharding[0];
+            for i in 1..sharding.len() {
+                let kv = sharding[i];
+                for j in 0..len {
+                    if first.0[j] != kv.0[j] {
+                        return false
+                    }
                 }
             }
-            shared_len += 1;
+            true
         }
-        shared_len
     }
 }
 
@@ -351,15 +369,9 @@ impl Block {
                 if entry.shared_len > 0 {
                     // 对有前缀压缩的Key进行前缀拼接
                     let shared_len = entry.shared_len;
-                    match key[0..shared_len].cmp(
-                        self.shared_key_prefix(*index, shared_len)
-                    ) {
-                        Ordering::Less => Ordering::Less,
-                        Ordering::Greater => Ordering::Greater,
-                        Ordering::Equal => {
-                            key[shared_len..].cmp(&entry.key)
-                        }
-                    }
+                    key[0..shared_len]
+                        .cmp(self.shared_key_prefix(*index, shared_len))
+                        .then_with(|| key[shared_len..].cmp(&entry.key))
                 } else {
                     key.cmp(&entry.key)
                 }.reverse()
