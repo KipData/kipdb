@@ -239,7 +239,7 @@ impl SSTable {
 
                 return Ok(block_cache.get_or_insert(
                     key_position,
-                    || {
+                    |_| {
                         let bytes = inner
                             .reader
                             .read_with_pos(position.start, position.len)?;

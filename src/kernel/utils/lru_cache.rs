@@ -161,7 +161,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         key: K,
         fn_once: F
     ) -> Result<&V>
-        where F: FnOnce() -> Result<V>
+        where F: FnOnce(&K) -> Result<V>
     {
         self.shard(&key)
             .write()
@@ -311,7 +311,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         key: K,
         fn_once: F
     ) -> Result<NodeReadPtr<K, V>>
-        where F: FnOnce() -> Result<V>
+        where F: FnOnce(&K) -> Result<V>
     {
         if let Some(node) = self.inner.get(&key) {
             let node = *node;
@@ -319,7 +319,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             self.attach(node);
             Ok(node)
         } else {
-            let value = fn_once()?;
+            let value = fn_once(&key)?;
             let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
             let _ignore = self.inner.remove(&KeyRef(node))
                 .map(|node| {
@@ -339,7 +339,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         key: K,
         fn_once: F
     ) -> Result<&V>
-        where F: FnOnce() -> Result<V>
+        where F: FnOnce(&K) -> Result<V>
     {
         self.get_or_insert_node(key, fn_once)
             .map(|node| unsafe { &node.as_ref().value })
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(
             lru.get_or_insert(
                 9,
-                || Ok(9)
+                |_| Ok(9)
             ).unwrap(),
             &9
         );
@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(
             lru.get_or_insert(
                 9,
-                || Ok(9)
+                |_| Ok(9)
             ).unwrap(),
             &9
         );
