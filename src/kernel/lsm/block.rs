@@ -1,7 +1,6 @@
 use std::cmp::min;
 use std::io::{Cursor, Read, Write};
 use std::mem;
-use std::sync::Arc;
 use bytes::{Buf, BufMut};
 use itertools::Itertools;
 use lz4::Decoder;
@@ -11,7 +10,7 @@ use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError;
 
 /// BlockCache类型 使用对应的SSTable的Gen与BlockIndex进行Block索引
-pub(crate) type BlockCache = ShardingLruCache<(i64, BlockIndex), Block>;
+pub(crate) type BlockCache = ShardingLruCache<(i64, Index), Block<Value>>;
 
 const DEFAULT_BLOCK_SIZE: usize = 64 * 1024;
 
@@ -20,32 +19,28 @@ const DEFAULT_RESTART_SIZE: usize = 16;
 
 const CRC_SIZE: usize = 4;
 
-type KeyValue = (Vec<u8>, Option<Arc<Vec<u8>>>);
+type KeyValue = (Vec<u8>, Option<Vec<u8>>);
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Entry {
+struct Entry<T> {
     unshared_len: usize,
     shared_len: usize,
-    value_len: usize,
     key: Vec<u8>,
-    value: Option<Arc<Vec<u8>>>,
+    item: T
 }
 
-impl Entry {
+impl<T> Entry<T> where T: BlockItem {
     pub(crate) fn new(
         shared_len: usize,
         unshared_len: usize,
         key: Vec<u8>,
-        value: Option<Arc<Vec<u8>>>
+        item: T
     ) -> Self {
-        let value_len = value.as_ref()
-            .map_or(0, |vec| vec.len());
         Entry {
             unshared_len,
             shared_len,
-            value_len,
             key,
-            value,
+            item,
         }
     }
 
@@ -54,47 +49,114 @@ impl Entry {
 
         let _ = vector.write_varint(self.unshared_len as u32)?;
         let _ = vector.write_varint(self.shared_len as u32)?;
-        let _ = vector.write_varint(self.value_len as u32)?;
         let _ = vector.write(&self.key)?;
-        if let Some(value) = self.value.as_ref() {
-            let _ = vector.write(value)?;
-        }
+        let _ = vector.write(&self.item.encode()?);
 
         Ok(vector.into_inner())
     }
 
     fn batch_decode(bytes: Vec<u8>) -> Result<Vec<(usize, Self)>> {
         let mut cursor = Cursor::new(bytes);
-        cursor.set_position(0);
         let mut vec_entry = Vec::new();
         let mut index = 0;
 
         while !cursor.is_empty() {
             let unshared_len = ReadVarint::<u32>::read_varint(&mut cursor)? as usize;
             let shared_len = ReadVarint::<u32>::read_varint(&mut cursor)? as usize;
-            let value_len = ReadVarint::<u32>::read_varint(&mut cursor)? as usize;
 
             let mut key = vec![0u8; unshared_len];
             let _ = cursor.read(&mut key)?;
 
-            let value = if value_len > 0 {
-                let mut value = vec![0u8; value_len];
-                let _ = cursor.read(&mut value)?;
-                Some(Arc::new(value))
-            } else { None };
-
+            let item = T::decode(&mut cursor)?;
 
             vec_entry.push((index, Self {
                 unshared_len,
                 shared_len,
-                value_len,
                 key,
-                value,
+                item,
             }));
             index += 1;
         }
 
         Ok(vec_entry)
+    }
+}
+
+/// 键值对对应的Value
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct Value {
+    value_len: usize,
+    bytes: Option<Vec<u8>>
+}
+
+impl From<Option<Vec<u8>>> for Value {
+    fn from(bytes: Option<Vec<u8>>) -> Self {
+        let value_len = bytes.as_ref()
+            .map_or(0, Vec::len);
+        Value {
+            value_len,
+            bytes,
+        }
+    }
+}
+
+/// Block索引
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct Index {
+    offset: usize,
+    len: usize,
+}
+
+
+pub(crate) trait BlockItem: Sized {
+    /// 由于需要直接连续序列化，因此使用Read进行Bytes读取
+    fn decode<T>(reader: &mut T) -> Result<Self> where T: Read;
+
+    fn encode(&self) -> Result<Vec<u8>>;
+}
+
+impl BlockItem for Value {
+    fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read {
+        let value_len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+        let bytes = if value_len > 0 {
+            let mut value = vec![0u8; value_len];
+            let _ = reader.read(&mut value)?;
+            Some(value)
+        } else { None };
+
+        Ok(Value {
+            value_len,
+            bytes,
+        })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>> {
+        let mut vector = Cursor::new(vec![0u8; 0]);
+        let _ = vector.write_varint(self.value_len as u32)?;
+        if let Some(value) = &self.bytes {
+            let _ = vector.write(value)?;
+        }
+        Ok(vector.into_inner())
+    }
+}
+
+impl BlockItem for Index {
+    fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read {
+        let offset = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+        let len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+
+        Ok(Index {
+            offset,
+            len,
+        })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>> {
+        let mut vector = Cursor::new(vec![0u8; 0]);
+        let _ = vector.write_varint(self.offset as u32)?;
+        let _ = vector.write_varint(self.len as u32)?;
+
+        Ok(vector.into_inner())
     }
 }
 
@@ -105,8 +167,8 @@ pub(crate) enum CompressType {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) struct Block {
-    vec_entry: Vec<(usize, Entry)>,
+pub(crate) struct Block<T> {
+    vec_entry: Vec<(usize, Entry<T>)>,
 }
 
 #[derive(Clone)]
@@ -200,13 +262,13 @@ struct BlockBuilder {
     options: BlockOptions,
     len: usize,
     buf: BlockBuf,
-    vec_block: Vec<(Block, Vec<u8>)>
+    vec_block: Vec<(Block<Value>, Vec<u8>)>
 }
 
 impl From<CommandData> for Option<KeyValue> {
     fn from(value: CommandData) -> Self {
         match value {
-            CommandData::Set { key, value } => Some((key, Some(value))),
+            CommandData::Set { key, value } => Some((key, Some(Vec::clone(&value)))),
             CommandData::Remove { key } => Some((key, None)),
             CommandData::Get { .. } => None,
         }
@@ -217,7 +279,7 @@ impl From<CommandData> for Option<KeyValue> {
 fn key_value_bytes_len(key_value: &KeyValue) -> usize {
     let (key, value) = key_value;
     key.len() + value.as_ref()
-        .map_or(0, |vec| vec.len())
+        .map_or(0, Vec::len)
 }
 
 impl BlockBuilder {
@@ -270,7 +332,7 @@ impl BlockBuilder {
                         shared_len,
                         key.len() - shared_len,
                         key[shared_len..].into(),
-                        value
+                        Value::from(value)
                     ))
                 })
                 .collect_vec();
@@ -361,7 +423,7 @@ impl BlockBuilder {
     }
 }
 
-impl Block {
+impl Block<Value> {
     /// 通过Key查询对应Value
     pub(crate) fn find(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         Ok(self.vec_entry
@@ -378,13 +440,14 @@ impl Block {
             })
             .ok()
             .map(|index| {
-                self.vec_entry[index].1.value
-                    .as_ref()
-                    .map(|value| Vec::clone(&value))
+                self.vec_entry[index].1.item
+                    .bytes.clone()
             })
             .flatten())
     }
+}
 
+impl<T> Block<T> where T: BlockItem {
     /// 获取该Entry对应的shared_key前缀
     ///
     /// 具体原理是通过被固定的RESTART_SIZE进行前缀压缩的Block，
@@ -440,7 +503,7 @@ impl Block {
         }
         buf.truncate(date_bytes_len);
         Ok(Self {
-            vec_entry: Entry::batch_decode(buf)?
+            vec_entry: Entry::<T>::batch_decode(buf)?
         })
     }
 
@@ -466,16 +529,15 @@ impl Block {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use bincode::Options;
     use itertools::Itertools;
     use crate::kernel::{CommandData, Result};
-    use crate::kernel::lsm::block::{Block, BlockBuilder, BlockOptions, CompressType, Entry};
+    use crate::kernel::lsm::block::{Block, BlockBuilder, BlockOptions, CompressType, Entry, Value};
 
     #[test]
     fn test_entry_serialization() -> Result<()> {
-        let entry1 = Entry::new(0, 1,vec![b'1'], Some(Arc::new(vec![b'1'])));
-        let entry2 = Entry::new(0, 1,vec![b'1'], Some(Arc::new(vec![b'1'])));
+        let entry1 = Entry::new(0, 1,vec![b'1'], Value::from(Some(vec![b'1'])));
+        let entry2 = Entry::new(0, 1,vec![b'1'], Value::from(Some(vec![b'1'])));
 
         let bytes_vec_entry = entry1.encode()?
             .into_iter()
@@ -499,7 +561,7 @@ mod tests {
         let mut builder = BlockBuilder::new(options.clone());
         // 默认使用大端序进行序列化，保证顺序正确性
         for i in 0..times {
-            let mut key = vec![b'K',b'i',b'p',b'D',b'B',b'-'];
+            let mut key = b"KipDB-".to_vec();
             key.append(
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
@@ -516,7 +578,7 @@ mod tests {
         //Tip: 注意只取一个作为测试,请勿让times过多
         let (block_bytes, _) = builder.build();
 
-        let block = Block::decode(block_bytes, options.compress_type)?;
+        let block = Block::<Value>::decode(block_bytes, options.compress_type)?;
 
         for i in 0..times {
             assert_eq!(block.find(vec_cmd[i].get_key()).unwrap(), Some(value.to_vec()))
@@ -528,7 +590,7 @@ mod tests {
         Ok(())
     }
 
-    fn test_block_serialization_(block: Block, compress_type: CompressType) -> Result<()> {
+    fn test_block_serialization_(block: Block<Value>, compress_type: CompressType) -> Result<()> {
         let de_block = Block::decode(
             block.encode(compress_type)?, compress_type
         )?;
