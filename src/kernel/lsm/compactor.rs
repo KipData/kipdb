@@ -129,7 +129,7 @@ impl Compactor {
     ) -> Result<()> {
         if !values.is_empty() {
             // 从内存表中将数据持久化为ss_table
-            let ss_table = SSTable::create_for_immutable_table(
+            let ss_table = SSTable::create_for_mem_table(
                 &self.config,
                 gen,
                 &self.sst_factory,
@@ -194,7 +194,7 @@ impl Compactor {
                 let ss_table_futures = vec_sharding.into_iter()
                     .map(|(gen, sharding)| {
                         async move {
-                            SSTable::create_for_immutable_table(
+                            SSTable::create_for_mem_table(
                                 config,
                                 gen,
                                 &self.sst_factory,

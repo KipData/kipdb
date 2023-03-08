@@ -6,23 +6,33 @@ use itertools::Itertools;
 use lz4::Decoder;
 use varuint::{ReadVarint, WriteVarint};
 use crate::kernel::{CommandData, Result};
+use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError;
 
-/// BlockCache类型 使用对应的SSTable的Gen与Index进行Block索引
+/// BlockCache类型 可同时缓存两种类型
+///
+/// Key为SSTable的gen且Index为None时返回Index类型
+///
+/// Key为SSTable的gen且Index为Some时返回Data类型
 #[allow(dead_code)]
-pub(crate) type BlockCache = ShardingLruCache<(i64, Index), Block<Value>>;
+pub(crate) type BlockCache = ShardingLruCache<(i64, Option<Index>), BlockType>;
 
-const DEFAULT_BLOCK_SIZE: usize = 64 * 1024;
+pub(crate) const DEFAULT_BLOCK_SIZE: usize = 4 * 1024;
 
 /// 不动态决定Restart是因为Restart的范围固定可以做到更简单的Entry二分查询，提高性能
-const DEFAULT_DATA_RESTART_INTERVAL: usize = 16;
+pub(crate) const DEFAULT_DATA_RESTART_INTERVAL: usize = 16;
 
-const DEFAULT_INDEX_RESTART_INTERVAL: usize = 2;
+pub(crate) const DEFAULT_INDEX_RESTART_INTERVAL: usize = 2;
 
 const CRC_SIZE: usize = 4;
 
 type KeyValue<T> = (Vec<u8>, T);
+
+pub(crate) enum BlockType {
+    Data(Block<Value>),
+    Index(Block<Index>),
+}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Entry<T> {
@@ -103,15 +113,23 @@ impl From<Option<Vec<u8>>> for Value {
 }
 
 /// Block索引
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub(crate) struct Index {
-    offset: usize,
+    offset: u32,
     len: usize,
 }
 
 impl Index {
-    fn new(offset: usize, len: usize) -> Self {
+    fn new(offset: u32, len: usize) -> Self {
         Index { offset, len, }
+    }
+
+    pub(crate) fn offset(&self) -> u32 {
+        self.offset
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
     }
 }
 
@@ -149,7 +167,7 @@ impl BlockItem for Value {
 
 impl BlockItem for Index {
     fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read {
-        let offset = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+        let offset = ReadVarint::<u32>::read_varint(&mut reader)?;
         let len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
 
         Ok(Index {
@@ -160,7 +178,7 @@ impl BlockItem for Index {
 
     fn encode(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
-        let _ = buf.write_varint(self.offset as u32)?;
+        let _ = buf.write_varint(self.offset)?;
         let _ = buf.write_varint(self.len as u32)?;
 
         Ok(buf)
@@ -183,15 +201,27 @@ pub(crate) struct Block<T> {
 }
 
 #[derive(Clone)]
-struct BlockOptions {
+pub(crate) struct BlockOptions {
     block_size: usize,
     compress_type: CompressType,
     data_restart_interval: usize,
     index_restart_interval: usize,
 }
 
+impl From<&Config> for BlockOptions {
+    fn from(config: &Config) -> Self {
+        BlockOptions {
+            block_size: config.block_size,
+            compress_type: CompressType::None,
+            data_restart_interval: config.data_restart_interval,
+            index_restart_interval: config.index_restart_interval,
+        }
+    }
+}
+
 impl BlockOptions {
-    fn new() -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn new() -> Self {
         BlockOptions {
             block_size: DEFAULT_BLOCK_SIZE,
             compress_type: CompressType::None,
@@ -200,24 +230,20 @@ impl BlockOptions {
         }
     }
     #[allow(dead_code)]
-    fn block_size(mut self, block_size: usize) -> Self {
+    pub(crate) fn block_size(&mut self, block_size: usize) {
         self.block_size = block_size;
-        self
     }
     #[allow(dead_code)]
-    fn compress_type(mut self, compress_type: CompressType) -> Self {
+    pub(crate) fn compress_type(&mut self, compress_type: CompressType) {
         self.compress_type = compress_type;
-        self
     }
     #[allow(dead_code)]
-    fn data_restart_interval(mut self, data_restart_interval: usize) -> Self {
+    pub(crate) fn data_restart_interval(&mut self, data_restart_interval: usize) {
         self.data_restart_interval = data_restart_interval;
-        self
     }
     #[allow(dead_code)]
-    fn index_restart_interval(mut self, index_restart_interval: usize) -> Self {
+    pub(crate) fn index_restart_interval(&mut self, index_restart_interval: usize) {
         self.index_restart_interval = index_restart_interval;
-        self
     }
 }
 
@@ -264,7 +290,7 @@ impl BlockBuf {
 /// Block构建器
 ///
 /// 请注意add时
-struct BlockBuilder {
+pub(crate) struct BlockBuilder {
     options: BlockOptions,
     len: usize,
     buf: BlockBuf,
@@ -357,7 +383,7 @@ impl BlockBuilder {
                         vec_index.push(
                             (last_key, Index::new(offset, len))
                         );
-                        offset += len;
+                        offset += len as u32;
                         block_bytes
                     })
             })
@@ -374,18 +400,7 @@ impl BlockBuilder {
 impl Block<Value> {
     /// 通过Key查询对应Value
     pub(crate) fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.vec_entry
-            .binary_search_by(|(index, entry)| {
-                if entry.shared_len > 0 {
-                    // 对有前缀压缩的Key进行前缀拼接
-                    let shared_len = min(entry.shared_len, key.len());
-                    key[0..shared_len]
-                        .cmp(self.shared_key_prefix(*index, shared_len))
-                        .then_with(|| key[shared_len..].cmp(&entry.key))
-                } else {
-                    key.cmp(&entry.key)
-                }.reverse()
-            })
+        self.binary_search(key)
             .ok()
             .map(|index| {
                 self.vec_entry[index].1.item
@@ -397,7 +412,7 @@ impl Block<Value> {
 
 impl<T> Block<T> where T: BlockItem {
     /// 新建Block，同时Block会进行前缀压缩
-    fn new(vec_kv: Vec<KeyValue<T>>, restart_interval: usize) -> Block<T> {
+    pub(crate) fn new(vec_kv: Vec<KeyValue<T>>, restart_interval: usize) -> Block<T> {
         let vec_sharding_len = sharding_shared_len(&vec_kv, restart_interval);
         let vec_entry = vec_kv.into_iter()
             .enumerate()
@@ -420,26 +435,31 @@ impl<T> Block<T> where T: BlockItem {
     }
 
     /// 查询相等或最近较大的Key
-    fn find_with_upper(&self, key: &[u8]) -> T {
-        let index = self.vec_entry
+    pub(crate) fn find_with_upper(&self, key: &[u8]) -> T {
+        let index = self.binary_search(key)
+            .unwrap_or_else(|index| index);
+        self.vec_entry[index].1
+            .item.clone()
+    }
+
+    fn binary_search(&self, key: &[u8]) -> core::result::Result<usize, usize> {
+        self.vec_entry
             .binary_search_by(|(index, entry)| {
                 if entry.shared_len > 0 {
                     // 对有前缀压缩的Key进行前缀拼接
-                    let shared_len = entry.shared_len;
+                    let shared_len = min(entry.shared_len, key.len());
                     key[0..shared_len]
                         .cmp(self.shared_key_prefix(*index, shared_len))
                         .then_with(|| key[shared_len..].cmp(&entry.key))
                 } else {
                     key.cmp(&entry.key)
                 }.reverse()
-            }).unwrap_or_else(|index| index);
-        self.vec_entry[index].1
-            .item.clone()
+            })
     }
 
     /// 获取该Entry对应的shared_key前缀
     ///
-    /// 具体原理是通过被固定的RESTART_SIZE进行前缀压缩的Block，
+    /// 具体原理是通过被固定的restart_interval进行前缀压缩的Block，
     /// 通过index获取前方最近的Restart，得到的Key通过shared_len进行截取以此得到shared_key
     fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
         &self.vec_entry[(index - index % self.restart_interval)]
@@ -644,7 +664,7 @@ mod tests {
                 |index| {
                 let &Index { offset, len } = index;
                 let target_block = Block::<Value>::decode(
-                    block_bytes[offset..offset + len].to_vec(),
+                    block_bytes[offset as usize..offset as usize + len].to_vec(),
                     options.compress_type
                 )?;
                 Ok(target_block)

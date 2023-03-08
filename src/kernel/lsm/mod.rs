@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::{Bound, HashMap};
 use std::collections::hash_map::{Iter, RandomState, Values};
 use std::mem;
@@ -9,7 +8,7 @@ use parking_lot::lock_api::RwLockWriteGuard;
 use parking_lot::{RawRwLock, RwLock};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, Result};
-use crate::kernel::io::{IoFactory, IoReader, IoType, IoWriter};
+use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
@@ -31,21 +30,22 @@ pub(crate) type MemMap = SkipMap<Vec<u8>, (CommandData, i64)>;
 /// 用于默认的key的填充(补充使UserKey为高位，因此默认获取最新的seq_id数据)
 const SEQ_MAX: [u8; 8] = [u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, 127];
 
-/// MetaInfo序列化长度定长
-/// 注意MetaInfo序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致MetaInfo在不同数据时，长度不一致
-const TABLE_META_INFO_SIZE: usize = 28;
+/// Footer序列化长度定长
+/// 注意Footer序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致Footer在不同数据时，长度不一致
+pub(crate) const TABLE_FOOTER_SIZE: usize = 21;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
-struct MetaInfo {
-    level: u64,
-    data_part_len: u64,
-    index_len: u64,
-    crc_code: u32,
+struct Footer {
+    level: u8,
+    index_offset: u32,
+    index_len: u32,
+    meta_offset: u32,
+    meta_len: u32,
+    size_of_disk: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct MetaBlock {
-    vec_index: Vec<(Vec<u8>, Position)>,
     scope: Scope,
     filter: GrowableBloom,
     len: usize,
@@ -207,12 +207,6 @@ pub(crate) fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Vec<u8> {
     key
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Hash, PartialOrd, Eq)]
-pub(crate) struct Position {
-    start: u64,
-    len: usize
-}
-
 pub(crate) struct SSTableMap {
     inner: HashMap<i64, SSTable>,
     cache: ShardingLruCache<i64, SSTable>
@@ -270,30 +264,14 @@ impl SSTableMap {
     }
 }
 
-impl MetaInfo {
-    /// 将MetaInfo自身写入对应的IOHandler之中
-    fn write_to_file_and_flush(&self, writer: &Box<dyn IoWriter>) -> Result<()>{
-        let _ignore = writer.write(bincode::serialize(&self)?)?;
-        writer.flush()?;
-        Ok(())
-    }
+impl Footer {
 
-    /// 从对应文件的IOHandler中将MetaInfo读取出来
+    /// 从对应文件的IOHandler中将Footer读取出来
     fn read_to_file(reader: &Box<dyn IoReader>) -> Result<Self> {
-        let start_pos = reader.file_size()? - TABLE_META_INFO_SIZE as u64;
-        let table_meta_info = reader.read_with_pos(start_pos, TABLE_META_INFO_SIZE)?;
-
-        Ok(bincode::deserialize(table_meta_info.as_slice())?)
-    }
-}
-
-impl Position {
-    /// 通过稀疏索引与指定Key进行获取对应Position
-    pub(crate) fn from_sparse_index_with_key(sparse_index: &SkipMap<Vec<u8>, Position>, key: &[u8]) -> Option<Self> {
-        sparse_index.into_iter()
-            .rev()
-            .find(|entry| !key.cmp(entry.key()).eq(&Ordering::Less))
-            .map(|entry| entry.value().clone())
+        let start_pos = reader.file_size()? - TABLE_FOOTER_SIZE as u64;
+        Ok(bincode::deserialize(
+            &reader.read_with_pos(start_pos, TABLE_FOOTER_SIZE)?
+        )?)
     }
 }
 
@@ -334,21 +312,23 @@ fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Conf
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
-    use crate::kernel::lsm::{MemMap, MemTable, MetaInfo, TABLE_META_INFO_SIZE};
+    use crate::kernel::lsm::{MemMap, MemTable, Footer, TABLE_FOOTER_SIZE};
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::{CommandData, Result};
 
     #[test]
-    fn test_meta_info() -> Result<()> {
-        let info = MetaInfo {
+    fn test_footer() -> Result<()> {
+        let info = Footer {
             level: 0,
-            data_part_len: 0,
+            index_offset: 0,
             index_len: 0,
-            crc_code: 0
+            meta_offset: 0,
+            meta_len: 0,
+            size_of_disk: 0,
         };
 
 
-        assert_eq!(bincode::serialize(&info)?.len(), TABLE_META_INFO_SIZE);
+        assert_eq!(bincode::serialize(&info)?.len(), TABLE_FOOTER_SIZE);
 
         Ok(())
     }
