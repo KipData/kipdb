@@ -300,7 +300,7 @@ impl Compactor {
         // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
         let map_futures = vec_ss_table.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(SSTable::get_all_data_async);
+            .map(SSTable::all);
         let vec_cmd_data = future::try_join_all(map_futures)
             .await?
             .into_iter()

@@ -3,10 +3,10 @@ use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::info;
-use crate::kernel::{CommandData, CommandPackage};
+use crate::kernel::CommandData;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::{MetaBlock, Footer, TABLE_FOOTER_SIZE};
-use crate::kernel::lsm::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType};
+use crate::kernel::lsm::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index, Value};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
@@ -145,7 +145,7 @@ impl SSTable {
         let footer = Footer::read_to_file(&reader)?;
         let Footer { size_of_disk, meta_offset, meta_len ,.. } = &footer;
         info!(
-            "[SsTable: {gen}][load_from_file][TableMetaInfo]: {footer:?}, Size of Disk: {}, IO Type: {:?}",
+            "[SsTable: {gen}][load_from_file][MetaBlock]: {footer:?}, Size of Disk: {}, IO Type: {:?}",
             size_of_disk ,
             reader.get_type()
         );
@@ -159,7 +159,7 @@ impl SSTable {
         })
     }
 
-    /// 从该sstable中获取指定key对应数据可能存在的CommandData段
+    /// 查询Key对应的Value
     #[allow(clippy::expect_used)]
     pub(crate) fn query_with_key(
         &self,
@@ -172,18 +172,13 @@ impl SSTable {
             if let BlockType::Index(index_block) = block_cache.get_or_insert(
                 (self.get_gen(), None),
                 |_| {
-                    let Footer { index_offset, index_len, level, .. } = inner.footer;
-                    let compress_type = if level == 0 {
-                        CompressType::None
-                    } else {
-                        CompressType::LZ4
-                    };
+                    let Footer { index_offset, index_len, .. } = inner.footer;
                     Ok(BlockType::Index(
                         Self::loading_block(
                             reader,
                             index_offset,
                             index_len as usize,
-                            compress_type
+                            CompressType::None
                         )?
                     ))
                 }
@@ -197,7 +192,7 @@ impl SSTable {
                                 reader,
                                 index.offset(),
                                 index.len(),
-                                CompressType::None
+                                CompressType::LZ4
                             )?
                         ))
                     }
@@ -223,13 +218,27 @@ impl SSTable {
     }
 
     /// 获取SsTable内所有的正常数据
-    /// TODO: Block支持全部数据导出
-    pub(crate) async fn get_all_data_async(&self) -> Result<Vec<CommandData>> {
-        let info = &self.inner.footer;
-        let data_len = info.index_len;
+    pub(crate) async fn all(&self) -> Result<Vec<CommandData>> {
+        let inner = &self.inner;
+        let Footer{ index_offset, index_len, .. } = inner.footer;
 
-        let all_data_u8 = self.inner.reader.read_with_pos(0, data_len as usize)?;
-        CommandPackage::from_bytes_to_unpack_vec(all_data_u8.as_slice())
+        let index_block = Self::loading_block::<Index>(
+            &inner.reader,
+            index_offset,
+            index_len as usize,
+            CompressType::None
+        )?;
+        Ok(index_block.all_value()
+            .into_iter()
+            .flat_map(|index| {
+                Self::loading_block::<Value>(
+                    &inner.reader, index.offset(), index.len(), CompressType::LZ4
+                ).map(Block::all_entry)
+                    .flatten()
+            })
+            .flatten()
+            .map(CommandData::from)
+            .collect_vec())
     }
 
     /// 通过一组SSTable收集对应的Gen
@@ -266,12 +275,8 @@ impl SSTable {
         let len = vec_mem_data.len();
         let mut filter = GrowableBloom::new(config.desired_error_prob, len);
 
-        let mut options = BlockOptions::from(config);
-        if level > 0 {
-            options.compress_type(CompressType::LZ4);
-        }
         let mut builder = BlockBuilder::new(
-            options
+            BlockOptions::from(config).compress_type(CompressType::LZ4)
         );
         for data in vec_mem_data {
             let _ = filter.insert(data.get_key());
@@ -374,6 +379,10 @@ mod tests {
                 let key = vec_cmd[i].get_key();
                 assert_eq!(ss_table.query_with_key(key, &cache)?, Some(value.to_vec()))
             }
+
+            let vec_cmd_ss = ss_table.all().await?;
+
+            assert_eq!(vec_cmd_ss.len(), vec_cmd.len());
 
             Ok(())
         })

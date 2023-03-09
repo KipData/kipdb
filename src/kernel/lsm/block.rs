@@ -27,7 +27,7 @@ pub(crate) const DEFAULT_INDEX_RESTART_INTERVAL: usize = 2;
 
 const CRC_SIZE: usize = 4;
 
-type KeyValue<T> = (Vec<u8>, T);
+pub(crate) type KeyValue<T> = (Vec<u8>, T);
 
 pub(crate) enum BlockType {
     Data(Block<Value>),
@@ -230,20 +230,24 @@ impl BlockOptions {
         }
     }
     #[allow(dead_code)]
-    pub(crate) fn block_size(&mut self, block_size: usize) {
+    pub(crate) fn block_size(mut  self, block_size: usize) -> Self {
         self.block_size = block_size;
+        self
     }
     #[allow(dead_code)]
-    pub(crate) fn compress_type(&mut self, compress_type: CompressType) {
+    pub(crate) fn compress_type(mut  self, compress_type: CompressType) -> Self {
         self.compress_type = compress_type;
+        self
     }
     #[allow(dead_code)]
-    pub(crate) fn data_restart_interval(&mut self, data_restart_interval: usize) {
+    pub(crate) fn data_restart_interval(mut self, data_restart_interval: usize) -> Self {
         self.data_restart_interval = data_restart_interval;
+        self
     }
     #[allow(dead_code)]
-    pub(crate) fn index_restart_interval(&mut self, index_restart_interval: usize) {
+    pub(crate) fn index_restart_interval(mut self, index_restart_interval: usize) -> Self {
         self.index_restart_interval = index_restart_interval;
+        self
     }
 }
 
@@ -307,6 +311,17 @@ impl From<CommandData> for Option<KeyValue<Value>> {
                 Some((key, Value::from(None)))
             },
             CommandData::Get { .. } => None,
+        }
+    }
+}
+
+impl From<KeyValue<Value>> for CommandData {
+    fn from(key_value: KeyValue<Value>) -> Self {
+        let (key, value) = key_value;
+        if let Some(bytes) = value.bytes {
+            CommandData::set(key, bytes)
+        } else {
+            CommandData::remove(key)
         }
     }
 }
@@ -432,6 +447,33 @@ impl<T> Block<T> where T: BlockItem {
             restart_interval,
             vec_entry,
         }
+    }
+
+    pub(crate) fn all_entry(self) -> Result<Vec<KeyValue<T>>> {
+        let restart_interval = self.restart_interval;
+        let vec_shared_key = self.vec_entry.iter()
+            .filter(|(i, _)| i % restart_interval == 0)
+            .map(|(i, Entry { shared_len, .. })| {
+                self.shared_key_prefix(*i, *shared_len).to_vec()
+            })
+            .collect_vec();
+        Ok(self.vec_entry.into_iter()
+            .map(|(i, Entry { key, item, .. })| {
+                let full_key = if i % restart_interval == 0 { key } else {
+                    vec_shared_key[i / restart_interval].iter()
+                        .cloned()
+                        .chain(key)
+                        .collect_vec()
+                };
+                (full_key, item)
+            })
+            .collect_vec())
+    }
+
+    pub(crate) fn all_value(self) -> Vec<T> {
+        self.vec_entry.into_iter()
+            .map(|(_, entry)| entry.item)
+            .collect_vec()
     }
 
     /// 查询相等或最近较大的Key
