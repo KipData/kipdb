@@ -73,7 +73,7 @@ impl LogLoader {
         let inner = RwLock::new(
             Inner {
                 current_gen: last_gen,
-                writer: factory.writer(last_gen, IoType::Buf)?,
+                writer: factory.writer(last_gen, IoType::Direct)?,
                 vec_gen,
             }
         );
@@ -131,7 +131,7 @@ impl LogLoader {
 
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
     pub(crate) fn switch(&self, next_gen: i64) -> Result<i64> {
-        let next_writer = self.factory.writer(next_gen, IoType::Buf)?;
+        let next_writer = self.factory.writer(next_gen, IoType::Direct)?;
         let mut inner = self.inner.write();
 
         let current_gen = inner.current_gen;

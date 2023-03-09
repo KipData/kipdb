@@ -271,7 +271,7 @@ impl SSTable {
     ) -> Result<SSTable>{
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
-        let writer = io_factory.writer(gen, IoType::Buf)?;
+        let writer = io_factory.writer(gen, IoType::Direct)?;
         let len = vec_mem_data.len();
         let mut filter = GrowableBloom::new(config.desired_error_prob, len);
 
@@ -310,7 +310,7 @@ impl SSTable {
             inner: Arc::new(
                 SSTableInner {
                     footer,
-                    reader: io_factory.reader(gen, IoType::Buf)?,
+                    reader: io_factory.reader(gen, IoType::Direct)?,
                     gen,
                     meta,
                 }

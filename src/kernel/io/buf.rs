@@ -79,7 +79,7 @@ impl IoReader for BufIoReader {
     fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
         let mut reader = self.reader.lock();
 
-        let mut buffer = vec![0;len];
+        let mut buffer = vec![0; len];
         // 使用Vec buffer获取数据
         let _ignore = reader.seek(SeekFrom::Start(start))?;
         let _ignore1 = reader.read(buffer.as_mut_slice())?;

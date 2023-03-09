@@ -210,7 +210,7 @@ impl VersionStatus {
             .copied()
             .rev()
         {
-            let reader = sst_factory.reader(gen, IoType::Buf)?;
+            let reader = sst_factory.reader(gen, IoType::Direct)?;
 
             if let Some(ss_table) = match SSTable::load_from_file(reader) {
                 Ok(ss_table) => Some(ss_table),
