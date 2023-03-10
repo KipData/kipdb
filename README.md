@@ -12,8 +12,8 @@
 </p>
 
 [![Crates.io](https://img.shields.io/crates/v/kip_db.svg)](https://crates.io/crates/kip_db/)
-[![Rust Community](https://img.shields.io/badge/Rust_Community%20-Join_us-brightgreen?style=plastic&logo=rust)](https://www.rust-lang.org/community)
 [![LICENSE](https://img.shields.io/github/license/kkould/kipdb.svg)](https://github.com/kkould/kipdb/blob/master/LICENSE)
+[![Rust Community](https://img.shields.io/badge/Rust_Community%20-Join_us-brightgreen?style=plastic&logo=rust)](https://www.rust-lang.org/community)
 
 **KipDB** 轻量级键值存储引擎
 
