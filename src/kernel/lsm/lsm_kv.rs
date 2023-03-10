@@ -14,7 +14,7 @@ use tracing::error;
 use crate::KvsError;
 use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
-use crate::kernel::lsm::{MemMap, MemTable};
+use crate::kernel::lsm::{block, MemMap, MemTable};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mvcc::Transaction;
@@ -23,9 +23,7 @@ use crate::kernel::Result;
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_LEN: usize = 2333;
 
-pub(crate) const DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE: u64 = 4;
-
-pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 24 * 1024 * 1024;
+pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
@@ -293,8 +291,6 @@ pub struct Config {
     pub(crate) dir_path: PathBuf,
     /// WAL数量阈值
     pub(crate) wal_threshold: usize,
-    /// 稀疏索引间间隔的Block(4K字节大小)数量
-    pub(crate) sparse_index_interval_block_size: u64,
     /// SSTable文件大小
     pub(crate) sst_file_size: usize,
     /// Minor触发数据长度
@@ -310,8 +306,7 @@ pub struct Config {
     pub(crate) level_sst_magnification: usize,
     /// 布隆过滤器 期望的错误概率
     pub(crate) desired_error_prob: f64,
-    /// 数据库全局Position段数据缓存的数量
-    /// 一个size大约为4kb(可能更少)
+    /// Block数据块缓存的数量
     /// 由于使用ShardingCache作为并行，以16为单位
     pub(crate) block_cache_size: usize,
     /// 用于缓存SSTable
@@ -326,6 +321,12 @@ pub struct Config {
     /// Compactor循环检测时间
     /// 单位为毫秒
     pub(crate) compactor_check_time: u64,
+    /// 每个Block之间的大小, 单位为B
+    pub(crate) block_size: usize,
+    /// DataBloc的前缀压缩Restart间隔
+    pub(crate) data_restart_interval: usize,
+    /// IndexBloc的前缀压缩Restart间隔
+    pub(crate) index_restart_interval: usize,
     /// gen生成器
     /// 用于SSTable以及SequenceId的生成
     gen_generator: parking_lot::Mutex<SnowflakeIdGenerator>
@@ -338,7 +339,6 @@ impl Config {
             dir_path: path.into(),
             minor_threshold_with_len: DEFAULT_MINOR_THRESHOLD_WITH_LEN,
             wal_threshold: DEFAULT_WAL_THRESHOLD,
-            sparse_index_interval_block_size: DEFAULT_SPARSE_INDEX_INTERVAL_BLOCK_SIZE,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
@@ -349,6 +349,9 @@ impl Config {
             wal_enable: true,
             wal_async_put_enable: true,
             compactor_check_time: DEFAULT_COMPACTOR_CHECK_TIME,
+            block_size: block::DEFAULT_BLOCK_SIZE,
+            data_restart_interval: block::DEFAULT_DATA_RESTART_INTERVAL,
+            index_restart_interval: block::DEFAULT_INDEX_RESTART_INTERVAL,
             gen_generator: parking_lot::Mutex::new(
                 SnowflakeIdGenerator::new(machine_id, node_id)
             ),
@@ -368,14 +371,26 @@ impl Config {
     }
 
     #[inline]
-    pub fn wal_threshold(mut self, wal_threshold: usize) -> Self {
-        self.wal_threshold = wal_threshold;
+    pub fn block_size(mut self, block_size: usize) -> Self {
+        self.block_size = block_size;
         self
     }
 
     #[inline]
-    pub fn sparse_index_interval_block_size(mut self, sparse_index_interval_block_size: u64) -> Self {
-        self.sparse_index_interval_block_size = sparse_index_interval_block_size;
+    pub fn data_restart_interval(mut self, data_restart_interval: usize) -> Self {
+        self.data_restart_interval = data_restart_interval;
+        self
+    }
+
+    #[inline]
+    pub fn index_restart_interval(mut self, index_restart_interval: usize) -> Self {
+        self.index_restart_interval = index_restart_interval;
+        self
+    }
+
+    #[inline]
+    pub fn wal_threshold(mut self, wal_threshold: usize) -> Self {
+        self.wal_threshold = wal_threshold;
         self
     }
 

@@ -1,11 +1,13 @@
 pub(crate) mod buf;
 pub(crate) mod mmap;
+pub(crate) mod direct;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
+use crate::kernel::io::direct::DirectIoHandler;
 use crate::kernel::io::mmap::{MMapIoReader, MMapIoWriter};
 use crate::kernel::Result;
 
@@ -42,7 +44,8 @@ pub struct IoFactory {
 #[derive(PartialEq, Copy, Clone, Debug)]
 pub enum IoType {
     Buf,
-    MMap
+    MMap,
+    Direct,
 }
 
 impl IoFactory {
@@ -55,6 +58,7 @@ impl IoFactory {
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoReader::new(dir_path, gen, extension)?),
             IoType::MMap => Box::new(MMapIoReader::new(dir_path, gen, extension)?),
+            IoType::Direct => Box::new(DirectIoHandler::new(dir_path, gen, extension, false)?)
         })
     }
 
@@ -67,6 +71,7 @@ impl IoFactory {
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoWriter::new(dir_path, gen, extension)?),
             IoType::MMap => Box::new(MMapIoWriter::new(dir_path, gen, extension)?),
+            IoType::Direct => Box::new(DirectIoHandler::new(dir_path, gen, extension, true)?)
         })
     }
 

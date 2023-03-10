@@ -70,7 +70,7 @@ impl Compactor {
     pub(crate) async fn check_then_compaction(
         &mut self,
         enable_caching: bool,
-        mut option_tx: Option<oneshot::Sender<()>>
+        option_tx: Option<oneshot::Sender<()>>
     ) {
         let exceeded_len = self.config.minor_threshold_with_len;
 
@@ -98,14 +98,14 @@ impl Compactor {
         }
 
         // 压缩请求响应
-        let _ignore = option_tx.take()
-            .map(|tx| {
+        let _ignore = option_tx.map(|tx| {
                 tx.send(()).expect("compactor response error!")
             });
     }
 
     /// 创建gen
     ///
+    /// 需要保证获取到了MemTable的写锁以保证wal在switch时MemTable的数据和Wal不一致(多出几条)
     /// 当wal配置启用时，使用预先记录的gen作为结果
     fn create_gen(&self) -> Result<i64> {
         let next_gen = self.config.create_gen_lazy();
@@ -129,7 +129,7 @@ impl Compactor {
     ) -> Result<()> {
         if !values.is_empty() {
             // 从内存表中将数据持久化为ss_table
-            let ss_table = SSTable::create_for_immutable_table(
+            let ss_table = SSTable::create_for_mem_table(
                 &self.config,
                 gen,
                 &self.sst_factory,
@@ -194,7 +194,7 @@ impl Compactor {
                 let ss_table_futures = vec_sharding.into_iter()
                     .map(|(gen, sharding)| {
                         async move {
-                            SSTable::create_for_immutable_table(
+                            SSTable::create_for_mem_table(
                                 config,
                                 gen,
                                 &self.sst_factory,
@@ -300,7 +300,7 @@ impl Compactor {
         // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
         let map_futures = vec_ss_table.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(SSTable::get_all_data_async);
+            .map(SSTable::all);
         let vec_cmd_data = future::try_join_all(map_futures)
             .await?
             .into_iter()

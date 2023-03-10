@@ -1,19 +1,16 @@
 use std::sync::Arc;
-use crossbeam_skiplist::SkipMap;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::info;
-use crate::kernel::{CommandData, CommandPackage};
-use crate::kernel::io::{IoFactory, IoReader, IoType, IoWriter};
-use crate::kernel::lsm::{data_sharding, MetaBlock, MetaInfo, Position};
+use crate::kernel::CommandData;
+use crate::kernel::io::{IoFactory, IoReader, IoType};
+use crate::kernel::lsm::{MetaBlock, Footer, TABLE_FOOTER_SIZE};
+use crate::kernel::lsm::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index, Value};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
-use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError;
-
-const ALIGNMENT_4K: usize = 4096;
 
 pub(crate) struct SSTable {
     inner: Arc<SSTableInner>
@@ -28,23 +25,17 @@ impl Clone for SSTable {
 }
 
 /// SSTable
+///
+/// SSTable仅加载MetaBlock与Footer，避免大量冷数据时冗余的SSTable加载的空间占用
 pub(crate) struct SSTableInner {
     // 表索引信息
-    meta_info: MetaInfo,
-    // 字段稀疏索引
-    sparse_index: SkipMap<Vec<u8>, Position>,
+    footer: Footer,
     // 文件IO操作器
     reader: Box<dyn IoReader>,
     // 该SSTable的唯一编号(时间递增)
     gen: i64,
-    // 数据范围索引
-    scope: Scope,
-    // 过滤器
-    filter: GrowableBloom,
-    // 硬盘占有大小
-    size_of_disk: u64,
-    // 数据数量
-    len: usize,
+    // 统计信息存储Block
+    meta: MetaBlock,
 }
 
 /// 数据范围索引
@@ -126,7 +117,7 @@ impl Scope {
 
 impl SSTable {
     pub(crate) fn get_level(&self) -> usize {
-        self.inner.meta_info.level as usize
+        self.inner.footer.level as usize
     }
 
     pub(crate) fn get_gen(&self) -> i64 {
@@ -134,15 +125,15 @@ impl SSTable {
     }
 
     pub(crate) fn get_scope(&self) -> &Scope {
-        &self.inner.scope
+        &self.inner.meta.scope
     }
 
     pub(crate) fn get_size_of_disk(&self) -> u64 {
-        self.inner.size_of_disk
+        self.inner.footer.size_of_disk as u64
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.inner.len
+        self.inner.meta.len
     }
 
     /// 通过已经存在的文件构建SSTable
@@ -151,116 +142,103 @@ impl SSTable {
     pub(crate) fn load_from_file(reader: Box<dyn IoReader>) -> Result<Self>{
         let gen = reader.get_gen();
 
-        let meta_info = MetaInfo::read_to_file(&reader)?;
-        let size_of_disk = reader.file_size()?;
+        let footer = Footer::read_to_file(&reader)?;
+        let Footer { size_of_disk, meta_offset, meta_len ,.. } = &footer;
         info!(
-            "[SsTable: {gen}][load_from_file][TableMetaInfo]: {meta_info:?}, Size of Disk: {size_of_disk}, IO Type: {:?}"
-            , reader.get_type()
+            "[SsTable: {gen}][load_from_file][MetaBlock]: {footer:?}, Size of Disk: {}, IO Type: {:?}",
+            size_of_disk ,
+            reader.get_type()
         );
-
-        // 需要手动对len + 4以跳过len_head
-        let index_pos = meta_info.data_part_len + 4;
-        let index_len = meta_info.index_len as usize;
-
-        let buffer = reader.read_with_pos(0, meta_info.data_part_len as usize)?;
-        let loaded_crc_code = crc32fast::hash(buffer.as_slice());
-
-        if let Some(meta_block_cmd) = CommandPackage::from_pos_unpack(&reader, index_pos, index_len)? {
-            match meta_block_cmd {
-                CommandData::Get { key: meta_block_bytes } => {
-                    let MetaBlock { vec_index, scope, filter , len }
-                        = bincode::deserialize::<MetaBlock>(&meta_block_bytes)?;
-                    let info_crc_code = meta_info.crc_code;
-                    if loaded_crc_code.eq(&info_crc_code) {
-                        Ok(SSTable {
-                            inner : Arc::new(
-                                SSTableInner {
-                                    meta_info,
-                                    sparse_index: SkipMap::from_iter(vec_index),
-                                    gen,
-                                    reader,
-                                    scope,
-                                    filter,
-                                    size_of_disk,
-                                    len,
-                                }
-                            )
-                        })
-                    } else {
-                        Err(KvsError::CrcMisMatch)
-                    }
-                }
-                CommandData::Set{ .. } | CommandData::Remove{ .. } => Err(KvsError::NotMatchCmd)
-            }
-        } else {
-            Err(KvsError::KeyNotFound)
-        }
+        let meta = bincode::deserialize(
+            &reader.read_with_pos(*meta_offset as u64, *meta_len as usize)?
+        )?;
+        Ok(SSTable {
+            inner : Arc::new(
+                SSTableInner { footer, gen, reader, meta, }
+            )
+        })
     }
 
-    /// 写入CommandData数据段
-    #[allow(clippy::pattern_type_mismatch)]
-    fn write_data_batch(vec_cmd_data: Vec<Vec<CommandData>>, writer: &Box<dyn IoWriter>) -> Result<(Vec<(Vec<u8>, Position)>, u32)> {
-        let (start_pos, batch_len, vec_sharding_len, crc_code) =
-            CommandPackage::write_batch_first_pos_with_sharding(writer, &vec_cmd_data)?;
-        info!("[SSTable][write_data_batch][data_zone]: start_pos: {}, batch_len: {}, vec_sharding_len: {:?}", start_pos, batch_len, vec_sharding_len);
-
-        let keys = vec_cmd_data.into_iter()
-            .filter_map(|sharding| sharding
-                .first()
-                .map(CommandData::get_key_clone))
-            .collect_vec();
-
-        let mut start_len = 0;
-
-        let vec_position = vec_sharding_len.into_iter()
-            .map(|sharding_len| {
-                let position = Position { start: start_len, len: sharding_len };
-                start_len += sharding_len as u64;
-                position
-            }).collect_vec();
-        Ok((keys.into_iter()
-                .zip(vec_position)
-                .collect(),
-            crc_code))
-    }
-
-    /// 从该sstable中获取指定key对应数据可能存在的CommandData段
+    /// 查询Key对应的Value
     #[allow(clippy::expect_used)]
     pub(crate) fn query_with_key(
         &self,
         key: &[u8],
-        block_cache: &ShardingLruCache<(i64, Position), Vec<CommandData>>
-    ) -> Result<Option<CommandData>> {
+        block_cache: &BlockCache
+    ) -> Result<Option<Vec<u8>>> {
         let inner = &self.inner;
-        if inner.filter.contains(key) {
-            if let Some(position) = Position::from_sparse_index_with_key(&inner.sparse_index, key) {
-                info!("[SsTable: {}][query_with_key]: {:?}", inner.gen, position);
-                let key_position = (inner.gen, position.clone());
-
-                return Ok(block_cache.get_or_insert(
-                    key_position,
-                    || {
-                        let bytes = inner
-                            .reader
-                            .read_with_pos(position.start, position.len)?;
-                        Ok(CommandPackage::from_bytes_to_unpack_vec(&bytes)?)
+        let reader = &inner.reader;
+        if inner.meta.filter.contains(key) {
+            if let BlockType::Index(index_block) = block_cache.get_or_insert(
+                (self.get_gen(), None),
+                |_| {
+                    let Footer { index_offset, index_len, .. } = inner.footer;
+                    Ok(BlockType::Index(
+                        Self::loading_block(
+                            reader,
+                            index_offset,
+                            index_len as usize,
+                            CompressType::None
+                        )?
+                    ))
+                }
+            )? {
+                if let BlockType::Data(data_block) =  block_cache.get_or_insert(
+                    (self.get_gen(), Some(index_block.find_with_upper(key))),
+                    |(_, index)| {
+                        let index = (*index).ok_or_else(|| KvsError::DataEmpty)?;
+                        Ok(BlockType::Data(
+                            Self::loading_block(
+                                reader,
+                                index.offset(),
+                                index.len(),
+                                CompressType::LZ4
+                            )?
+                        ))
                     }
-                )?
-                    .iter()
-                    .find(|cmd_data| cmd_data.get_key() == key)
-                    .map(CommandData::clone));
+                )? { return Ok(data_block.find(key)); }
             }
         }
+
         Ok(None)
     }
 
-    /// 获取SsTable内所有的正常数据
-    pub(crate) async fn get_all_data_async(&self) -> Result<Vec<CommandData>> {
-        let info = &self.inner.meta_info;
-        let data_len = info.data_part_len;
+    fn loading_block<T>(
+        reader: &Box<dyn IoReader>,
+        offset: u32,
+        len: usize,
+        compress_type: CompressType
+    ) -> Result<Block<T>>
+        where T: BlockItem
+    {
+        Ok(Block::decode(
+            reader.read_with_pos(offset as u64, len)?,
+            compress_type
+        )?)
+    }
 
-        let all_data_u8 = self.inner.reader.read_with_pos(0, data_len as usize)?;
-        CommandPackage::from_bytes_to_unpack_vec(all_data_u8.as_slice())
+    /// 获取SsTable内所有的正常数据
+    pub(crate) async fn all(&self) -> Result<Vec<CommandData>> {
+        let inner = &self.inner;
+        let Footer{ index_offset, index_len, .. } = inner.footer;
+
+        let index_block = Self::loading_block::<Index>(
+            &inner.reader,
+            index_offset,
+            index_len as usize,
+            CompressType::None
+        )?;
+        Ok(index_block.all_value()
+            .into_iter()
+            .flat_map(|index| {
+                Self::loading_block::<Value>(
+                    &inner.reader, index.offset(), index.len(), CompressType::LZ4
+                ).map(Block::all_entry)
+                    .flatten()
+            })
+            .flatten()
+            .map(CommandData::from)
+            .collect_vec())
     }
 
     /// 通过一组SSTable收集对应的Gen
@@ -284,7 +262,7 @@ impl SSTable {
 
     /// 通过内存表构建持久化并构建SSTable
     /// 使用目标路径与文件大小，分块大小构建一个有内容的SSTable
-    pub(crate) fn create_for_immutable_table(
+    pub(crate) fn create_for_mem_table(
         config: &Config,
         gen: i64,
         io_factory: &IoFactory,
@@ -293,66 +271,120 @@ impl SSTable {
     ) -> Result<SSTable>{
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
-        // 获取地址
-        let interval_block_size = config.sparse_index_interval_block_size;
-        let writer = io_factory.writer(gen, IoType::Buf)?;
+        let writer = io_factory.writer(gen, IoType::Direct)?;
         let len = vec_mem_data.len();
         let mut filter = GrowableBloom::new(config.desired_error_prob, len);
 
-        for data in vec_mem_data.iter() {
-            let _ignore = filter.insert(data.get_key());
+        let mut builder = BlockBuilder::new(
+            BlockOptions::from(config).compress_type(CompressType::LZ4)
+        );
+        for data in vec_mem_data {
+            let _ = filter.insert(data.get_key());
+            builder.add(data);
         }
-        let vec_sharding = data_sharding(
-            vec_mem_data,
-            ALIGNMENT_4K * interval_block_size as usize,
-            config
-        ).into_iter()
-            .map(|(_, sharding)| sharding)
-            .collect();
-        let (vec_index, crc_code) = Self::write_data_batch(vec_sharding, &writer)?;
-
-        let meta_block = MetaBlock {
-            vec_index,
+        let meta = MetaBlock {
             scope,
             filter,
             len
         };
-
-        // 开始对稀疏索引进行伪装并断点处理
-        // 获取指令数据段的数据长度
-        // 不使用真实pos作为开始，而是与稀疏索引的伪装CommandData做区别
-        let cmd_sparse_index = CommandData::Get { key: bincode::serialize(&meta_block)?};
-        // 将稀疏索引伪装成CommandData，使最后的MetaInfo位置能够被顺利找到
-        let (sparse_index_pos, sparse_index_len) = CommandPackage::write(&writer, &cmd_sparse_index)?;
-
-        // 将以上持久化信息封装为MetaInfo
-        // data_part_len跳过sparse_index_pos的len_head所以-4
-        let meta_info = MetaInfo {
-            level: level as u64,
-            data_part_len: sparse_index_pos - 4,
-            index_len: sparse_index_len as u64,
-            crc_code
+        let (data_bytes, index_bytes) = builder.build()?;
+        let meta_bytes = bincode::serialize(&meta)?;
+        let footer = Footer {
+            level: level as u8,
+            index_offset: data_bytes.len() as u32,
+            index_len: index_bytes.len() as u32,
+            meta_offset: (data_bytes.len() + index_bytes.len()) as u32,
+            meta_len: meta_bytes.len() as u32,
+            size_of_disk: (data_bytes.len() + index_bytes.len() + meta_bytes.len() + TABLE_FOOTER_SIZE) as u32,
         };
-        meta_info.write_to_file_and_flush(&writer)?;
-
-        let size_of_disk = writer.file_size()?;
-
-        info!("[SsTable: {}][create_form_index][TableMetaInfo]: {:?}", gen, meta_info);
-        let MetaBlock { vec_index, scope, filter, len } = meta_block;
+        let _ = writer.write(
+            data_bytes.into_iter()
+                .chain(index_bytes)
+                .chain(meta_bytes)
+                .chain(bincode::serialize(&footer)?)
+                .collect_vec()
+        )?;
+        writer.flush()?;
+        info!("[SsTable: {}][create_form_index][MetaBlock]: {:?}", gen, meta);
         Ok(SSTable {
             inner: Arc::new(
                 SSTableInner {
-                    meta_info,
-                    sparse_index: SkipMap::from_iter(vec_index),
-                    reader: io_factory.reader(gen, IoType::Buf)?,
+                    footer,
+                    reader: io_factory.reader(gen, IoType::Direct)?,
                     gen,
-                    scope,
-                    filter,
-                    size_of_disk,
-                    len,
+                    meta,
                 }
             )
         })
 
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::collections::hash_map::RandomState;
+    use bincode::Options;
+    use tempfile::TempDir;
+    use crate::kernel::io::{FileExtension, IoFactory, IoType};
+    use crate::kernel::lsm::lsm_kv::Config;
+    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
+    use crate::kernel::{CommandData, Result};
+    use crate::kernel::utils::lru_cache::ShardingLruCache;
+
+    #[test]
+    fn test_sstable() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        tokio_test::block_on(async move {
+            let value = b"If you shed tears when you miss the sun, you also miss the stars.";
+            let config = Config::new(temp_dir.into_path(), 0, 0);
+            let sst_factory = IoFactory::new(
+                config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+                FileExtension::SSTable
+            )?;
+            let cache = ShardingLruCache::new(
+                config.block_cache_size,
+                16,
+                RandomState::default()
+            )?;
+            let mut vec_cmd = Vec::new();
+            let times = 2333;
+
+            for i in 0..times {
+                vec_cmd.push(
+                    CommandData::set(
+                        bincode::options().with_big_endian().serialize(&i)?,
+                        value.to_vec()
+                    )
+                );
+            }
+            let ss_table = SSTable::create_for_mem_table(
+                &config,
+                1,
+                &sst_factory,
+                vec_cmd.clone(),
+                0
+            )?;
+            for i in 0..times {
+                let key = vec_cmd[i].get_key();
+                assert_eq!(ss_table.query_with_key(key, &cache)?, Some(value.to_vec()))
+            }
+            drop(ss_table);
+            let ss_table = SSTable::load_from_file(
+                sst_factory.reader(1, IoType::MMap)?
+            )?;
+            for i in 0..times {
+                let key = vec_cmd[i].get_key();
+                assert_eq!(ss_table.query_with_key(key, &cache)?, Some(value.to_vec()))
+            }
+
+            let vec_cmd_ss = ss_table.all().await?;
+
+            assert_eq!(vec_cmd_ss.len(), vec_cmd.len());
+
+            Ok(())
+        })
     }
 }

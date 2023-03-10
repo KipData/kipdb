@@ -9,7 +9,8 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use crate::kernel::{CommandData, Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType};
-use crate::kernel::lsm::{Position, SSTableMap};
+use crate::kernel::lsm::SSTableMap;
+use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::Config;
@@ -168,7 +169,7 @@ pub(crate) struct Version {
     /// 统计数据
     meta_data: VersionMeta,
     /// 稀疏区间数据Block缓存
-    block_cache: Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
+    block_cache: Arc<BlockCache>,
     /// 用于MVCC的有序编号
     last_sequence_id: i64,
     /// 清除信号发送器
@@ -209,7 +210,7 @@ impl VersionStatus {
             .copied()
             .rev()
         {
-            let reader = sst_factory.reader(gen, IoType::Buf)?;
+            let reader = sst_factory.reader(gen, IoType::Direct)?;
 
             if let Some(ss_table) = match SSTable::load_from_file(reader) {
                 Ok(ss_table) => Some(ss_table),
@@ -291,7 +292,7 @@ impl VersionStatus {
         gen: i64
     ) -> Result<Option<SSTable>> {
         Ok(if let Some(vec_mem_data) = wal.load(gen)? {
-            Some(SSTable::create_for_immutable_table(
+            Some(SSTable::create_for_mem_table(
                 config,
                 gen,
                 &sst_factory,
@@ -386,7 +387,7 @@ impl Version {
     /// 创建一个空的Version
     fn empty(
         ss_table_map: &Arc<RwLock<SSTableMap>>,
-        block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
+        block_cache: &Arc<BlockCache>,
         clean_sender: Sender<CleanTag>,
         last_sequence_id: i64
     ) -> Self {
@@ -394,7 +395,7 @@ impl Version {
             version_num: 0,
             ss_tables_map: Arc::clone(ss_table_map),
             level_slice: Self::level_slice_new(),
-            block_cache: Arc::clone(block_cache),
+            block_cache: Arc::clone(&block_cache),
             last_sequence_id,
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_sender,
@@ -405,7 +406,7 @@ impl Version {
     /// 通过现有数据创建Version
     async fn new(
         ss_table_map: &Arc<RwLock<SSTableMap>>,
-        block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
+        block_cache: &Arc<BlockCache>,
         clean_sender: Sender<CleanTag>,
         last_sequence_id: i64,
     ) -> Result<Self> {
@@ -439,7 +440,7 @@ impl Version {
         config: &Config,
         vec_log: Vec<VersionEdit>,
         ss_table_map: &Arc<RwLock<SSTableMap>>,
-        block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
+        block_cache: &Arc<BlockCache>,
         sender: Sender<CleanTag>
     ) -> Result<Self>{
         let ver_seq_id = config.create_gen_lazy();
@@ -700,13 +701,10 @@ impl Version {
 
     fn query_with_ss_table(
         key: &[u8],
-        block_cache: &Arc<ShardingLruCache<(i64, Position), Vec<CommandData>>>,
+        block_cache: &BlockCache,
         ss_table: &SSTable
     ) -> Result<Option<Vec<u8>>> {
-        if let Some(cmd_data) = ss_table.query_with_key(key, block_cache)? {
-            return Ok(cmd_data.get_value_clone());
-        }
-        Ok(None)
+        ss_table.query_with_key(key, block_cache)
     }
 
     /// 判断是否溢出指定的SSTable数量
@@ -797,7 +795,7 @@ mod tests {
                 FileExtension::SSTable
             )?;
 
-            let ss_table_1 = SSTable::create_for_immutable_table(
+            let ss_table_1 = SSTable::create_for_mem_table(
                 &config,
                 1,
                 &sst_factory,
@@ -805,7 +803,7 @@ mod tests {
                 0
             )?;
 
-            let ss_table_2 = SSTable::create_for_immutable_table(
+            let ss_table_2 = SSTable::create_for_mem_table(
                 &config,
                 2,
                 &sst_factory,
@@ -889,7 +887,7 @@ mod tests {
                 FileExtension::SSTable
             )?;
 
-            let ss_table_1 = SSTable::create_for_immutable_table(
+            let ss_table_1 = SSTable::create_for_mem_table(
                 &config,
                 1,
                 &sst_factory,
@@ -897,7 +895,7 @@ mod tests {
                 0
             )?;
 
-            let ss_table_2 = SSTable::create_for_immutable_table(
+            let ss_table_2 = SSTable::create_for_mem_table(
                 &config,
                 2,
                 &sst_factory,

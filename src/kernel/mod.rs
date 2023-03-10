@@ -133,34 +133,6 @@ impl CommandPackage {
         writer.write(bytes)
     }
 
-    /// 将数据分片集成写入， 返回起始Pos、整段写入Pos、每段数据序列化长度Pos
-    pub(crate) fn write_batch_first_pos_with_sharding(
-        writer: &Box<dyn IoWriter>,
-        vec_sharding: &Vec<Vec<CommandData>>
-    ) -> Result<(u64, usize, Vec<usize>, u32)>{
-        let mut vec_sharding_len = Vec::with_capacity(vec_sharding.len());
-
-        let vec_sharding_u8  = vec_sharding.iter()
-            .flat_map(|sharding| {
-                let sharding_u8 = sharding.iter()
-                    .filter_map(|cmd_data| {
-                        bincode::serialize(cmd_data)
-                            .map(ByteUtils::tag_with_head).ok()
-                    })
-                    .flatten()
-                    .collect_vec();
-                vec_sharding_len.push(sharding_u8.len());
-                sharding_u8
-            })
-            .collect_vec();
-
-        let crc_code = crc32fast::hash(vec_sharding_u8.as_slice());
-
-        let (start_pos, batch_len) = writer.write(vec_sharding_u8)?;
-
-        Ok((start_pos, batch_len, vec_sharding_len, crc_code))
-    }
-
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
     pub(crate) fn from_pos_unpack(reader: &Box<dyn IoReader>, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = reader.read_with_pos(start, len)?;
