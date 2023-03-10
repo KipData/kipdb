@@ -9,12 +9,20 @@
     <img src="https://img.shields.io/github/stars/KKould/KipDB.svg?style=social" alt="github star"/>
     <img src="https://img.shields.io/github/forks/KKould/KipDB.svg?style=social" alt="github fork"/>
   </a>
-  <a href="https://crates.io/crates/kip_db/" target="_blank">
-    <img src="https://img.shields.io/crates/v/kip_db.svg" alt="Crates.io"/>
-  </a>
 </p>
 
-### [Kiss](https://zh.m.wikipedia.org/zh/KISS%E5%8E%9F%E5%88%99) First Data Base
+[![Crates.io](https://img.shields.io/crates/v/kip_db.svg)](https://crates.io/crates/kip_db/)
+[![Rust Community](https://img.shields.io/badge/Rust_Community%20-Join_us-brightgreen?style=plastic&logo=rust)](https://www.rust-lang.org/community)
+[![LICENSE](https://img.shields.io/github/license/kkould/kipdb.svg)](https://github.com/kkould/kipdb/blob/master/LICENSE)
+
+**KipDB** 高性能键值存储引擎
+整体设计参考LevelDB，旨在作为NewSQL分布式数据库的存储引擎 
+- 支持嵌入式/单机存储/远程调用等多应用场景
+- 以[Kiss](https://zh.m.wikipedia.org/zh/KISS%E5%8E%9F%E5%88%99)作为开发理念，设计以简单而高效为主
+- 实现MVCC以支持ACID
+- 远程连接使用ProtoBuf实现，支持多语言通信
+- 极小的内存占用(待机/大量冷数据)
+
 ## 快速上手 🤞
 ### 直接调用
 ```rust
@@ -24,13 +32,24 @@ let kip_db = LsmStore::open("/tmp/learning materials").await?;
 // 插入数据
 kip_db.set(&vec![b'k'], vec![b'v']).await?;
 // 获取数据
-kip_db.get(&vec![b'k']).await?;
+let key_1 = kip_db.get(&vec![b'k']).await?;
 // 已占有硬盘大小
 kip_db.size_of_disk().await?
 // 已有数据数量
 kip_db.len().await?;
 // 删除数据
 kip_db.remove(&vec![b'k']).await?;
+
+// 创建事务
+let mut transaction = kv_store.transaction().await?;
+// 插入数据至事务中
+transaction.set(&vec![b'k'], vec![b'v']);
+// 删除该事务中key对应的value
+transaction.remove(&vec![b'k']).await?;
+// 获取此事务中key对应的value
+let key_2 = transaction.get(&vec![b'k']).await?;
+// 提交事务
+transaction.commit().await?;
 
 // 强制数据刷入硬盘
 kip_db.flush().await?;
@@ -144,13 +163,14 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
   - 多进程锁 ✅
     - 防止多进程对文件进行读写造成数据异常
 - SSTable
-  - CRC校验和 ✅
-    - 用于校验数据内容是否异常
   - 布隆过滤器 ✅
     - 加快获取键值的速度
-  - MetaBlock区 ✅
+  - MetaBlock ✅
     - 用于存储统计数据布隆过滤器的存放
-  - 数据压缩
+- Block
+  - DataBlock、IndexBlock复用实现并共享缓存 ✅
+  - 实现前缀压缩并使用varint编码以及LZ4减小空间占用 ✅
+  - 基于前缀进行二分查询 ✅
 - Cache
   - TableCache: SSTable Level 0缓存 ✅
     - 读取频繁,因此使用Mmap进行只读映射
@@ -159,9 +179,9 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
 - WAL 防灾日志
   - 落盘时异常后重启数据回复 ✅
   - 读取数据不存在时尝试读取 ✅
-- MVCC单机事务
-  - Manifest多版本持久化
-  - SSTable多版本持久化
+- MVCC单机事务 ✅
+  - Manifest多版本持久化 ✅
+  - SSTable多版本持久化 ✅
 - 网络通信
   - 使用ProtoBuf进行多语言序列化 ✅
   - Ruby of KipDB
