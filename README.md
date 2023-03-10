@@ -15,11 +15,13 @@
 [![Rust Community](https://img.shields.io/badge/Rust_Community%20-Join_us-brightgreen?style=plastic&logo=rust)](https://www.rust-lang.org/community)
 [![LICENSE](https://img.shields.io/github/license/kkould/kipdb.svg)](https://github.com/kkould/kipdb/blob/master/LICENSE)
 
-**KipDB** 高性能键值存储引擎
+**KipDB** 轻量级键值存储引擎
+
 整体设计参考LevelDB，旨在作为NewSQL分布式数据库的存储引擎 
 - 支持嵌入式/单机存储/远程调用等多应用场景
 - 以[Kiss](https://zh.m.wikipedia.org/zh/KISS%E5%8E%9F%E5%88%99)作为开发理念，设计以简单而高效为主
 - 实现MVCC以支持ACID
+- 高性能，BenchMark写入吞吐量约为Sled的两倍，且大数据量下的顺序读取平均延迟为1μs左右
 - 远程连接使用ProtoBuf实现，支持多语言通信
 - 极小的内存占用(待机/大量冷数据)
 
