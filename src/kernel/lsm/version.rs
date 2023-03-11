@@ -63,8 +63,8 @@ impl Cleaner {
         tag_rx: Receiver<CleanTag>
     ) -> Self {
         Self {
-            ss_table_map: Arc::clone(&ss_table_map),
-            sst_factory: Arc::clone(&sst_factory),
+            ss_table_map: Arc::clone(ss_table_map),
+            sst_factory: Arc::clone(sst_factory),
             tag_rx,
             del_gens: vec![],
         }
@@ -123,7 +123,7 @@ impl Cleaner {
         }
     }
 
-    fn find_index_with_ver_num(del_gen: &Vec<(u64, Vec<i64>)>, ver_num: u64) -> Option<usize> {
+    fn find_index_with_ver_num(del_gen: &[(u64, Vec<i64>)], ver_num: u64) -> Option<usize> {
         del_gen.iter()
             .enumerate()
             .find(|(_, (vn, _))| {
@@ -195,7 +195,7 @@ impl VersionStatus {
             RandomState::default()
         )?);
 
-        let mut ss_table_map = SSTableMap::new(&config)?;
+        let mut ss_table_map = SSTableMap::new(config)?;
 
         let sst_factory = Arc::new(
             IoFactory::new(
@@ -255,7 +255,7 @@ impl VersionStatus {
         let (tag_sender, tag_rev) = channel(20);
         let version = Arc::new(
             Version::load_from_log(
-                &config,
+                config,
                 vec_edit,
                 &ss_table_map,
                 &block_cache,
@@ -295,7 +295,7 @@ impl VersionStatus {
             Some(SSTable::create_for_mem_table(
                 config,
                 gen,
-                &sst_factory,
+                sst_factory,
                 vec_mem_data,
                 LEVEL_0
             )?)
@@ -313,7 +313,7 @@ impl VersionStatus {
     ) -> Result<()> {
         // 对Level 0的SSTable进行MMap映射
         if ss_table.get_level() == LEVEL_0 && enable_cache {
-            let _ignore = ss_table_map.caching(ss_table.get_gen(), &sst_factory)?;
+            let _ignore = ss_table_map.caching(ss_table.get_gen(), sst_factory)?;
         }
         // 初始化成功时直接传入SSTable的索引中
         let _ignore1 = ss_table_map.insert(ss_table);
@@ -355,7 +355,7 @@ impl VersionStatus {
                 bincode::serialize(&edit).ok()
                     .map(CommandData::get)
             })
-            .collect();
+            .collect_vec();
 
         new_version.apply(vec_version_edit, false).await?;
 
@@ -377,7 +377,7 @@ impl Version {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.get_len() <= 0
+        self.get_len() == 0
     }
 
     pub(crate) fn get_size_of_disk(&self) -> u64 {
@@ -395,7 +395,7 @@ impl Version {
             version_num: 0,
             ss_tables_map: Arc::clone(ss_table_map),
             level_slice: Self::level_slice_new(),
-            block_cache: Arc::clone(&block_cache),
+            block_cache: Arc::clone(block_cache),
             last_sequence_id,
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_sender,
@@ -475,6 +475,7 @@ impl Version {
     /// 也就是可能存在一次Version的冗余SSTable
     /// 可能是个确定，但是Minor Compactor比较起来更加频繁，也就是大多数情况不会冗余，因此我觉得影响较小
     /// 也可以算作是一种Major Compaction异常时的备份？
+    #[allow(clippy::expect_used)]
     async fn apply(&mut self, vec_version_edit: Vec<VersionEdit>, is_init: bool) -> Result<()> {
         let mut del_gens = vec![];
         let ss_tables_map = self.ss_tables_map.read().await;
@@ -556,10 +557,10 @@ impl Version {
         Ok(())
     }
 
-    async fn apply_add(meta_data: &mut VersionMeta, ss_tables_map: &SSTableMap, vec_gen: &Vec<i64>) -> Result<()>  {
+    async fn apply_add(meta_data: &mut VersionMeta, ss_table_map: &SSTableMap, vec_gen: &[i64]) -> Result<()>  {
         meta_data.statistical_process(
-            &ss_tables_map,
-            &vec_gen,
+            ss_table_map,
+            vec_gen,
             |meta_data, ss_table| {
                 meta_data.size_of_disk += ss_table.get_size_of_disk();
                 meta_data.len += ss_table.len();
@@ -568,10 +569,10 @@ impl Version {
         Ok(())
     }
 
-    async fn apply_del_on_running(meta_data: &mut VersionMeta, ss_tables_map: &SSTableMap, vec_gen: &Vec<i64>) -> Result<()> {
+    async fn apply_del_on_running(meta_data: &mut VersionMeta, ss_table_map: &SSTableMap, vec_gen: &[i64]) -> Result<()> {
         meta_data.statistical_process(
-            &ss_tables_map,
-            &vec_gen,
+            ss_table_map,
+            vec_gen,
             |meta_data, ss_table| {
                 meta_data.size_of_disk -= ss_table.get_size_of_disk();
                 meta_data.len -= ss_table.len();
@@ -719,7 +720,7 @@ impl VersionMeta {
     async fn statistical_process<F>(
         &mut self,
         ss_table_map: &SSTableMap,
-        vec_gen: &Vec<i64>,
+        vec_gen: &[i64],
         fn_process: F
     ) -> Result<()>
         where F: Fn(&mut VersionMeta, &SSTable)
@@ -737,11 +738,8 @@ impl VersionMeta {
 impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
-        loop {
-            if let Err(TrySendError::Full(_)) = self.clean_sender
-                .try_send(CleanTag::Clean(self.version_num))
-            { continue } else { break }
-        }
+        while let Err(TrySendError::Full(_)) = self.clean_sender
+            .try_send(CleanTag::Clean(self.version_num)) { continue }
     }
 }
 

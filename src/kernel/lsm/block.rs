@@ -60,10 +60,10 @@ impl<T> Entry<T> where T: BlockItem {
     fn encode(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
 
-        let _ = buf.write_varint(self.unshared_len as u32)?;
-        let _ = buf.write_varint(self.shared_len as u32)?;
-        let _ = buf.write(&self.key)?;
-        let _ = buf.write(&self.item.encode()?);
+        let _ignore = buf.write_varint(self.unshared_len as u32)?;
+        let _ignore1 = buf.write_varint(self.shared_len as u32)?;
+        let _ignore2 = buf.write(&self.key)?;
+        let _ignore3 = buf.write(&self.item.encode()?);
 
         Ok(buf)
     }
@@ -143,11 +143,14 @@ pub(crate) trait BlockItem: Sized + Clone {
 impl BlockItem for Value {
     fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read {
         let value_len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
-        let bytes = if value_len > 0 {
-            let mut value = vec![0u8; value_len];
-            let _ = reader.read(&mut value)?;
-            Some(value)
-        } else { None };
+
+        let bytes = (value_len > 0)
+            .then(|| {
+                let mut value = vec![0u8; value_len];
+                reader.read(&mut value).ok()
+                    .map(|_| value)
+            })
+            .flatten();
 
         Ok(Value {
             value_len,
@@ -285,9 +288,7 @@ impl BlockBuf {
         self.bytes_size = 0;
         let last_key = self.last_key()
             .cloned();
-        (mem::replace(
-            &mut self.vec_key_value, Vec::new()
-        ), last_key)
+        (mem::take(&mut self.vec_key_value), last_key)
     }
 }
 
@@ -302,6 +303,7 @@ pub(crate) struct BlockBuilder {
 }
 
 impl From<CommandData> for Option<KeyValue<Value>> {
+    #[inline]
     fn from(value: CommandData) -> Self {
         match value {
             CommandData::Set { key, value } => {
@@ -316,6 +318,7 @@ impl From<CommandData> for Option<KeyValue<Value>> {
 }
 
 impl From<KeyValue<Value>> for CommandData {
+    #[inline]
     fn from(key_value: KeyValue<Value>) -> Self {
         let (key, value) = key_value;
         if let Some(bytes) = value.bytes {
@@ -417,11 +420,10 @@ impl Block<Value> {
     pub(crate) fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.binary_search(key)
             .ok()
-            .map(|index| {
+            .and_then(|index| {
                 self.vec_entry[index].1.item
                     .bytes.clone()
             })
-            .flatten()
     }
 }
 
@@ -504,7 +506,7 @@ impl<T> Block<T> where T: BlockItem {
     /// 具体原理是通过被固定的restart_interval进行前缀压缩的Block，
     /// 通过index获取前方最近的Restart，得到的Key通过shared_len进行截取以此得到shared_key
     fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
-        &self.vec_entry[(index - index % self.restart_interval)]
+        &self.vec_entry[index - index % self.restart_interval]
             .1.key[0..shared_len]
     }
 
@@ -627,12 +629,11 @@ fn longest_shared_len<T>(sharding: Vec<&KeyValue<T>>) -> usize {
     }
     return low;
 
-    fn is_common_prefix<T>(sharding: &Vec<&KeyValue<T>>, len: usize) -> bool {
+    fn is_common_prefix<T>(sharding: &[&KeyValue<T>], len: usize) -> bool {
         let first = sharding[0];
-        for i in 1..sharding.len() {
-            let kv = sharding[i];
-            for j in 0..len {
-                if first.0[j] != kv.0[j] {
+        for kv in sharding.iter().skip(1) {
+            for i in 0..len {
+                if first.0[i] != kv.0[i] {
                     return false
                 }
             }

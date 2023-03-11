@@ -142,7 +142,7 @@ impl SSTable {
     pub(crate) fn load_from_file(reader: Box<dyn IoReader>) -> Result<Self>{
         let gen = reader.get_gen();
 
-        let footer = Footer::read_to_file(&reader)?;
+        let footer = Footer::read_to_file(reader.as_ref())?;
         let Footer { size_of_disk, meta_offset, meta_len ,.. } = &footer;
         info!(
             "[SsTable: {gen}][load_from_file][MetaBlock]: {footer:?}, Size of Disk: {}, IO Type: {:?}",
@@ -167,7 +167,7 @@ impl SSTable {
         block_cache: &BlockCache
     ) -> Result<Option<Vec<u8>>> {
         let inner = &self.inner;
-        let reader = &inner.reader;
+        let reader = inner.reader.as_ref();
         if inner.meta.filter.contains(key) {
             if let BlockType::Index(index_block) = block_cache.get_or_insert(
                 (self.get_gen(), None),
@@ -204,17 +204,17 @@ impl SSTable {
     }
 
     fn loading_block<T>(
-        reader: &Box<dyn IoReader>,
+        reader: &dyn IoReader,
         offset: u32,
         len: usize,
         compress_type: CompressType
     ) -> Result<Block<T>>
         where T: BlockItem
     {
-        Ok(Block::decode(
+        Block::decode(
             reader.read_with_pos(offset as u64, len)?,
             compress_type
-        )?)
+        )
     }
 
     /// 获取SsTable内所有的正常数据
@@ -223,7 +223,7 @@ impl SSTable {
         let Footer{ index_offset, index_len, .. } = inner.footer;
 
         let index_block = Self::loading_block::<Index>(
-            &inner.reader,
+            inner.reader.as_ref(),
             index_offset,
             index_len as usize,
             CompressType::None
@@ -232,9 +232,8 @@ impl SSTable {
             .into_iter()
             .flat_map(|index| {
                 Self::loading_block::<Value>(
-                    &inner.reader, index.offset(), index.len(), CompressType::LZ4
-                ).map(Block::all_entry)
-                    .flatten()
+                    inner.reader.as_ref(), index.offset(), index.len(), CompressType::LZ4
+                ).and_then(Block::all_entry)
             })
             .flatten()
             .map(CommandData::from)
@@ -242,7 +241,7 @@ impl SSTable {
     }
 
     /// 通过一组SSTable收集对应的Gen
-    pub(crate) fn collect_gen(vec_ss_table: &Vec<SSTable>) -> Result<Vec<i64>> {
+    pub(crate) fn collect_gen(vec_ss_table: &[SSTable]) -> Result<Vec<i64>> {
         Ok(vec_ss_table.iter()
             .map(SSTable::get_gen)
             .unique()

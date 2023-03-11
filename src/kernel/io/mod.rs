@@ -75,15 +75,13 @@ impl IoFactory {
         })
     }
 
+    #[inline]
     pub fn create_fs(&self, gen: i64) -> Result<File> {
         Ok(OpenOptions::new()
             .create(true)
             .write(true)
             .read(true)
-            .open(
-                &self.extension
-                    .path_with_gen(&self.dir_path, gen)
-            )?)
+            .open(self.extension.path_with_gen(&self.dir_path, gen))?)
     }
 
     #[inline]
@@ -121,6 +119,7 @@ pub trait IoReader: Send + Sync + 'static {
 
     fn get_path(&self) -> PathBuf;
 
+    #[inline]
     fn file_size(&self) -> Result<u64> {
         let path_buf = self.get_path();
         Ok(fs::metadata(path_buf)?.len())
@@ -130,6 +129,7 @@ pub trait IoReader: Send + Sync + 'static {
 
     fn get_type(&self) -> IoType;
 
+    #[inline]
     fn bytes(&self) -> Result<Vec<u8>> {
         let len = self.file_size()?;
         self.read_with_pos(0, len as usize)
@@ -142,6 +142,7 @@ pub trait IoWriter: Send + Sync + 'static {
 
     fn get_path(&self) -> PathBuf;
 
+    #[inline]
     fn file_size(&self) -> Result<u64> {
         let path_buf = self.get_path();
         Ok(fs::metadata(path_buf)?.len())

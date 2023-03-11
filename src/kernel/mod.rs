@@ -110,7 +110,7 @@ impl CommandPackage {
 
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
-    pub(crate) fn write(writer: &Box<dyn IoWriter>, cmd: &CommandData) -> Result<(u64, usize)> {
+    pub(crate) fn write(writer: &dyn IoWriter, cmd: &CommandData) -> Result<(u64, usize)> {
         let (start, len) = writer.write(
             ByteUtils::tag_with_head(bincode::serialize(cmd)?)
         )?;
@@ -119,8 +119,8 @@ impl CommandPackage {
 
     #[allow(dead_code)]
     pub(crate) fn write_batch(
-        writer: &Box<dyn IoWriter>,
-        vec_cmd: &Vec<CommandData>
+        writer: &dyn IoWriter,
+        vec_cmd: &[CommandData]
     ) -> Result<(u64, usize)> {
         let bytes = vec_cmd.iter()
             .filter_map(|cmd_data| {
@@ -134,7 +134,7 @@ impl CommandPackage {
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
-    pub(crate) fn from_pos_unpack(reader: &Box<dyn IoReader>, start: u64, len: usize) -> Result<Option<CommandData>> {
+    pub(crate) fn from_pos_unpack(reader: &dyn IoReader, start: u64, len: usize) -> Result<Option<CommandData>> {
         let cmd_u8 = reader.read_with_pos(start, len)?;
         Ok(bincode::deserialize(cmd_u8.as_slice()).ok())
     }
@@ -147,7 +147,7 @@ impl CommandPackage {
     }
 
     /// 获取reader之中所有的CommandPackage
-    pub(crate) fn from_read_to_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandPackage>> {
+    pub(crate) fn from_read_to_vec(reader: &dyn IoReader) -> Result<Vec<CommandPackage>> {
         Self::from_bytes_to_vec(
             reader.bytes()?
                 .as_slice()
@@ -155,7 +155,7 @@ impl CommandPackage {
     }
 
     /// 获取reader之中所有的CommandData
-    pub(crate) fn from_read_to_unpack_vec(reader: &Box<dyn IoReader>) -> Result<Vec<CommandData>> {
+    pub(crate) fn from_read_to_unpack_vec(reader: &dyn IoReader) -> Result<Vec<CommandData>> {
         Self::from_bytes_to_unpack_vec(
             reader
                 .bytes()?
@@ -267,7 +267,7 @@ impl CommandData {
     #[inline]
     pub fn get_value_clone(&self) -> Option<Vec<u8>> {
         match self {
-            CommandData::Set { value, .. } => { Some(Vec::clone(&value)) }
+            CommandData::Set { value, .. } => { Some(Vec::clone(value)) }
             CommandData::Remove{ .. } | CommandData::Get{ .. } => { None }
         }
     }
@@ -379,6 +379,7 @@ impl From<Option<Vec<u8>>> for CommandOption {
 
 /// 用于对解除Arc指针
 /// 确保value此时无其他数据引用
+#[allow(clippy::unwrap_used)]
 fn value_unwrap(value: Arc<Vec<u8>>) -> Vec<u8> {
     Arc::try_unwrap(value).unwrap()
 }
@@ -412,46 +413,10 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
             return Ok(lock_file)
         } else if backoff > 4 {
             return Err(KvsError::ProcessExistsError);
+        } else {
+            time::sleep(Duration::from_millis(backoff * 100)).await;
+
+            backoff *= 2;
         }
-
-        time::sleep(Duration::from_millis(backoff * 100)).await;
-
-        backoff *= 2;
     };
 }
-
-// #[test]
-// fn test_cmd_len() -> Result<()>{
-//
-//     let data_big_p = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-//                             abcdefghijklmnopqrstuvwxyz
-//                             0123456789)(*&^%$#@!~aopsdjqwpejopwqnapodfjcposzpodadqwpempqownponrpqwojerpoqwepqmweop
-//                             qwejpqowjepoqwjeoqwepoq".to_vec(), vec![b'1']);
-//
-//     let data_big = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-//                             abcdefghijklmnopqrstuvwxyz
-//                             0123456789)(*&^%$#@!~".to_vec(), vec![b'1']);
-//
-//     let data_middle = CommandData::set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-//                             abcd".to_vec(), vec![b'1']);
-//
-//     let data_smail = CommandData::set(vec![b'1'], vec![b'1']);
-//
-//     let data_smail_len = data_smail.get_data_len();
-//     let data_middle_len = data_middle.get_data_len();
-//     let data_big_len = data_big.get_data_len();
-//     let data_big_p_len = data_big_p.get_data_len();
-//     let data0_len = bincode::serialize(&CommandData::set(vec![], vec![]))?.len();
-//     let data1_len = bincode::serialize(&data_smail)?.len() - data_smail_len;
-//     let data2_len = bincode::serialize(&data_middle)?.len() - data_middle_len;
-//     let data3_len = bincode::serialize(&data_big)?.len() - data_big_len;
-//     let data4_len = bincode::serialize(&data_big_p)?.len() - data_big_p_len;
-//     let cmd_len = vec![data0_len, data1_len, data2_len, data3_len, data4_len].into_iter()
-//         .counts().into_iter()
-//         .max_by_key(|(_, count)| count.clone())
-//         .map(|(len, _)| len).unwrap();
-//     println!("{}", cmd_len);
-//
-//
-//     Ok(())
-// }

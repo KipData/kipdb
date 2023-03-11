@@ -142,6 +142,8 @@ impl KVStore for LsmStore {
 }
 
 impl Drop for LsmStore {
+    #[inline]
+    #[allow(clippy::expect_used)]
     fn drop(&mut self) {
         self.lock_file.unlock()
             .expect("LockFile unlock failed!");
@@ -161,7 +163,7 @@ impl LsmStore {
             ).await;
         }
 
-        mem_table.insert_data(cmd, &self.config);
+        mem_table.insert_data(cmd, &self.config)?;
         Ok(())
     }
 
@@ -263,6 +265,7 @@ impl LsmStore {
         &self.wal
     }
 
+    #[allow(clippy::expect_used)]
     pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.compactor_tx.send(CompactTask::Flush(tx, !is_drop)).await
@@ -275,13 +278,14 @@ impl LsmStore {
     }
 
     /// 创建事务
+    #[inline]
     pub async fn transaction(&self) -> Result<Transaction> {
-        Ok(Transaction::new(
+        Transaction::new(
             self.config(),
             self.ver_status.current().await,
             self.mem_table.inner.read(),
             self.wal()
-        )?)
+        )
     }
 }
 
@@ -333,7 +337,7 @@ pub struct Config {
 }
 
 impl Config {
-
+    #[inline]
     pub fn new(path: impl Into<PathBuf> + Send, machine_id: i32, node_id: i32) -> Config {
         Config {
             dir_path: path.into(),
@@ -483,10 +487,10 @@ impl Config {
 
 /// 日志记录，可选以Task类似的异步写数据或同步
 pub(crate) async fn wal_put(wal: &Arc<LogLoader>, cmd: &CommandData, is_sync: bool) {
-    let wal = Arc::clone(wal);
     if is_sync {
-        wal_put_(&wal, cmd);
+        wal_put_(wal, cmd);
     } else {
+        let wal = Arc::clone(wal);
         let cmd_clone = cmd.clone();
         let _ignore = tokio::spawn(async move {
             wal_put_(&wal, &cmd_clone);
@@ -494,7 +498,7 @@ pub(crate) async fn wal_put(wal: &Arc<LogLoader>, cmd: &CommandData, is_sync: bo
     }
 
     fn wal_put_(wal: &Arc<LogLoader>, cmd: &CommandData) {
-        if let Err(err) = wal.log(&cmd) {
+        if let Err(err) = wal.log(cmd) {
             error!("[LsmStore][wal_put][error happen]: {:?}", err);
         }
     }
