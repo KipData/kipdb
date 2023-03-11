@@ -126,7 +126,7 @@ impl MemTable {
         (!inner.mem_table.is_empty())
             .then(|| {
                 let mut last_seq_id = 0;
-                let vec_data = inner.mem_table.iter()
+                let mut vec_data = inner.mem_table.iter()
                     .map(|entry| {
                         let (cmd, seq_id) = entry.value().clone();
                         if seq_id > last_seq_id {
@@ -134,7 +134,12 @@ impl MemTable {
                         }
                         cmd
                     })
+                    // rev以使用最后(最新)的key
+                    .rev()
+                    .unique_by(CommandData::get_key_clone)
                     .collect_vec();
+
+                vec_data.reverse();
 
                 inner.immut_table = Some(mem::replace(
                     &mut inner.mem_table, SkipMap::new()
@@ -352,6 +357,26 @@ mod tests {
         let new_seq_id = config.create_gen_lazy();
 
         assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id)?, Some(vec![b'2']));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mem_table_swap() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let config = Config::new(temp_dir.into_path(), 0, 0);
+
+        let mem_table = MemTable::new(MemMap::new());
+
+        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'1']), &config)?;
+        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'2']), &config)?;
+        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'1']), &config)?;
+        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'2']), &config)?;
+
+        let (mut vec_unique_sort_with_cmd_key, _) = mem_table.swap().unwrap();
+
+        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some(CommandData::set(vec![b'k', b'2'], vec![b'2'])));
+        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some(CommandData::set(vec![b'k', b'1'], vec![b'2'])));
 
         Ok(())
     }

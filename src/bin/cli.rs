@@ -138,7 +138,14 @@ async fn batch_run(client: &mut Client, vec_batch: Vec<CommandData>) -> Result<V
     // 需要保留None
     Ok(client.batch(vec_batch).await?
         .into_iter()
-        .map(|option_vec_u8| option_vec_u8.map(decode))
+        .map(|option_vec_u8: Option<Vec<u8>>| option_vec_u8
+            .map_or(None, |bytes| {
+                if bytes.is_empty() {
+                    None
+                } else {
+                    Some(decode(bytes))
+                }
+            }))
         .collect_vec())
 }
 
