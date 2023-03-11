@@ -22,7 +22,7 @@ unsafe impl<K: Sync, V: Sync> Sync for NodeReadPtr<K, V> {}
 
 impl<K, V> Clone for NodeReadPtr<K, V> {
     fn clone(&self) -> Self {
-        NodeReadPtr(self.0.clone())
+        NodeReadPtr(self.0)
     }
 }
 
@@ -151,7 +151,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
 
     #[allow(dead_code)]
     pub(crate) fn remove(&self, key: &K) -> Option<V> {
-        self.shard(&key)
+        self.shard(key)
             .write()
             .remove(key)
     }
@@ -247,10 +247,11 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
 
     /// 判断并驱逐节点
     fn expulsion(&mut self) {
-        if self.inner.len() >= self.cap {
-            let tail = self.tail.unwrap();
-            self.detach(tail);
-            let _ignore = self.inner.remove(&KeyRef(tail));
+        if let Some(tail) = self.tail {
+            if self.inner.len() >= self.cap {
+                self.detach(tail);
+                let _ignore = self.inner.remove(&KeyRef(tail));
+            }
         }
     }
 
@@ -357,6 +358,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
 }
 
 impl<K, V> Drop for LruCache<K, V> {
+    #[allow(clippy::drop_copy)]
     fn drop(&mut self) {
         while let Some(node) = self.head.take(){
             unsafe {

@@ -67,6 +67,7 @@ impl Compactor {
     /// 多事务的commit脱离Compactor的耦合，
     /// 同时减少高并发事务或写入时的频繁Compaction，优先写入后统一压缩，
     /// 减少Level 0热数据的SSTable的冗余数据
+    #[allow(clippy::expect_used)]
     pub(crate) async fn check_then_compaction(
         &mut self,
         enable_caching: bool,
@@ -232,7 +233,7 @@ impl Compactor {
         let major_select_file_size = config.major_select_file_size;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !version.is_threshold_exceeded_major(&config, level)
+        if level > 5 || !version.is_threshold_exceeded_major(config, level)
         {
             return Ok(None);
         }

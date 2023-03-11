@@ -84,13 +84,15 @@ impl MemTable {
         &self,
         cmd: CommandData,
         config: &Config,
-    ) {
+    ) -> Result<()> {
         // 将seq_id作为低位
         let seq_id = config.create_gen();
-        let key = key_encode_with_seq(cmd.get_key_clone(), seq_id);
+        let key = key_encode_with_seq(cmd.get_key_clone(), seq_id)?;
 
         self.inner.read()
             .mem_table.insert(key, (cmd, seq_id));
+
+        Ok(())
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -107,12 +109,11 @@ impl MemTable {
     fn try_exceeded_then_swap(&self, exceeded: usize) -> Option<(Vec<CommandData>, i64)> {
         // 以try_write以判断是否存在事务进行读取而防止发送Minor Compaction而导致MemTable数据异常
         self.inner.try_write()
-            .map(|mut inner| {
+            .and_then(|mut inner| {
                 if inner.mem_table.len() >= exceeded {
                     Self::swap_(&mut inner)
                 } else { None }
             })
-            .flatten()
     }
 
     /// MemTable将数据弹出并转移到immutable中  (弹出数据为有序的)
@@ -122,7 +123,7 @@ impl MemTable {
     }
 
     fn swap_(inner: &mut RwLockWriteGuard<RawRwLock, TableInner>) -> Option<(Vec<CommandData>, i64)> {
-        (inner.mem_table.len() > 0)
+        (!inner.mem_table.is_empty())
             .then(|| {
                 let mut last_seq_id = 0;
                 let vec_data = inner.mem_table.iter()
@@ -153,45 +154,41 @@ impl MemTable {
         Self::find_(&encode_key, key, &inner.mem_table)
             .or_else(|| {
                 inner.immut_table.as_ref()
-                    .map(|mem_map|
-                        Self::find_(&encode_key, key, &mem_map))
-                    .flatten()
+                    .and_then(|mem_map| Self::find_(&encode_key, key, mem_map))
             })
     }
 
-    pub(crate) fn find_with_inner(key: &[u8], seq_id: i64, inner: &TableInner) -> Option<Vec<u8>> {
-        return find_with_seq_(key, seq_id, &inner.mem_table)
-            .or_else(|| {
-                inner.immut_table.as_ref()
-                    .map(|mem_map| find_with_seq_(key, seq_id, &mem_map))
-                    .flatten()
-            });
+    pub(crate) fn find_with_inner(key: &[u8], seq_id: i64, inner: &TableInner) -> Result<Option<Vec<u8>>> {
+        return if let Some(value) = find_with_seq_(key, seq_id, &inner.mem_table)? {
+            Ok(Some(value))
+        } else if let Some(mem_map) = &inner.immut_table {
+            find_with_seq_(key, seq_id, mem_map)
+        } else {
+            Ok(None)
+        };
 
         /// 通过sequence_id对mem_table的数据进行获取
         ///
         /// 获取第一个小于等于sequence_id的数据
-        fn find_with_seq_(key: &[u8], sequence_id: i64, mem_map: &MemMap) -> Option<Vec<u8>> {
-            MemTable::find_(
-                &key_encode_with_seq(key.to_vec(), sequence_id),
-                key,
-                mem_map
-            )
+        fn find_with_seq_(key: &[u8], sequence_id: i64, mem_map: &MemMap) -> Result<Option<Vec<u8>>> {
+            key_encode_with_seq(key.to_vec(), sequence_id)
+                .map(|seq_key| MemTable::find_(&seq_key, key, mem_map))
+
         }
     }
 
     /// 查询时附带sequence_id进行历史数据查询
     #[allow(dead_code)]
-    fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Option<Vec<u8>> {
-        return Self::find_with_inner(key, sequence_id, &self.inner.read());
+    fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Result<Option<Vec<u8>>> {
+        Self::find_with_inner(key, sequence_id, &self.inner.read())
     }
 
     fn find_(seq_key: &[u8], user_key: &[u8], mem_map: &MemMap) -> Option<Vec<u8>> {
         mem_map.upper_bound(Bound::Included(seq_key))
-            .map(|entry| {
+            .and_then(|entry| {
                 let (data, _) = entry.value();
-                if user_key == data.get_key() {
-                    data.get_value_clone()
-                } else { None }
+                (user_key == data.get_key())
+                    .then(|| data.get_value_clone())
             })
             .flatten()
     }
@@ -200,11 +197,11 @@ impl MemTable {
 /// 将key与seq_id进行混合编码
 ///
 /// key在高位，seq_id在低位
-pub(crate) fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Vec<u8> {
+pub(crate) fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Result<Vec<u8>> {
     key.append(
-        &mut bincode::serialize(&seq_id).unwrap()
+        &mut bincode::serialize(&seq_id)?
     );
-    key
+    Ok(key)
 }
 
 pub(crate) struct SSTableMap {
@@ -238,11 +235,8 @@ impl SSTableMap {
     /// 将指定gen通过MMapHandler进行读取以提高读取性能
     /// 创建MMapHandler成本较高，因此使用单独api控制缓存
     pub(crate) fn caching(&mut self, gen: i64, factory: &IoFactory) -> Result<Option<SSTable>> {
-        let reader = factory.reader(gen.clone(), IoType::MMap)?;
-        Ok(self.cache.put(
-            gen,
-            SSTable::load_from_file(reader)?
-        ))
+        let reader = factory.reader(gen, IoType::MMap)?;
+        Ok(self.cache.put(gen, SSTable::load_from_file(reader)?))
     }
 
     pub(crate) fn remove(&mut self, gen: &i64) -> Option<SSTable> {
@@ -267,7 +261,7 @@ impl SSTableMap {
 impl Footer {
 
     /// 从对应文件的IOHandler中将Footer读取出来
-    fn read_to_file(reader: &Box<dyn IoReader>) -> Result<Self> {
+    fn read_to_file(reader: &dyn IoReader) -> Result<Self> {
         let start_pos = reader.file_size()? - TABLE_FOOTER_SIZE as u64;
         Ok(bincode::deserialize(
             &reader.read_with_pos(start_pos, TABLE_FOOTER_SIZE)?
@@ -343,21 +337,21 @@ mod tests {
         let data_1 = CommandData::set(vec![b'k'], vec![b'1']);
         let data_2 = CommandData::set(vec![b'k'], vec![b'2']);
 
-        mem_table.insert_data(data_1.clone(), &config);
+        mem_table.insert_data(data_1.clone(), &config)?;
 
         let old_seq_id = config.create_gen_lazy();
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'1']));
 
-        mem_table.insert_data(data_2.clone(), &config);
+        mem_table.insert_data(data_2.clone(), &config)?;
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'2']));
 
-        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id), Some(vec![b'1']));
+        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id)?, Some(vec![b'1']));
 
         let new_seq_id = config.create_gen_lazy();
 
-        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id), Some(vec![b'2']));
+        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id)?, Some(vec![b'2']));
 
         Ok(())
     }

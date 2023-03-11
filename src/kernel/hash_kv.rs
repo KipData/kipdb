@@ -15,6 +15,8 @@ use crate::KvsError;
 /// 默认压缩大小触发阈值
 pub(crate) const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 64;
 
+type IoHandler = (Box<dyn IoWriter>, Box<dyn IoReader>);
+
 /// The `HashKvStore` stores string key/value pairs.
 pub struct HashStore {
     io_factory: IoFactory,
@@ -29,7 +31,7 @@ pub(crate) struct Manifest {
     current_gen: i64,
     un_compacted: u64,
     compaction_threshold: u64,
-    io_index: BTreeMap<i64, (Box<dyn IoWriter>, Box<dyn IoReader>)>
+    io_index: BTreeMap<i64, IoHandler>
 }
 
 impl HashStore {
@@ -81,7 +83,7 @@ impl HashStore {
         for &gen in &gen_list {
             let writer = io_factory.writer(gen, IoType::Buf)?;
             let reader = io_factory.reader(gen, IoType::Buf)?;
-            un_compacted += load(&reader, &mut index)? as u64;
+            un_compacted += load(reader.as_ref(), &mut index)? as u64;
             let _ignore1 = io_index.insert(gen, (writer, reader));
         }
         let last_gen = *gen_list.last().unwrap_or(&0);
@@ -137,8 +139,8 @@ impl HashStore {
                     match io_handler_index.get(&cmd_pos.gen) {
                         Some((_, reader)) => {
                             if let Some(cmd_data) =
-                            CommandPackage::from_pos_unpack(reader, cmd_pos.pos, cmd_pos.len)? {
-                                let (pos, len) = CommandPackage::write(&compact_handler.0, &cmd_data)?;
+                            CommandPackage::from_pos_unpack(reader.as_ref(), cmd_pos.pos, cmd_pos.len)? {
+                                let (pos, len) = CommandPackage::write(compact_handler.0.as_ref(), &cmd_data)?;
                                 write_len += len;
                                 cmd_pos.change(compact_gen, pos, len);
                             }
@@ -174,6 +176,8 @@ impl HashStore {
 }
 
 impl Drop for HashStore {
+    #[inline]
+    #[allow(clippy::expect_used)]
     fn drop(&mut self) {
         self.lock_file.unlock()
             .expect("LockFile unlock failed!");
@@ -295,7 +299,7 @@ impl KVStore for HashStore {
 }
 
 /// 通过目录地址加载数据并返回数据总大小
-fn load(reader: &Box<dyn IoReader>, index: &mut HashMap<Vec<u8>, CommandPos>) -> Result<usize> {
+fn load(reader: &dyn IoReader, index: &mut HashMap<Vec<u8>, CommandPos>) -> Result<usize> {
     let gen = reader.get_gen();
 
     // 流式读取将数据序列化为Command
@@ -329,20 +333,20 @@ impl Manifest {
         self.index.get(key)
     }
     /// 获取当前最新的IOHandler
-    fn current_io_writer(&self) -> Result<&Box<dyn IoWriter>> {
+    fn current_io_writer(&self) -> Result<&dyn IoWriter> {
         self.io_index.get(&self.current_gen)
-            .map(|(writer, _ )| writer)
+            .map(|(writer, _ )| writer.as_ref())
             .ok_or(KvsError::FileNotFound)
     }
-    fn current_io_reader(&self) -> Result<&Box<dyn IoReader>> {
+    fn current_io_reader(&self) -> Result<&dyn IoReader> {
         self.io_index.get(&self.current_gen)
-            .map(|(_, reader)| reader)
+            .map(|(_, reader)| reader.as_ref())
             .ok_or(KvsError::FileNotFound)
     }
     /// 通过Gen获取指定的IoReader
-    fn get_reader(&self, gen: &i64) -> Option<&Box<dyn IoReader>> {
+    fn get_reader(&self, gen: &i64) -> Option<&dyn IoReader> {
         self.io_index.get(gen)
-            .map(|(_, reader)| reader)
+            .map(|(_, reader)| reader.as_ref())
     }
     /// 判断Index中是否存在对应的Key
     fn contains_key_with_pos(&self, key: &[u8]) -> bool {
@@ -367,7 +371,7 @@ impl Manifest {
         self.index.insert(key, cmd_pos)
     }
     /// 插入新的IOHandler
-    fn insert_io_handler(&mut self, gen: i64, io_handler: (Box<dyn IoWriter>, Box<dyn IoReader>)) {
+    fn insert_io_handler(&mut self, gen: i64, io_handler: IoHandler) {
         let _ignore = self.io_index.insert(gen, io_handler);
     }
     /// 保留压缩Gen及以上的IOHandler与文件，其余清除
@@ -400,7 +404,7 @@ impl Manifest {
         self.un_compacted > self.compaction_threshold
     }
     /// 将Index中的CommandPos以最新为基准进行排序，由旧往新
-    fn sort_by_last_vec_mut(&mut self) -> (Vec<&mut CommandPos>, &BTreeMap<i64, (Box<dyn IoWriter>, Box<dyn IoReader>)>) {
+    fn sort_by_last_vec_mut(&mut self) -> (Vec<&mut CommandPos>, &BTreeMap<i64, IoHandler>) {
         let vec_values = self.index.values_mut()
             .sorted_unstable_by(|a, b| {
                 match a.gen.cmp(&b.gen) {
@@ -414,7 +418,7 @@ impl Manifest {
     }
     /// 压缩前gen自增
     /// 用于数据压缩前将最新写入位置偏移至新位置
-    pub(crate) fn compaction_increment(&mut self, factory: &IoFactory) -> Result<(i64, (Box<dyn IoWriter>, Box<dyn IoReader>))> {
+    pub(crate) fn compaction_increment(&mut self, factory: &IoFactory) -> Result<(i64, IoHandler)> {
         // 将数据刷入硬盘防止丢失
         self.current_io_writer()?
             .flush()?;

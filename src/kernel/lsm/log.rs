@@ -8,6 +8,7 @@ use crate::kernel::lsm::lsm_kv::Config;
 
 const SUCCESS_FS_GEN: i64 = 000_000_000;
 
+// TODO: 使用Block进行替代
 pub(crate) struct LogLoader {
     factory: IoFactory,
     config: Arc<Config>,
@@ -60,7 +61,7 @@ impl LogLoader {
 
         let factory = IoFactory::new(
             wal_path.clone(),
-            extension.clone()
+            extension
         )?;
 
         let vec_gen = VecDeque::from_iter(
@@ -94,7 +95,7 @@ impl LogLoader {
         // 当存在SUCCESS_FS时，代表Drop不正常，因此恢复最新的gen日志进行恢复
         if factory.has_gen(SUCCESS_FS_GEN)? {
             let reader = factory.reader(last_gen, IoType::MMap)?;
-            return Ok(Some(CommandPackage::from_read_to_unpack_vec(&reader)?));
+            return Ok(Some(CommandPackage::from_read_to_unpack_vec(reader.as_ref())?));
         } else { let _ignore = factory.create_fs(SUCCESS_FS_GEN)?; }
 
         Ok(None)
@@ -102,13 +103,13 @@ impl LogLoader {
 
     pub(crate) fn log(&self, cmd: &CommandData) -> Result<()> {
         let inner = self.inner.read();
-        let _ignore = CommandPackage::write(&inner.writer, cmd)?;
+        let _ignore = CommandPackage::write(inner.writer.as_ref(), cmd)?;
         Ok(())
     }
 
-    pub(crate) fn log_batch(&self, vec_cmd: &Vec<CommandData>) -> Result<()> {
+    pub(crate) fn log_batch(&self, vec_cmd: &[CommandData]) -> Result<()> {
         let inner = self.inner.read();
-        let _ignore = CommandPackage::write_batch(&inner.writer, vec_cmd)?;
+        let _ignore = CommandPackage::write_batch(inner.writer.as_ref(), vec_cmd)?;
         Ok(())
     }
 
@@ -156,10 +157,11 @@ impl LogLoader {
     }
 
     /// 通过Gen载入数据进行读取
+    #[allow(clippy::if_then_some_else_none)]
     pub(crate) fn load(&self, gen: i64) -> Result<Option<Vec<CommandData>>> {
         Ok(if self.factory.has_gen(gen)? {
             let reader = self.factory.reader(gen, IoType::MMap)?;
-            Some(CommandPackage::from_read_to_unpack_vec(&reader)?)
+            Some(CommandPackage::from_read_to_unpack_vec(reader.as_ref())?)
         } else { None })
     }
 }

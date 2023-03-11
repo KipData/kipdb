@@ -40,10 +40,12 @@ impl<'a> Transaction<'a> {
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
     pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         if let Some(value) = self.writer_buf.get(key)
-            .map(|entry| entry.value().get_value_clone())
-            .flatten()
-            .or_else(|| MemTable::find_with_inner(key, self.seq_id, &self.read_inner))
+            .and_then(|entry| entry.value().get_value_clone())
         {
+            return Ok(Some(value));
+        }
+
+        if let Some(value) = MemTable::find_with_inner(key, self.seq_id, &self.read_inner)? {
             return Ok(Some(value));
         }
 
@@ -62,7 +64,7 @@ impl<'a> Transaction<'a> {
     }
 
     pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
-        if let Some(_) = self.get(key).await? {
+        if self.get(key).await?.is_some() {
             let _ignore = self.writer_buf.insert(
                 key.to_vec(),
                 CommandData::remove(key.to_vec())
@@ -72,49 +74,50 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    pub async fn commit(self) -> Result<()> {
+    async fn wal_log(&mut self) {
+        // Wal与MemTable双写
+        if self.config.wal_enable {
+            for entry in self.writer_buf.iter() {
+                wal_put(
+                    &self.wal, entry.value(), !self.config.wal_async_put_enable
+                ).await;
+            }
+        }
+    }
+
+    pub async fn commit(mut self) -> Result<()> {
+        self.wal_log().await;
+
         let Transaction {
             read_inner,
             writer_buf,
             config,
-            wal,
             ..
         } = self;
 
-        // Wal与MemTable双写
-        if config.wal_enable {
-            for entry in writer_buf.iter() {
-                wal_put(
-                    &wal, entry.value(), !config.wal_async_put_enable
-                ).await;
-            }
-        }
-
-        // TODO: 待压缩反馈
-        let _todo = Self::insert_batch_data_and_is_exceeded(
+        Self::insert_batch_data(
             &read_inner,
             writer_buf.into_iter().collect(),
             &config
-        );
+        )?;
 
         Ok(())
     }
 
-    pub(crate) fn insert_batch_data_and_is_exceeded(
+    pub(crate) fn insert_batch_data(
         inner: &TableInner,
         vec_data: Vec<(Vec<u8>, CommandData)>,
         config: &Config,
-    ) -> bool {
+    ) -> Result<()> {
         // 将seq_id作为低位
         let seq_id = config.create_gen();
 
-        vec_data.into_iter()
-            .for_each(|(cmd_key, cmd)| {
-                let key = key_encode_with_seq(cmd_key, seq_id);
-                let _ignore = inner.mem_table.insert(key, (cmd, seq_id));
-            });
+        for (cmd_key, cmd) in vec_data {
+            let key = key_encode_with_seq(cmd_key, seq_id)?;
+            let _ignore = inner.mem_table.insert(key, (cmd, seq_id));
+        }
 
-        inner.mem_table.len() >= config.minor_threshold_with_len
+        Ok(())
     }
 
 }

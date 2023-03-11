@@ -7,30 +7,21 @@ ADD ./build.rs ./builder/build.rs
 
 WORKDIR /builder
 
+RUN rustup default nightly
 RUN cargo build --release
 
-
-FROM alpine:latest
+FROM frolvlad/alpine-glibc
 
 ARG APP_SERVER=server
 ARG APP_CLI=cli
 
 WORKDIR /kip-db
 
-ENV GLIBC_REPO=https://gitee.com/tonnyluo/alpine-pkg-glibc
-ENV GLIBC_VERSION=2.31-r0
-
-RUN set -ex && \
-    apk --update add libstdc++ curl ca-certificates && \
-    for pkg in glibc-${GLIBC_VERSION} glibc-bin-${GLIBC_VERSION}; \
-        do curl -sSL ${GLIBC_REPO}/releases/download/${GLIBC_VERSION}/${pkg}.apk -o /tmp/${pkg}.apk; done && \
-    apk add --allow-untrusted /tmp/*.apk && \
-    rm -v /tmp/*.apk && \
-    /usr/glibc-compat/sbin/ldconfig /lib /usr/glibc-compat/lib
+ENV IP="127.0.0.1"
 
 EXPOSE 6333
 
 COPY --from=builder /builder/target/release/${APP_SERVER} ${APP_SERVER}
 COPY --from=builder /builder/target/release/${APP_CLI} ${APP_CLI}
 
-ENTRYPOINT [ "./server" ]
+#CMD ["./$APP_SERVER", "--ip", "$IP"]

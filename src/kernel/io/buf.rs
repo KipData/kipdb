@@ -47,14 +47,12 @@ pub(crate) struct BufIoWriter {
 
 impl BufIoWriter {
     pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
-        let path = extension.path_with_gen(&dir_path, gen);
-
         // 通过路径构造写入器
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .read(true)
-            .open(&path)?;
+            .open(extension.path_with_gen(&dir_path, gen))?;
 
         let writer = Mutex::new(BufWriterWithPos::new(file)?);
         Ok(BufIoWriter {

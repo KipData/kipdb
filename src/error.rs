@@ -127,6 +127,7 @@ impl From<KvsError> for ConnectionError {
 }
 
 impl From<CacheError> for KvsError {
+    #[inline]
     fn from(value: CacheError) -> Self {
         match value {
             CacheError::KvStoreError(kv_error) => kv_error,
@@ -137,6 +138,7 @@ impl From<CacheError> for KvsError {
 }
 
 impl From<KvsError> for CacheError {
+    #[inline]
     fn from(value: KvsError) -> Self {
         CacheError::KvStoreError(value)
     }
