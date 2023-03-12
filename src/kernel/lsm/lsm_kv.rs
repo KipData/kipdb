@@ -280,12 +280,17 @@ impl LsmStore {
     /// 创建事务
     #[inline]
     pub async fn new_transaction(&self) -> Result<Transaction> {
-        Transaction::new(
-            self.config(),
-            self.ver_status.current().await,
-            self.mem_table.inner.read(),
-            self.wal()
-        )
+        loop {
+            if let Ok(inner) = self.mem_table.inner.read() {
+                return Transaction::new(
+                    self.config(),
+                    self.ver_status.current().await,
+                    inner,
+                    self.wal()
+                );
+            }
+            std::hint::spin_loop();
+        }
     }
 }
 

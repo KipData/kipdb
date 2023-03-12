@@ -4,8 +4,7 @@ use std::mem;
 use crossbeam_skiplist::SkipMap;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
-use parking_lot::lock_api::RwLockWriteGuard;
-use parking_lot::{RawRwLock, RwLock};
+use optimistic_lock_coupling::{OptimisticLockCoupling, OptimisticLockCouplingReadGuard, OptimisticLockCouplingWriteGuard};
 use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, Result};
 use crate::kernel::io::{IoFactory, IoReader, IoType};
@@ -53,11 +52,8 @@ struct MetaBlock {
     data_restart_interval: usize,
 }
 
-#[derive(Debug)]
 pub(crate) struct MemTable {
-    // 此读写锁锁仅用于切换mem_table和immut_table
-    // 在大部分情况下应该算作为无锁(读锁并行)
-    inner: RwLock<TableInner>
+    inner: OptimisticLockCoupling<TableInner>
 }
 
 #[derive(Debug)]
@@ -69,7 +65,7 @@ pub(crate) struct TableInner {
 impl MemTable {
     pub(crate) fn new(mem_map: MemMap) -> Self {
         MemTable {
-            inner: RwLock::new(
+            inner: OptimisticLockCoupling::new(
                 TableInner {
                     mem_table: mem_map,
                     immut_table: None,
@@ -91,40 +87,43 @@ impl MemTable {
         let seq_id = config.create_gen();
         let key = key_encode_with_seq(cmd.get_key_clone(), seq_id)?;
 
-        self.inner.read()
-            .mem_table.insert(key, (cmd, seq_id));
+        self.loop_read(|inner| {
+            inner.mem_table.insert(key, (cmd, seq_id));
+        });
 
         Ok(())
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.inner.read()
-            .mem_table.is_empty()
+        self.loop_read(|inner| inner.mem_table.is_empty())
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.inner.read()
-            .mem_table.len()
+        self.loop_read(|inner| inner.mem_table.len())
     }
 
     /// 尝试判断至是否超出阈值并尝试获取写锁进行MemTable数据转移 (弹出数据为有序的)
     fn try_exceeded_then_swap(&self, exceeded: usize) -> Option<(Vec<CommandData>, i64)> {
         // 以try_write以判断是否存在事务进行读取而防止发送Minor Compaction而导致MemTable数据异常
-        self.inner.try_write()
-            .and_then(|mut inner| {
-                if inner.mem_table.len() >= exceeded {
-                    Self::swap_(&mut inner)
-                } else { None }
-            })
+        if let Ok(mut inner) = self.inner.write() {
+            if inner.mem_table.len() >= exceeded {
+                return Self::swap_(&mut inner);
+            }
+        }
+        None
     }
 
     /// MemTable将数据弹出并转移到immutable中  (弹出数据为有序的)
     fn swap(&self) -> Option<(Vec<CommandData>, i64)> {
-        let mut inner = self.inner.write();
-        Self::swap_(&mut inner)
+        loop {
+            if let Ok(mut inner) = self.inner.write() {
+                return Self::swap_(&mut inner);
+            }
+            std::hint::spin_loop();
+        }
     }
 
-    fn swap_(inner: &mut RwLockWriteGuard<RawRwLock, TableInner>) -> Option<(Vec<CommandData>, i64)> {
+    fn swap_(inner: &mut OptimisticLockCouplingWriteGuard<TableInner>) -> Option<(Vec<CommandData>, i64)> {
         (!inner.mem_table.is_empty())
             .then(|| {
                 let mut last_seq_id = 0;
@@ -156,13 +155,13 @@ impl MemTable {
         encode_key.append(
             &mut SEQ_MAX.to_vec()
         );
-        let inner = self.inner.read();
-
-        Self::find_(&encode_key, key, &inner.mem_table)
-            .or_else(|| {
-                inner.immut_table.as_ref()
-                    .and_then(|mem_map| Self::find_(&encode_key, key, mem_map))
-            })
+        self.loop_read(|inner| {
+            Self::find_(&encode_key, key, &inner.mem_table)
+                .or_else(|| {
+                    inner.immut_table.as_ref()
+                        .and_then(|mem_map| Self::find_(&encode_key, key, mem_map))
+                })
+        })
     }
 
     pub(crate) fn find_with_inner(key: &[u8], seq_id: i64, inner: &TableInner) -> Result<Option<Vec<u8>>> {
@@ -187,7 +186,9 @@ impl MemTable {
     /// 查询时附带sequence_id进行历史数据查询
     #[allow(dead_code)]
     fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Result<Option<Vec<u8>>> {
-        Self::find_with_inner(key, sequence_id, &self.inner.read())
+        self.loop_read(|inner| {
+            Self::find_with_inner(key, sequence_id, &inner)
+        })
     }
 
     fn find_(seq_key: &[u8], user_key: &[u8], mem_map: &MemMap) -> Option<Vec<u8>> {
@@ -198,6 +199,17 @@ impl MemTable {
                     .then(|| data.get_value_clone())
             })
             .flatten()
+    }
+
+    fn loop_read<F, R>(&self, fn_once: F) -> R
+        where F: FnOnce(OptimisticLockCouplingReadGuard<TableInner>) -> R
+    {
+        loop {
+            if let Ok(inner) = self.inner.read() {
+                return fn_once(inner);
+            }
+            std::hint::spin_loop();
+        }
     }
 }
 

@@ -286,7 +286,6 @@ impl CommandData {
     /// 命令消费
     ///
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
-    /// 参数Arc<RwLock<KvStore>>为持久化内核
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
     #[inline]
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{

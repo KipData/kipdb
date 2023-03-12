@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crossbeam_skiplist::SkipMap;
-use parking_lot::RwLockReadGuard;
+use optimistic_lock_coupling::OptimisticLockCouplingReadGuard;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{Config, wal_put};
 use crate::kernel::lsm::{key_encode_with_seq, MemTable, TableInner};
@@ -10,7 +10,7 @@ use crate::KvsError;
 
 pub struct Transaction<'a> {
     seq_id: i64,
-    read_inner: RwLockReadGuard<'a, TableInner>,
+    read_inner: OptimisticLockCouplingReadGuard<'a, TableInner>,
     version: Arc<Version>,
     writer_buf: SkipMap<Vec<u8>, CommandData>,
     wal: Arc<LogLoader>,
@@ -21,7 +21,7 @@ impl<'a> Transaction<'a> {
     pub(crate) fn new(
         config: &Arc<Config>,
         version: Arc<Version>,
-        read_inner: RwLockReadGuard<'a, TableInner>,
+        read_inner: OptimisticLockCouplingReadGuard<'a, TableInner>,
         wal: &Arc<LogLoader>
     ) -> Result<Transaction<'a>> {
         let seq_id = config.create_gen();

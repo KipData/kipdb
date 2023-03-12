@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use crate::error::CacheError;
 
 pub type Result<T> = std::result::Result<T, CacheError>;
@@ -48,7 +48,7 @@ unsafe impl<K: Send, V: Send, S: Send> Send for ShardingLruCache<K, V, S> {}
 unsafe impl<K: Sync, V: Sync, S: Sync> Sync for ShardingLruCache<K, V, S> {}
 
 pub(crate) struct ShardingLruCache<K, V, S = RandomState> {
-    sharding_vec: Vec<Arc<RwLock<LruCache<K, V>>>>,
+    sharding_vec: Vec<Arc<Mutex<LruCache<K, V>>>>,
     hasher: S,
 }
 
@@ -123,7 +123,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         }
         let sharding_cap = cap / sharding_size;
         for _ in 0..sharding_size {
-            sharding_vec.push(Arc::new(RwLock::new(LruCache::new(sharding_cap)?)));
+            sharding_vec.push(Arc::new(Mutex::new(LruCache::new(sharding_cap)?)));
         }
 
         Ok(ShardingLruCache {
@@ -135,7 +135,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     #[allow(dead_code)]
     pub(crate) fn get(&self, key: &K) -> Option<&V> {
         self.shard(key)
-            .write()
+            .lock()
             .get_node(key)
             .map(|node| {
                 unsafe { &node.as_ref().value }
@@ -145,14 +145,14 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     #[allow(dead_code)]
     pub(crate) fn put(&self, key: K, value: V) -> Option<V> {
         self.shard(&key)
-            .write()
+            .lock()
             .put(key, value)
     }
 
     #[allow(dead_code)]
     pub(crate) fn remove(&self, key: &K) -> Option<V> {
         self.shard(key)
-            .write()
+            .lock()
             .remove(key)
     }
 
@@ -164,7 +164,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         where F: FnOnce(&K) -> Result<V>
     {
         self.shard(&key)
-            .write()
+            .lock()
             .get_or_insert_node(key, fn_once)
             .map(|node| unsafe { &node.as_ref().value })
     }
@@ -174,7 +174,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     }
 
     /// 通过key获取hash值后对其求余获取对应分片
-    fn shard(&self, key: &K) -> Arc<RwLock<LruCache<K, V>>> {
+    fn shard(&self, key: &K) -> Arc<Mutex<LruCache<K, V>>> {
         let mut hasher = self.hasher.build_hasher();
         key.hash(&mut hasher);
         let hash_val = hasher.finish() as usize;
