@@ -49,6 +49,8 @@ struct MetaBlock {
     scope: Scope,
     filter: GrowableBloom,
     len: usize,
+    index_restart_interval: usize,
+    data_restart_interval: usize,
 }
 
 #[derive(Debug)]

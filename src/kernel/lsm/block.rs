@@ -533,7 +533,7 @@ impl<T> Block<T> where T: BlockItem {
     /// 解压后反序列化
     ///
     /// 与encode对应，进行数据解压操作并反序列化为Block
-    pub(crate) fn decode(buf: Vec<u8>, compress_type: CompressType) -> Result<Self> {
+    pub(crate) fn decode(buf: Vec<u8>, compress_type: CompressType, restart_interval: usize) -> Result<Self> {
         let buf = match compress_type {
             CompressType::None => buf,
             CompressType::LZ4 => {
@@ -543,11 +543,11 @@ impl<T> Block<T> where T: BlockItem {
                 decoded
             }
         };
-        Self::from_raw(buf)
+        Self::from_raw(buf, restart_interval)
     }
 
     /// 读取Bytes进行Block的反序列化
-    pub(crate) fn from_raw(mut buf: Vec<u8>) -> Result<Self> {
+    pub(crate) fn from_raw(mut buf: Vec<u8>, restart_interval: usize) -> Result<Self> {
         let date_bytes_len = buf.len() - CRC_SIZE;
         if crc32fast::hash(&buf) == bincode::deserialize::<u32>(
             &buf[date_bytes_len..]
@@ -557,7 +557,6 @@ impl<T> Block<T> where T: BlockItem {
         buf.truncate(date_bytes_len);
 
         let mut cursor = Cursor::new(buf);
-        let restart_interval = ReadVarint::<u32>::read_varint(&mut cursor)? as usize;
         let vec_entry = Entry::<T>::decode_with_cursor(&mut cursor)?;
         Ok(Self {
             restart_interval,
@@ -571,7 +570,6 @@ impl<T> Block<T> where T: BlockItem {
     pub(crate) fn to_raw(&self) -> Result<Vec<u8>> {
         let mut bytes_block = Vec::with_capacity(DEFAULT_BLOCK_SIZE);
 
-        let _ = bytes_block.write_varint(self.restart_interval as u32)?;
         bytes_block.append(
             &mut self.vec_entry
                 .iter()
@@ -696,7 +694,9 @@ mod tests {
 
         let (block_bytes, index_bytes) = builder.build()?;
 
-        let index_block = Block::<Index>::decode(index_bytes, CompressType::None)?;
+        let index_block = Block::<Index>::decode(
+            index_bytes, CompressType::None, options.index_restart_interval
+        )?;
 
         let mut cache = LruCache::new(5)?;
 
@@ -708,22 +708,23 @@ mod tests {
                 let &Index { offset, len } = index;
                 let target_block = Block::<Value>::decode(
                     block_bytes[offset as usize..offset as usize + len].to_vec(),
-                    options.compress_type
+                    options.compress_type,
+                    options.data_restart_interval
                 )?;
                 Ok(target_block)
             })?;
             assert_eq!(data_block.find(key), Some(value.to_vec()))
         }
 
-        test_block_serialization_(block.clone(), CompressType::None)?;
-        test_block_serialization_(block.clone(), CompressType::LZ4)?;
+        test_block_serialization_(block.clone(), CompressType::None, options.data_restart_interval)?;
+        test_block_serialization_(block.clone(), CompressType::LZ4, options.data_restart_interval)?;
 
         Ok(())
     }
 
-    fn test_block_serialization_(block: Block<Value>, compress_type: CompressType) -> Result<()> {
+    fn test_block_serialization_(block: Block<Value>, compress_type: CompressType, restart_interval: usize) -> Result<()> {
         let de_block = Block::decode(
-            block.encode(compress_type)?, compress_type
+            block.encode(compress_type)?, compress_type, restart_interval
         )?;
         assert_eq!(block, de_block);
 

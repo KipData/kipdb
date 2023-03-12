@@ -178,7 +178,8 @@ impl SSTable {
                             reader,
                             index_offset,
                             index_len as usize,
-                            CompressType::None
+                            CompressType::None,
+                            inner.meta.index_restart_interval
                         )?
                     ))
                 }
@@ -192,7 +193,8 @@ impl SSTable {
                                 reader,
                                 index.offset(),
                                 index.len(),
-                                CompressType::LZ4
+                                CompressType::LZ4,
+                                inner.meta.data_restart_interval
                             )?
                         ))
                     }
@@ -207,13 +209,13 @@ impl SSTable {
         reader: &dyn IoReader,
         offset: u32,
         len: usize,
-        compress_type: CompressType
+        compress_type: CompressType,
+        restart_interval: usize,
     ) -> Result<Block<T>>
         where T: BlockItem
     {
         Block::decode(
-            reader.read_with_pos(offset as u64, len)?,
-            compress_type
+            reader.read_with_pos(offset as u64, len)?, compress_type, restart_interval
         )
     }
 
@@ -226,13 +228,18 @@ impl SSTable {
             inner.reader.as_ref(),
             index_offset,
             index_len as usize,
-            CompressType::None
+            CompressType::None,
+            inner.meta.index_restart_interval
         )?;
         Ok(index_block.all_value()
             .into_iter()
             .flat_map(|index| {
                 Self::loading_block::<Value>(
-                    inner.reader.as_ref(), index.offset(), index.len(), CompressType::LZ4
+                    inner.reader.as_ref(),
+                    index.offset(),
+                    index.len(),
+                    CompressType::LZ4,
+                    inner.meta.data_restart_interval
                 ).and_then(Block::all_entry)
             })
             .flatten()
@@ -270,12 +277,16 @@ impl SSTable {
     ) -> Result<SSTable>{
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
-        let writer = io_factory.writer(gen, IoType::Direct)?;
         let len = vec_mem_data.len();
+        let data_restart_interval = config.data_restart_interval;
+        let index_restart_interval = config.index_restart_interval;
         let mut filter = GrowableBloom::new(config.desired_error_prob, len);
 
         let mut builder = BlockBuilder::new(
-            BlockOptions::from(config).compress_type(CompressType::LZ4)
+            BlockOptions::from(config)
+                .compress_type(CompressType::LZ4)
+                .data_restart_interval(data_restart_interval)
+                .index_restart_interval(index_restart_interval)
         );
         for data in vec_mem_data {
             let _ = filter.insert(data.get_key());
@@ -284,8 +295,11 @@ impl SSTable {
         let meta = MetaBlock {
             scope,
             filter,
-            len
+            len,
+            index_restart_interval,
+            data_restart_interval,
         };
+
         let (data_bytes, index_bytes) = builder.build()?;
         let meta_bytes = bincode::serialize(&meta)?;
         let footer = Footer {
@@ -296,6 +310,7 @@ impl SSTable {
             meta_len: meta_bytes.len() as u32,
             size_of_disk: (data_bytes.len() + index_bytes.len() + meta_bytes.len() + TABLE_FOOTER_SIZE) as u32,
         };
+        let writer = io_factory.writer(gen, IoType::Direct)?;
         let _ = writer.write(
             data_bytes.into_iter()
                 .chain(index_bytes)

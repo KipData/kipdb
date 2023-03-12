@@ -29,7 +29,7 @@
 ### 直接调用
 ```rust
 /// 指定文件夹以开启一个KvStore
-let kip_db = LsmStore::open("/tmp/learning materials").await?;
+let kip_db = LsmStore::open("/welcome/kip_db").await?;
 
 // 插入数据
 kip_db.set(&vec![b'k'], vec![b'v']).await?;
@@ -43,7 +43,7 @@ kip_db.len().await?;
 kip_db.remove(&vec![b'k']).await?;
 
 // 创建事务
-let mut transaction = kv_store.transaction().await?;
+let mut transaction = kip_db.new_transaction().await?;
 // 插入数据至事务中
 transaction.set(&vec![b'k'], vec![b'v']);
 // 删除该事务中key对应的value
@@ -190,8 +190,6 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
   - Java of KipDB
   - Rust of KipDB ✅
 - 分布式
-  - TAS(Test And Set)与Master调度主机
-  - 服务端作为Worker支持单机与集群
   - 使用Raft复制协议保持状态一致
 ## Perf火焰图监测
 - 为了方便性能调优等监测，提供了两个Dockerfile作为支持

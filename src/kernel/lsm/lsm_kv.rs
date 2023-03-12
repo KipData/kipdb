@@ -39,7 +39,7 @@ pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 112;
 
 pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
-pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 500;
+pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 100;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
@@ -279,7 +279,7 @@ impl LsmStore {
 
     /// 创建事务
     #[inline]
-    pub async fn transaction(&self) -> Result<Transaction> {
+    pub async fn new_transaction(&self) -> Result<Transaction> {
         Transaction::new(
             self.config(),
             self.ver_status.current().await,
