@@ -121,7 +121,7 @@ impl HashStore {
 
         let compaction_threshold = manifest.compaction_threshold;
 
-        let (compact_gen, compact_handler) = manifest.compaction_increment(&self.io_factory)?;
+        let (compact_gen, mut compact_handler) = manifest.compaction_increment(&self.io_factory)?;
         // 压缩时对values进行顺序排序
         // 以gen,pos为最新数据的指标
         let (mut vec_cmd_pos, io_handler_index) = manifest.sort_by_last_vec_mut();
@@ -140,7 +140,7 @@ impl HashStore {
                         Some((_, reader)) => {
                             if let Some(cmd_data) =
                             CommandPackage::from_pos_unpack(reader.as_ref(), cmd_pos.pos, cmd_pos.len)? {
-                                let (pos, len) = CommandPackage::write(compact_handler.0.as_ref(), &cmd_data)?;
+                                let (pos, len) = CommandPackage::write(compact_handler.0.as_mut(), &cmd_data)?;
                                 write_len += len;
                                 cmd_pos.change(compact_gen, pos, len);
                             }
@@ -199,7 +199,7 @@ impl KVStore for HashStore {
 
     #[inline]
     async fn flush(&self) -> Result<()> {
-        let manifest = self.manifest.write();
+        let mut manifest = self.manifest.write();
 
         Ok(manifest.current_io_writer()?
             .flush()?)
@@ -280,7 +280,7 @@ impl KVStore for HashStore {
 
         Ok(manifest.io_index
             .values()
-            .filter_map(|(reader, _)| reader.file_size().ok())
+            .filter_map(|(_, reader)| reader.file_size().ok())
             .into_iter()
             .sum::<u64>())
     }
@@ -333,9 +333,9 @@ impl Manifest {
         self.index.get(key)
     }
     /// 获取当前最新的IOHandler
-    fn current_io_writer(&self) -> Result<&dyn IoWriter> {
-        self.io_index.get(&self.current_gen)
-            .map(|(writer, _ )| writer.as_ref())
+    fn current_io_writer(&mut self) -> Result<&mut dyn IoWriter> {
+        self.io_index.get_mut(&self.current_gen)
+            .map(|(writer, _ )| writer.as_mut())
             .ok_or(KvsError::FileNotFound)
     }
     fn current_io_reader(&self) -> Result<&dyn IoReader> {

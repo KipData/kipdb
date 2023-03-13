@@ -4,7 +4,6 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use memmap2::{Mmap, MmapMut};
-use parking_lot::Mutex;
 use crate::kernel::Result;
 use crate::kernel::io::{FileExtension, IoType, IoReader, IoWriter};
 
@@ -36,10 +35,7 @@ impl MMapIoReader {
 }
 
 pub(crate) struct MMapIoWriter {
-    gen: i64,
-    dir_path: Arc<PathBuf>,
-    writer: Mutex<MMapWriter>,
-    extension: Arc<FileExtension>,
+    writer: MMapWriter,
 }
 
 impl MMapIoWriter {
@@ -51,46 +47,21 @@ impl MMapIoWriter {
             .read(true)
             .open(extension.path_with_gen(&dir_path, gen))?;
 
-        let writer = Mutex::new(MMapWriter::new(&file)?);
-
-        Ok(MMapIoWriter {
-            gen,
-            dir_path,
-            writer,
-            extension,
-        })
+        Ok(MMapIoWriter { writer: MMapWriter::new(&file)? })
     }
 }
 
 impl IoWriter for MMapIoWriter {
-    fn get_gen(&self) -> i64 {
-        self.gen
+    fn write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
+        let start_pos = self.writer.pos;
+
+        Ok(self.writer.write(&buf).map(|len| (start_pos, len))?)
     }
 
-    fn get_path(&self) -> PathBuf {
-        self.extension
-            .path_with_gen(&self.dir_path, self.gen)
-    }
-
-    fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
-        let mut writer = self.writer.lock();
-
-        let start_pos = writer.pos;
-        let slice_buf = buf.as_slice();
-        let _ignore = writer.write(slice_buf)?;
-
-        Ok((start_pos, slice_buf.len()))
-    }
-
-    fn flush(&self) -> Result<()> {
-        self.writer.lock()
-            .flush()?;
+    fn flush(&mut self) -> Result<()> {
+        self.writer.flush()?;
 
         Ok(())
-    }
-
-    fn get_type(&self) -> IoType {
-        IoType::MMap
     }
 }
 

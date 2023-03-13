@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
-use crate::kernel::io::direct::DirectIoHandler;
+use crate::kernel::io::direct::{DirectIoReader, DirectIoWriter};
 use crate::kernel::io::mmap::{MMapIoReader, MMapIoWriter};
 use crate::kernel::Result;
 
@@ -58,7 +58,7 @@ impl IoFactory {
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoReader::new(dir_path, gen, extension)?),
             IoType::MMap => Box::new(MMapIoReader::new(dir_path, gen, extension)?),
-            IoType::Direct => Box::new(DirectIoHandler::new(dir_path, gen, extension, false)?)
+            IoType::Direct => Box::new(DirectIoReader::new(dir_path, gen, extension)?)
         })
     }
 
@@ -71,7 +71,7 @@ impl IoFactory {
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoWriter::new(dir_path, gen, extension)?),
             IoType::MMap => Box::new(MMapIoWriter::new(dir_path, gen, extension)?),
-            IoType::Direct => Box::new(DirectIoHandler::new(dir_path, gen, extension, true)?)
+            IoType::Direct => Box::new(DirectIoWriter::new(dir_path, gen, extension)?)
         })
     }
 
@@ -138,19 +138,7 @@ pub trait IoReader: Send + Sync + 'static {
 
 pub trait IoWriter: Send + Sync + 'static {
 
-    fn get_gen(&self) -> i64;
+    fn write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)>;
 
-    fn get_path(&self) -> PathBuf;
-
-    #[inline]
-    fn file_size(&self) -> Result<u64> {
-        let path_buf = self.get_path();
-        Ok(fs::metadata(path_buf)?.len())
-    }
-
-    fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)>;
-
-    fn flush(&self) -> Result<()>;
-
-    fn get_type(&self) -> IoType;
+    fn flush(&mut self) -> Result<()>;
 }

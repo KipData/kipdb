@@ -7,8 +7,6 @@ use parking_lot::Mutex;
 use crate::kernel::io::{FileExtension, IoType, IoReader, IoWriter};
 use crate::kernel::Result;
 
-type SyncWriter = Mutex<BufWriterWithPos<File>>;
-
 type SyncReader = Mutex<BufReaderWithPos<File>>;
 
 /// 使用BufReade和BufWriter实现的IOHandler
@@ -39,10 +37,7 @@ impl BufIoReader {
 
 #[derive(Debug)]
 pub(crate) struct BufIoWriter {
-    gen: i64,
-    dir_path: Arc<PathBuf>,
-    writer: SyncWriter,
-    extension: Arc<FileExtension>,
+    writer: BufWriterWithPos<File>,
 }
 
 impl BufIoWriter {
@@ -54,13 +49,7 @@ impl BufIoWriter {
             .read(true)
             .open(extension.path_with_gen(&dir_path, gen))?;
 
-        let writer = Mutex::new(BufWriterWithPos::new(file)?);
-        Ok(BufIoWriter {
-            gen,
-            dir_path,
-            writer,
-            extension,
-        })
+        Ok(BufIoWriter { writer: BufWriterWithPos::new(file)? })
     }
 }
 
@@ -80,7 +69,7 @@ impl IoReader for BufIoReader {
         let mut buffer = vec![0; len];
         // 使用Vec buffer获取数据
         let _ignore = reader.seek(SeekFrom::Start(start))?;
-        let _ignore1 = reader.read(buffer.as_mut_slice())?;
+        let _ignore1 = reader.read(&mut buffer)?;
 
         Ok(buffer)
     }
@@ -91,34 +80,15 @@ impl IoReader for BufIoReader {
 }
 
 impl IoWriter for BufIoWriter {
+    fn write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
+        let start_pos = self.writer.pos;
 
-    fn get_gen(&self) -> i64 {
-        self.gen
+        Ok(self.writer.write(&buf).map(|len| (start_pos, len))?)
     }
 
-    fn get_path(&self) -> PathBuf {
-        self.extension
-            .path_with_gen(&self.dir_path, self.gen)
-    }
-
-    fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
-        let mut writer = self.writer.lock();
-
-        let start_pos = writer.pos;
-        let slice_buf = buf.as_slice();
-        let _ignore = writer.write(slice_buf)?;
-
-        Ok((start_pos, slice_buf.len()))
-    }
-
-    fn flush(&self) -> Result<()> {
-        self.writer.lock()
-            .flush()?;
+    fn flush(&mut self) -> Result<()> {
+        self.writer.flush()?;
         Ok(())
-    }
-
-    fn get_type(&self) -> IoType {
-        IoType::Buf
     }
 }
 

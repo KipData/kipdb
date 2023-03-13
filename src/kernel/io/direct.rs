@@ -7,31 +7,24 @@ use crate::kernel::io::{FileExtension, IoReader, IoType, IoWriter};
 use crate::kernel::Result;
 
 #[derive(Debug)]
-pub(crate) struct DirectIoHandler {
+pub(crate) struct DirectIoReader {
     gen: i64,
     dir_path: Arc<PathBuf>,
     fs: Mutex<File>,
     extension: Arc<FileExtension>,
 }
 
-impl DirectIoHandler {
-    pub(crate) fn new(
-        dir_path: Arc<PathBuf>,
-        gen: i64,
-        extension: Arc<FileExtension>,
-        is_writer: bool
-    ) -> Result<Self> {
+#[derive(Debug)]
+pub(crate) struct DirectIoWriter {
+    fs: File,
+}
+
+impl DirectIoReader {
+    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
+        let fs = Mutex::new(File::open(path)?);
 
-        let fs = Mutex::new(if !is_writer { File::open(path)? } else {
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .read(true)
-                .open(&path)?
-        });
-
-        Ok(DirectIoHandler {
+        Ok(DirectIoReader {
             gen,
             dir_path,
             fs,
@@ -40,7 +33,20 @@ impl DirectIoHandler {
     }
 }
 
-impl IoReader for DirectIoHandler {
+impl DirectIoWriter {
+    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+        let path = extension.path_with_gen(&dir_path, gen);
+        let fs = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(&path)?;
+
+        Ok(DirectIoWriter { fs })
+    }
+}
+
+impl IoReader for DirectIoReader {
     fn get_gen(&self) -> i64 {
         self.gen
     }
@@ -56,7 +62,7 @@ impl IoReader for DirectIoHandler {
         let mut buffer = vec![0; len];
         // 使用Vec buffer获取数据
         let _ignore = reader.seek(SeekFrom::Start(start))?;
-        let _ignore1 = reader.read(buffer.as_mut_slice())?;
+        let _ignore1 = reader.read(&mut buffer)?;
 
         Ok(buffer)
     }
@@ -66,33 +72,15 @@ impl IoReader for DirectIoHandler {
     }
 }
 
-impl IoWriter for DirectIoHandler {
-    fn get_gen(&self) -> i64 {
-        self.gen
+impl IoWriter for DirectIoWriter {
+    fn write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
+        let start_pos = self.fs.stream_position()?;
+
+        Ok(self.fs.write(&buf).map(|len| (start_pos, len))?)
     }
 
-    fn get_path(&self) -> PathBuf {
-        self.extension
-            .path_with_gen(&self.dir_path, self.gen)
-    }
-
-    fn write(&self, buf: Vec<u8>) -> Result<(u64, usize)> {
-        let mut fs = self.fs.lock();
-
-        let start_pos = fs.stream_position()?;
-        let slice_buf = buf.as_slice();
-        let _ignore = fs.write(slice_buf)?;
-
-        Ok((start_pos, slice_buf.len()))
-    }
-
-    fn flush(&self) -> Result<()> {
-        self.fs.lock()
-            .flush()?;
+    fn flush(&mut self) -> Result<()> {
+        self.fs.flush()?;
         Ok(())
-    }
-
-    fn get_type(&self) -> IoType {
-        IoType::Direct
     }
 }

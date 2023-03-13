@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use tracing::error;
 use crate::kernel::{CommandData, CommandPackage, Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
@@ -12,7 +12,7 @@ const SUCCESS_FS_GEN: i64 = 000_000_000;
 pub(crate) struct LogLoader {
     factory: IoFactory,
     config: Arc<Config>,
-    inner: RwLock<Inner>,
+    inner: Mutex<Inner>,
     check_success: bool,
 }
 
@@ -71,7 +71,7 @@ impl LogLoader {
             .cloned()
             .unwrap_or(0);
 
-        let inner = RwLock::new(
+        let inner = Mutex::new(
             Inner {
                 current_gen: last_gen,
                 writer: factory.writer(last_gen, IoType::Direct)?,
@@ -102,24 +102,24 @@ impl LogLoader {
     }
 
     pub(crate) fn log(&self, cmd: &CommandData) -> Result<()> {
-        let inner = self.inner.read();
-        let _ignore = CommandPackage::write(inner.writer.as_ref(), cmd)?;
+        let mut inner = self.inner.lock();
+        let _ignore = CommandPackage::write(inner.writer.as_mut(), cmd)?;
         Ok(())
     }
 
     pub(crate) fn log_batch(&self, vec_cmd: &[CommandData]) -> Result<()> {
-        let inner = self.inner.read();
-        let _ignore = CommandPackage::write_batch(inner.writer.as_ref(), vec_cmd)?;
+        let mut inner = self.inner.lock();
+        let _ignore = CommandPackage::write_batch(inner.writer.as_mut(), vec_cmd)?;
         Ok(())
     }
 
     pub(crate) fn flush(&self) -> Result<()> {
-        self.inner.read()
+        self.inner.lock()
             .writer.flush()
     }
 
     pub(crate) fn last_gen(&self) -> Option<i64> {
-        self.inner.read()
+        self.inner.lock()
             .vec_gen.back()
             .cloned()
     }
@@ -133,7 +133,7 @@ impl LogLoader {
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
     pub(crate) fn switch(&self, next_gen: i64) -> Result<i64> {
         let next_writer = self.factory.writer(next_gen, IoType::Direct)?;
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.lock();
 
         let current_gen = inner.current_gen;
         inner.writer.flush()?;

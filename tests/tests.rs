@@ -167,6 +167,7 @@ fn compaction() -> Result<()> {
     Ok(())
 }
 
+// 如果此处出现异常，可以尝试降低压缩阈值或者提高检测时间
 fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
     tokio_test::block_on(async move {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
@@ -228,7 +229,7 @@ fn test_io() -> Result<()> {
 }
 
 fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
-    let writer = factory.writer(1, io_type)?;
+    let mut writer = factory.writer(1, io_type)?;
     let reader = factory.reader(1, io_type)?;
     let data_write1 = vec![b'1', b'2', b'3'];
     let data_write2 = vec![b'4', b'5', b'6'];

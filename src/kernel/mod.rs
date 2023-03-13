@@ -110,18 +110,14 @@ impl CommandPackage {
 
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
-    pub(crate) fn write(writer: &dyn IoWriter, cmd: &CommandData) -> Result<(u64, usize)> {
+    pub(crate) fn write(writer: &mut dyn IoWriter, cmd: &CommandData) -> Result<(u64, usize)> {
         let (start, len) = writer.write(
             ByteUtils::tag_with_head(bincode::serialize(cmd)?)
         )?;
         Ok((start + 4, len - 4))
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn write_batch(
-        writer: &dyn IoWriter,
-        vec_cmd: &[CommandData]
-    ) -> Result<(u64, usize)> {
+    pub(crate) fn write_batch(writer: &mut dyn IoWriter, vec_cmd: &[CommandData]) -> Result<(u64, usize)> {
         let bytes = vec_cmd.iter()
             .filter_map(|cmd_data| {
                 bincode::serialize(cmd_data)
