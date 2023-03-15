@@ -2,7 +2,7 @@ use std::sync::Arc;
 use crossbeam_skiplist::SkipMap;
 use optimistic_lock_coupling::OptimisticLockCouplingReadGuard;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::{Config, wal_put};
+use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, wal_put};
 use crate::kernel::lsm::{key_encode_with_seq, MemTable, TableInner};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::version::Version;
@@ -14,24 +14,23 @@ pub struct Transaction<'a> {
     version: Arc<Version>,
     writer_buf: SkipMap<Vec<u8>, CommandData>,
     wal: Arc<LogLoader>,
-    config: Arc<Config>,
+    config: &'a Config,
 }
 
 impl<'a> Transaction<'a> {
     pub(crate) fn new(
-        config: &Arc<Config>,
+        config: &'a Config,
         version: Arc<Version>,
         read_inner: OptimisticLockCouplingReadGuard<'a, TableInner>,
         wal: &Arc<LogLoader>
     ) -> Result<Transaction<'a>> {
-        let seq_id = config.create_gen();
         Ok(Self {
-            seq_id,
+            seq_id: GenBuffer::create_gen(),
             read_inner,
             version,
             writer_buf: SkipMap::new(),
             wal: Arc::clone(wal),
-            config: Arc::clone(config),
+            config,
         })
     }
 
@@ -91,26 +90,20 @@ impl<'a> Transaction<'a> {
         let Transaction {
             read_inner,
             writer_buf,
-            config,
             ..
         } = self;
 
         Self::insert_batch_data(
             &read_inner,
             writer_buf.into_iter().collect(),
-            &config
         )?;
 
         Ok(())
     }
 
-    pub(crate) fn insert_batch_data(
-        inner: &TableInner,
-        vec_data: Vec<(Vec<u8>, CommandData)>,
-        config: &Config,
-    ) -> Result<()> {
+    pub(crate) fn insert_batch_data(inner: &TableInner, vec_data: Vec<(Vec<u8>, CommandData)>) -> Result<()> {
         // 将seq_id作为低位
-        let seq_id = config.create_gen();
+        let seq_id = GenBuffer::create_gen();
 
         for (cmd_key, cmd) in vec_data {
             let key = key_encode_with_seq(cmd_key, seq_id)?;
@@ -141,7 +134,7 @@ mod tests {
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-            let config = Config::new(temp_dir.into_path(), 0, 0)
+            let config = Config::new(temp_dir.into_path())
                 .wal_enable(false)
                 .minor_threshold_with_len(1000)
                 .major_threshold_with_sst_size(4);

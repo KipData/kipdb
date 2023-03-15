@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, Result};
 use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::compactor::MergeShardingVec;
-use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::lsm_kv::{Config, GenBuffer};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 
@@ -34,6 +34,7 @@ const SEQ_MAX: [u8; 8] = [u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, 
 pub(crate) const TABLE_FOOTER_SIZE: usize = 21;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[repr(C, align(32))]
 struct Footer {
     level: u8,
     index_offset: u32,
@@ -81,10 +82,9 @@ impl MemTable {
     pub(crate) fn insert_data(
         &self,
         cmd: CommandData,
-        config: &Config,
     ) -> Result<()> {
         // 将seq_id作为低位
-        let seq_id = config.create_gen();
+        let seq_id = GenBuffer::create_gen();
         let key = key_encode_with_seq(cmd.get_key_clone(), seq_id)?;
 
         self.loop_read(|inner| {
@@ -229,7 +229,7 @@ pub(crate) struct SSTableMap {
 }
 
 impl SSTableMap {
-    pub(crate) fn new(config: &Config) -> Result<Self> {
+    pub(crate) fn new(config: Config) -> Result<Self> {
         let cache = ShardingLruCache::new(
             config.table_cache_size,
             16,
@@ -291,7 +291,7 @@ impl Footer {
 /// CommandData数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
 /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
 /// TODO: Block对齐封装,替代此方法
-fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Config) -> MergeShardingVec {
+fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize) -> MergeShardingVec {
     // 向上取整计算SSTable数量
     let part_size = (vec_data.iter()
         .map(CommandData::bytes_len)
@@ -300,11 +300,10 @@ fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Conf
     vec_data.reverse();
     let mut vec_sharding = vec![(0, Vec::new()); part_size];
     let slice = vec_sharding.as_mut_slice();
-    let vec_gen = config.create_gen_with_size(part_size);
 
     for i in 0 .. part_size {
         // 减小create_gen影响的时间
-        slice[i].0 = vec_gen[i];
+        slice[i].0 = GenBuffer::create_gen();
         let mut data_len = 0;
         while !vec_data.is_empty() {
             if let Some(cmd_data) = vec_data.pop() {
@@ -324,9 +323,8 @@ fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize, config: &Conf
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
     use crate::kernel::lsm::{MemMap, MemTable, Footer, TABLE_FOOTER_SIZE};
-    use crate::kernel::lsm::lsm_kv::Config;
+    use crate::kernel::lsm::lsm_kv::GenBuffer;
     use crate::kernel::{CommandData, Result};
 
     #[test]
@@ -348,27 +346,24 @@ mod tests {
 
     #[test]
     fn test_mem_table_find() -> Result<()> {
-        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-        let config = Config::new(temp_dir.into_path(), 0, 0);
-
         let mem_table = MemTable::new(MemMap::new());
 
         let data_1 = CommandData::set(vec![b'k'], vec![b'1']);
         let data_2 = CommandData::set(vec![b'k'], vec![b'2']);
 
-        mem_table.insert_data(data_1.clone(), &config)?;
+        mem_table.insert_data(data_1)?;
 
-        let old_seq_id = config.create_gen_lazy();
+        let old_seq_id = GenBuffer::create_gen();
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'1']));
 
-        mem_table.insert_data(data_2.clone(), &config)?;
+        mem_table.insert_data(data_2)?;
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'2']));
 
         assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id)?, Some(vec![b'1']));
 
-        let new_seq_id = config.create_gen_lazy();
+        let new_seq_id = GenBuffer::create_gen();
 
         assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id)?, Some(vec![b'2']));
 
@@ -377,15 +372,12 @@ mod tests {
 
     #[test]
     fn test_mem_table_swap() -> Result<()> {
-        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-        let config = Config::new(temp_dir.into_path(), 0, 0);
-
         let mem_table = MemTable::new(MemMap::new());
 
-        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'1']), &config)?;
-        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'2']), &config)?;
-        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'1']), &config)?;
-        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'2']), &config)?;
+        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'1']))?;
+        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'2']))?;
+        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'1']))?;
+        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'2']))?;
 
         let (mut vec_unique_sort_with_cmd_key, _) = mem_table.swap().unwrap();
 

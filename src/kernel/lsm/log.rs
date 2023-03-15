@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
 use parking_lot::Mutex;
 use tracing::error;
 use crate::kernel::{CommandData, CommandPackage, Result, sorted_gen_list};
@@ -11,7 +10,7 @@ const SUCCESS_FS_GEN: i64 = 000_000_000;
 // TODO: 使用Block进行替代
 pub(crate) struct LogLoader {
     factory: IoFactory,
-    config: Arc<Config>,
+    config: Config,
     inner: Mutex<Inner>,
     check_success: bool,
 }
@@ -25,7 +24,7 @@ struct Inner {
 impl LogLoader {
     /// 通过日志进行WalLoader和MemMap的数据重载
     pub(crate) fn reload_with_check(
-        config: &Arc<Config>,
+        config: Config,
         path_name: &str,
         extension: FileExtension
     ) -> Result<(Self, Option<Vec<CommandData>>)> {
@@ -42,7 +41,7 @@ impl LogLoader {
     }
 
     pub(crate) fn reload(
-        config: &Arc<Config>,
+        config: Config,
         path_name: &str,
         extension: FileExtension
     ) -> Result<Self> {
@@ -51,13 +50,11 @@ impl LogLoader {
     }
 
     fn reload_(
-        config: &Arc<Config>,
+        config: Config,
         path_name: &str,
         extension: FileExtension
     ) -> Result<(Self, i64)> {
-        let config = Arc::clone(config);
-        let wal_path = config.dir_path
-            .join(path_name);
+        let wal_path = config.path().join(path_name);
 
         let factory = IoFactory::new(
             wal_path.clone(),
@@ -180,21 +177,20 @@ impl Drop for LogLoader {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use tempfile::TempDir;
     use crate::kernel::io::FileExtension;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::{CommandData, Result};
-    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
+    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH, GenBuffer};
 
     #[test]
     fn test_log_load() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+        let config = Config::new(temp_dir.into_path());
 
         let wal = LogLoader::reload(
-            &config,
+            config.clone(),
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
@@ -205,12 +201,12 @@ mod tests {
         wal.log(&data_1)?;
         wal.log(&data_2)?;
 
-        let gen = wal.switch(config.create_gen_lazy())?;
+        let gen = wal.switch(GenBuffer::create_gen())?;
 
         drop(wal);
 
         let wal = LogLoader::reload(
-            &config,
+            config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
@@ -225,10 +221,10 @@ mod tests {
     fn test_log_reload_check() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-        let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+        let config = Config::new(temp_dir.into_path());
 
         let (wal_1, _) = LogLoader::reload_with_check(
-            &config,
+            config.clone(),
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
@@ -243,7 +239,7 @@ mod tests {
         // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复
 
         let (_, option_vec) = LogLoader::reload_with_check(
-            &config,
+            config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;

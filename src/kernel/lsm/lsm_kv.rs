@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use async_trait::async_trait;
+use chrono::Local;
 use fslock::LockFile;
 use itertools::Itertools;
-use snowflake::SnowflakeIdGenerator;
 use tokio::select;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
@@ -18,7 +19,7 @@ use crate::kernel::lsm::{block, MemMap, MemTable};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mvcc::Transaction;
-use crate::kernel::lsm::version::VersionStatus;
+use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_LEN: usize = 2333;
@@ -43,29 +44,76 @@ pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 100;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
+pub(crate) const INIT_SEQ: i64 = i64::MIN;
+
+static GEN_BUF: AtomicI64 = AtomicI64::new(0);
+
 /// 基于LSM的KV Store存储内核
 /// Leveled Compaction压缩算法
 pub struct LsmStore {
-    /// MemTable
-    /// https://zhuanlan.zhihu.com/p/79064869
-    pub(crate) mem_table: Arc<MemTable>,
-    /// VersionVec
-    /// 用于管理内部多版本状态
-    pub(crate) ver_status: Arc<VersionStatus>,
-    /// LSM全局参数配置
-    config: Arc<Config>,
+    inner: Arc<StoreInner>,
     /// WAL载入器
     ///
     /// 用于异常停机时MemTable的恢复
     /// 同时当Level 0的SSTable异常时，可以尝试恢复
     /// `Config.wal_threshold`用于控制WalLoader的的SSTable数据日志个数
     /// 超出个数阈值时会清空最旧的一半日志
-    wal: Arc<LogLoader>,
+    pub(crate) wal: Arc<LogLoader>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
     lock_file: LockFile,
     /// Compactor 通信器
     compactor_tx: Sender<CompactTask>
+}
+
+pub(crate) struct StoreInner {
+    /// MemTable
+    /// https://zhuanlan.zhihu.com/p/79064869
+    pub(crate) mem_table: MemTable,
+    /// VersionVec
+    /// 用于管理内部多版本状态
+    pub(crate) ver_status: VersionStatus,
+    /// LSM全局参数配置
+    pub(crate) config: Config,
+}
+
+impl StoreInner {
+    pub(crate) async fn new(config: Config) -> Result<(Self, LogLoader)> {
+        GenBuffer::init();
+
+        let (wal, option_success) = LogLoader::reload_with_check(
+            config.clone(),
+            DEFAULT_WAL_PATH,
+            FileExtension::Log
+        )?;
+
+        let mem_map = match option_success {
+            None => MemMap::new(),
+            Some(vec_data) => {
+                // Q: 为什么INIT_SEQ作为Seq id?
+                // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
+                // 因此不会影响Version的读取顺序
+                MemMap::from_iter(
+                    // 倒序唯一化，保留最新的数据
+                    vec_data.into_iter()
+                        .rev()
+                        .unique_by(CommandData::get_key_clone)
+                        .map(|cmd| (cmd.get_key_clone(), (cmd, INIT_SEQ)))
+                )
+            }
+        };
+
+        // 初始化wal日志
+        let ver_status = VersionStatus::load_with_path(config.clone().clone(), &wal).await?;
+
+        let mem_table = MemTable::new(mem_map);
+
+        Ok((StoreInner {
+            mem_table,
+            ver_status,
+            config,
+        }, wal))
+    }
 }
 
 #[async_trait]
@@ -77,7 +125,7 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
-        LsmStore::open_with_config(Config::new(path, 0, 0)).await
+        LsmStore::open_with_config(Config::new(path.into())).await
     }
 
     #[inline]
@@ -94,12 +142,11 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        if let Some(value) = self.mem_table.find(key) {
+        if let Some(value) = self.mem_table().find(key) {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.ver_status
-            .current().await
+        if let Some(value) = self.current_version().await
             .find_data_for_ss_tables(key).await?
         {
             return Ok(Some(value));
@@ -122,22 +169,20 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn size_of_disk(&self) -> Result<u64> {
-        Ok(self.ver_status.current().await
+        Ok(self.current_version().await
             .get_size_of_disk())
     }
 
     #[inline]
     async fn len(&self) -> Result<usize> {
-        Ok(self.ver_status.current().await
-            .get_len()
-            + self.mem_table.len())
+        Ok(self.current_version().await.get_len()
+            + self.mem_table().len())
     }
 
     #[inline]
     async fn is_empty(&self) -> bool {
-        self.ver_status.current().await
-            .is_empty()
-            && self.mem_table.is_empty()
+        self.current_version().await.is_empty()
+            && self.mem_table().is_empty()
     }
 }
 
@@ -154,8 +199,6 @@ impl LsmStore {
 
     /// 追加数据
     async fn append_cmd_data(&self, cmd: CommandData, wal_write: bool) -> Result<()> {
-        let mem_table = &self.mem_table;
-
         // Wal与MemTable双写
         if self.is_enable_wal() && wal_write {
             wal_put(
@@ -163,65 +206,34 @@ impl LsmStore {
             ).await;
         }
 
-        mem_table.insert_data(cmd, &self.config)?;
+        self.mem_table().insert_data(cmd)?;
         Ok(())
     }
 
     fn is_enable_wal(&self) -> bool {
-        self.config.wal_enable
+        self.config().wal_enable
     }
 
     fn is_async_wal(&self) -> bool {
-        self.config.wal_async_put_enable
+        self.config().wal_async_put_enable
     }
 
     /// 使用Config进行LsmStore初始化
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
-        let config = Arc::new(config);
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;
         let lock_file = lock_or_time_out(
-            &config.dir_path.join(DEFAULT_LOCK_FILE)
+            &config.path().join(DEFAULT_LOCK_FILE)
         ).await?;
 
-        let (wal, option_success) = LogLoader::reload_with_check(
-            &config,
-            DEFAULT_WAL_PATH,
-            FileExtension::Log
-        )?;
+        let (inner, wal) = StoreInner::new(config.clone()).await?;
 
+        let inner = Arc::new(inner);
         let wal = Arc::new(wal);
 
-        let mem_map = match option_success {
-            None => MemMap::new(),
-            Some(vec_data) => {
-                // Q: 为什么此处直接生成新的seq并使限制每个数据都使用?
-                // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
-                // 因此不会影响Version的读取顺序
-                let create_seq_id = config.create_gen_lazy();
-                MemMap::from_iter(
-                    // 倒序唯一化，保留最新的数据
-                    vec_data.into_iter()
-                        .rev()
-                        .unique_by(CommandData::get_key_clone)
-                        .map(|cmd| (cmd.get_key_clone(), (cmd, create_seq_id)))
-                )
-            }
-        };
-
-        // 初始化wal日志
-        let ver_status = Arc::new(
-            VersionStatus::load_with_path(&config, &wal).await?
-        );
-
-        let mem_table = Arc::new(MemTable::new(mem_map));
-
         let mut compactor = Compactor::new(
-            Arc::clone(&ver_status),
-            Arc::clone(&config),
-            ver_status.get_sst_factory(),
-            Arc::clone(&mem_table),
+            Arc::clone(&inner),
             Arc::clone(&wal),
         );
 
@@ -242,27 +254,23 @@ impl LsmStore {
             }
         });
 
-        Ok(LsmStore {
-            mem_table,
-            ver_status,
-            config,
-            wal,
-            lock_file,
-            compactor_tx: task_tx,
-        })
+        Ok(LsmStore { inner, wal, lock_file, compactor_tx: task_tx })
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn ver_status(&self) -> &Arc<VersionStatus> {
-        &self.ver_status
-    }
-
-    pub(crate) fn config(&self) -> &Arc<Config> {
-        &self.config
+    pub(crate) fn config(&self) -> &Config {
+        &self.inner.config
     }
 
     pub(crate) fn wal(&self) -> &Arc<LogLoader> {
         &self.wal
+    }
+
+    fn mem_table(&self) -> &MemTable {
+        &self.inner.mem_table
+    }
+
+    async fn current_version(&self) -> Arc<Version> {
+        self.inner.ver_status.current().await
     }
 
     #[allow(clippy::expect_used)]
@@ -281,10 +289,10 @@ impl LsmStore {
     #[inline]
     pub async fn new_transaction(&self) -> Result<Transaction> {
         loop {
-            if let Ok(inner) = self.mem_table.inner.read() {
+            if let Ok(inner) = self.mem_table().inner.read() {
                 return Transaction::new(
                     self.config(),
-                    self.ver_status.current().await,
+                    self.current_version().await,
                     inner,
                     self.wal()
                 );
@@ -294,7 +302,7 @@ impl LsmStore {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// 数据目录地址
     pub(crate) dir_path: PathBuf,
@@ -336,14 +344,11 @@ pub struct Config {
     pub(crate) data_restart_interval: usize,
     /// IndexBloc的前缀压缩Restart间隔
     pub(crate) index_restart_interval: usize,
-    /// gen生成器
-    /// 用于SSTable以及SequenceId的生成
-    gen_generator: parking_lot::Mutex<SnowflakeIdGenerator>
 }
 
 impl Config {
     #[inline]
-    pub fn new(path: impl Into<PathBuf> + Send, machine_id: i32, node_id: i32) -> Config {
+    pub fn new(path: impl Into<PathBuf> + Send) -> Config {
         Config {
             dir_path: path.into(),
             minor_threshold_with_len: DEFAULT_MINOR_THRESHOLD_WITH_LEN,
@@ -361,10 +366,11 @@ impl Config {
             block_size: block::DEFAULT_BLOCK_SIZE,
             data_restart_interval: block::DEFAULT_DATA_RESTART_INTERVAL,
             index_restart_interval: block::DEFAULT_INDEX_RESTART_INTERVAL,
-            gen_generator: parking_lot::Mutex::new(
-                SnowflakeIdGenerator::new(machine_id, node_id)
-            ),
         }
+    }
+
+    pub(crate) fn path(&self) -> &PathBuf {
+        &self.dir_path
     }
 
     #[inline]
@@ -452,32 +458,6 @@ impl Config {
     }
 
     #[inline]
-    pub fn create_gen_lazy(&self) -> i64 {
-        self.gen_generator
-            .lock()
-            .lazy_generate()
-    }
-
-    #[inline]
-    pub fn create_gen(&self) -> i64 {
-        self.gen_generator
-            .lock()
-            .generate()
-    }
-
-    #[inline]
-    pub fn create_gen_with_size(&self, size: usize) -> Vec<i64> {
-        let mut generator = self.gen_generator
-            .lock();
-
-        let mut vec_gen = Vec::with_capacity(size);
-        for _ in 0..size {
-            vec_gen.push(generator.lazy_generate());
-        }
-        vec_gen
-    }
-
-    #[inline]
     pub fn wal_enable(mut self, wal_enable: bool) -> Self {
         self.wal_enable = wal_enable;
         self
@@ -487,6 +467,21 @@ impl Config {
     pub fn wal_async_put_enable(mut self, wal_async_put_enable: bool) -> Self {
         self.wal_async_put_enable = wal_async_put_enable;
         self
+    }
+}
+
+pub(crate) struct GenBuffer {}
+
+impl GenBuffer {
+    /// 将GEN_BUF初始化至当前时间戳
+    ///
+    /// 与create_gen相对应，需要将GEN初始化为当前时间戳
+    pub(crate) fn init() {
+        GEN_BUF.store(Local::now().timestamp(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn create_gen() -> i64 {
+        GEN_BUF.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -511,11 +506,32 @@ pub(crate) async fn wal_put(wal: &Arc<LogLoader>, cmd: &CommandData, is_sync: bo
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::thread::sleep;
+    use std::time::{Duration, Instant};
     use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
+    use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, LsmStore};
     use crate::kernel::{KVStore, Result};
+
+    #[test]
+    fn test_gen_create() {
+        let i_1 = GenBuffer::create_gen();
+
+        let i_2 = GenBuffer::create_gen();
+
+        assert!(i_1 < i_2);
+
+        GenBuffer::init();
+        let i_3 = GenBuffer::create_gen();
+
+        sleep(Duration::from_secs(1));
+
+        GenBuffer::init();
+        let i_4 = GenBuffer::create_gen();
+
+        assert!(i_3 > i_2);
+        assert!(i_4 > i_3);
+    }
 
     #[test]
     fn test_lsm_major_compactor() -> Result<()> {
@@ -528,7 +544,7 @@ mod tests {
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-            let config = Config::new(temp_dir.into_path(), 0, 0)
+            let config = Config::new(temp_dir.path().to_str().unwrap())
                 .wal_enable(false)
                 .minor_threshold_with_len(1000)
                 .major_threshold_with_sst_size(4);

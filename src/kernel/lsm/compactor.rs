@@ -7,7 +7,7 @@ use tracing::{error, info};
 use crate::KvsError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, StoreInner};
 use crate::kernel::lsm::{data_sharding, MemTable};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
@@ -33,32 +33,18 @@ pub(crate) enum CompactTask {
 ///
 /// 负责Minor和Major压缩
 pub(crate) struct Compactor {
-    ver_status: Arc<VersionStatus>,
-    config: Arc<Config>,
-    sst_factory: Arc<IoFactory>,
-
-    // mem_table与wal都是用于管理LSMStore的写入控制
-    // XXX: 感觉共享状态比较多，可以进行统一封装？
-    mem_table: Arc<MemTable>,
-    wal: Arc<LogLoader>,
+    store_inner: Arc<StoreInner>,
+    wal: Arc<LogLoader>
 }
 
 impl Compactor {
 
-    pub(crate) fn new(
-        ver_status: Arc<VersionStatus>,
-        config: Arc<Config>,
-        sst_factory: Arc<IoFactory>,
-        mem_table: Arc<MemTable>,
-        wal: Arc<LogLoader>
-    ) -> Self {
-        Compactor {
-            ver_status,
-            config,
-            sst_factory,
-            mem_table,
-            wal,
-        }
+    pub(crate) fn new(store_inner: Arc<StoreInner>, wal: Arc<LogLoader>) -> Self {
+        Compactor { store_inner, wal }
+    }
+
+    fn sst_factory(&self) -> &IoFactory {
+        self.store_inner.ver_status.get_sst_factory_ref()
     }
 
     /// 检查并进行压缩 （默认为 异步、被动 的Lazy压缩）
@@ -73,19 +59,19 @@ impl Compactor {
         enable_caching: bool,
         option_tx: Option<oneshot::Sender<()>>
     ) {
-        let exceeded_len = self.config.minor_threshold_with_len;
+        let exceeded_len = self.config().minor_threshold_with_len;
 
         if let Some((values, last_seq_id)) =
             // 当存在tx时则说明为阻塞压缩，因此不能使用try
             // 并且不会判断阈值强制压缩
             if option_tx.is_some() {
-                self.mem_table.swap()
+                self.mem_table().swap()
             } else {
-                self.mem_table.try_exceeded_then_swap(exceeded_len)
+                self.mem_table().try_exceeded_then_swap(exceeded_len)
             }
         {
             if !values.is_empty() {
-                let gen = self.create_gen()
+                let gen = self.switch_wal()
                     .expect("Log switch error!");
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
@@ -108,10 +94,10 @@ impl Compactor {
     ///
     /// 需要保证获取到了MemTable的写锁以保证wal在switch时MemTable的数据和Wal不一致(多出几条)
     /// 当wal配置启用时，使用预先记录的gen作为结果
-    fn create_gen(&self) -> Result<i64> {
-        let next_gen = self.config.create_gen_lazy();
+    fn switch_wal(&self) -> Result<i64> {
+        let next_gen = GenBuffer::create_gen();
 
-        Ok(if self.config.wal_enable {
+        Ok(if self.config().wal_enable {
             self.wal.switch(next_gen)?
         } else {
             next_gen
@@ -131,15 +117,14 @@ impl Compactor {
         if !values.is_empty() {
             // 从内存表中将数据持久化为ss_table
             let ss_table = SSTable::create_for_mem_table(
-                &self.config,
+                self.config(),
                 gen,
-                &self.sst_factory,
+                self.sst_factory(),
                 values,
                 LEVEL_0
             )?;
 
-            self.ver_status
-                .insert_vec_ss_table(vec![ss_table], enable_caching).await?;
+            self.ver_status().insert_vec_ss_table(vec![ss_table], enable_caching).await?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             if let Err(err) = self.major_compaction(
@@ -182,7 +167,6 @@ impl Compactor {
         if level > 6 {
             return Err(KvsError::LevelOver);
         }
-        let config = &self.config;
 
         while level < 7 {
             if let Some((index, (del_gens_l, del_gens_ll), vec_sharding)) =
@@ -196,9 +180,9 @@ impl Compactor {
                     .map(|(gen, sharding)| {
                         async move {
                             SSTable::create_for_mem_table(
-                                config,
+                                self.config(),
                                 gen,
-                                &self.sst_factory,
+                                self.sst_factory(),
                                 sharding,
                                 level + 1
                             )
@@ -209,7 +193,7 @@ impl Compactor {
                 let vec_new_sst_gen = vec_new_ss_table.iter()
                     .map(SSTable::get_gen)
                     .collect_vec();
-                self.ver_status
+                self.ver_status()
                     .insert_vec_ss_table(vec_new_ss_table, true).await?;
 
                 vec_ver_edit.push(VersionEdit::NewFile((vec_new_sst_gen, level + 1), index));
@@ -219,17 +203,15 @@ impl Compactor {
                 level += 1;
             } else { break }
         }
-        self.ver_status
+        self.ver_status()
             .log_and_apply(vec_ver_edit).await?;
         Ok(())
     }
 
     /// 通过Level进行归并数据加载
     async fn data_loading_with_level(&self, level: usize) -> Result<Option<(usize, DelGenVec, MergeShardingVec)>> {
-        let version = self.ver_status
-            .current()
-            .await;
-        let config = &self.config;
+        let version = self.ver_status().current().await;
+        let config = self.config();
         let major_select_file_size = config.major_select_file_size;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
@@ -280,7 +262,7 @@ impl Compactor {
 
             // 数据合并并切片
             let vec_merge_sharding =
-                Self::data_merge_and_sharding(&vec_ss_table_final, &self.config).await?;
+                Self::data_merge_and_sharding(&vec_ss_table_final, config).await?;
 
             info!("[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]", start.elapsed());
 
@@ -310,6 +292,18 @@ impl Compactor {
             .unique_by(CommandData::get_key_clone)
             .sorted_unstable_by_key(CommandData::get_key_clone)
             .collect();
-        Ok(data_sharding(vec_cmd_data, config.sst_file_size, config))
+        Ok(data_sharding(vec_cmd_data, config.sst_file_size))
+    }
+
+    pub(crate) fn config(&self) -> &Config {
+        &self.store_inner.config
+    }
+
+    pub(crate) fn mem_table(&self) -> &MemTable {
+        &self.store_inner.mem_table
+    }
+
+    pub(crate) fn ver_status(&self) -> &VersionStatus {
+        &self.store_inner.ver_status
     }
 }

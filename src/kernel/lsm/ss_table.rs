@@ -353,7 +353,7 @@ mod tests {
 
         tokio_test::block_on(async move {
             let value = b"If you shed tears when you miss the sun, you also miss the stars.";
-            let config = Config::new(temp_dir.into_path(), 0, 0);
+            let config = Config::new(temp_dir.into_path());
             let sst_factory = IoFactory::new(
                 config.dir_path.join(DEFAULT_SS_TABLE_PATH),
                 FileExtension::SSTable

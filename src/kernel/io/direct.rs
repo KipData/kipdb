@@ -40,7 +40,7 @@ impl DirectIoWriter {
             .create(true)
             .write(true)
             .read(true)
-            .open(&path)?;
+            .open(path)?;
 
         Ok(DirectIoWriter { fs })
     }

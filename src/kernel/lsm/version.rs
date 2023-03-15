@@ -13,7 +13,7 @@ use crate::kernel::lsm::SSTableMap;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::lsm_kv::{Config, INIT_SEQ};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError::SSTableLostError;
@@ -178,16 +178,15 @@ pub(crate) struct Version {
 }
 
 impl VersionStatus {
-    pub(crate) fn get_sst_factory(&self) -> Arc<IoFactory> {
-        Arc::clone(&self.sst_factory)
+    pub(crate) fn get_sst_factory_ref(&self) -> &IoFactory {
+        &self.sst_factory
     }
 
     pub(crate) async fn load_with_path(
-        config: &Arc<Config>,
+        config: Config,
         wal: &LogLoader,
     ) -> Result<Self> {
-        let path = config.dir_path.clone();
-        let sst_path = path.join(DEFAULT_SS_TABLE_PATH);
+        let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
 
         let block_cache = Arc::new(ShardingLruCache::new(
             config.block_cache_size,
@@ -195,7 +194,7 @@ impl VersionStatus {
             RandomState::default()
         )?);
 
-        let mut ss_table_map = SSTableMap::new(config)?;
+        let mut ss_table_map = SSTableMap::new(config.clone())?;
 
         let sst_factory = Arc::new(
             IoFactory::new(
@@ -219,7 +218,7 @@ impl VersionStatus {
                         "[LSMStore][Load SSTable: {}][try to reload with wal][Error]: {:?}",
                         gen, err
                     );
-                    Self::reload_with_wal(config, wal, &sst_factory, gen).await?
+                    Self::reload_with_wal(&config, wal, &sst_factory, gen).await?
                 }
             } {
                 Self::ss_table_insert(
@@ -234,7 +233,7 @@ impl VersionStatus {
         let ss_table_map = Arc::new(RwLock::new(ss_table_map));
 
         let ver_log = LogLoader::reload(
-            config,
+            config.clone(),
             DEFAULT_VERSION_PATH,
             FileExtension::Manifest
         )?;
@@ -255,7 +254,6 @@ impl VersionStatus {
         let (tag_sender, tag_rev) = channel(20);
         let version = Arc::new(
             Version::load_from_log(
-                config,
                 vec_edit,
                 &ss_table_map,
                 &block_cache,
@@ -437,27 +435,25 @@ impl Version {
 
     /// 通过一组VersionEdit载入Version
     async fn load_from_log(
-        config: &Config,
         vec_log: Vec<VersionEdit>,
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         block_cache: &Arc<BlockCache>,
         sender: Sender<CleanTag>
     ) -> Result<Self>{
-        let ver_seq_id = config.create_gen_lazy();
         // 当无日志时,尝试通过现有ss_table_map进行Version恢复
         let version = if vec_log.is_empty() {
             Self::new(
                 ss_table_map,
                 block_cache,
                 sender,
-                ver_seq_id
+                INIT_SEQ
             ).await?
         } else {
             let mut version = Self::empty(
                 ss_table_map,
                 block_cache,
                 sender,
-                ver_seq_id
+                INIT_SEQ
             );
 
             version.apply(vec_log, true).await?;
@@ -774,10 +770,10 @@ mod tests {
 
         tokio_test::block_on(async move {
 
-            let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+            let config = Config::new(temp_dir.into_path());
 
             let (wal, _) = LogLoader::reload_with_check(
-                &config,
+                config.clone(),
                 DEFAULT_WAL_PATH,
                 FileExtension::Log
             )?;
@@ -785,7 +781,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(&config, &wal).await?;
+                VersionStatus::load_with_path(config.clone(), &wal).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -866,10 +862,10 @@ mod tests {
 
         tokio_test::block_on(async move {
 
-            let config = Arc::new(Config::new(temp_dir.into_path(), 0, 0));
+            let config = Config::new(temp_dir.into_path());
 
             let wal = LogLoader::reload(
-                &config,
+                config.clone(),
                 DEFAULT_WAL_PATH,
                 FileExtension::Log
             )?;
@@ -877,7 +873,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status_1 =
-                VersionStatus::load_with_path(&config, &wal).await?;
+                VersionStatus::load_with_path(config.clone(), &wal).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -917,7 +913,7 @@ mod tests {
             drop(ver_status_1);
 
             let ver_status_2 =
-                VersionStatus::load_with_path(&config, &wal).await?;
+                VersionStatus::load_with_path(config, &wal).await?;
             let version_2 = ver_status_2.current().await;
 
             assert_eq!(version_1.last_sequence_id, 4);
