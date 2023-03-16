@@ -8,8 +8,9 @@ use crate::KvsError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, StoreInner};
-use crate::kernel::lsm::{data_sharding, MemTable};
+use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::log::LogLoader;
+use crate::kernel::lsm::mem_table::MemTable;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
 
@@ -61,7 +62,7 @@ impl Compactor {
     ) {
         let exceeded_len = self.config().minor_threshold_with_len;
 
-        if let Some((values, last_seq_id)) =
+        if let Some(values) =
             // 当存在tx时则说明为阻塞压缩，因此不能使用try
             // 并且不会判断阈值强制压缩
             if option_tx.is_some() {
@@ -76,7 +77,7 @@ impl Compactor {
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
                 if let Err(err) = self.minor_compaction(
-                    gen, last_seq_id, values, enable_caching
+                    gen, values, enable_caching
                 ).await {
                     error!("[Compactor][minor_compaction][error happen]: {:?}", err);
                 }
@@ -110,7 +111,6 @@ impl Compactor {
     pub(crate) async fn minor_compaction(
         &self,
         gen: i64,
-        last_seq_id: i64,
         values: Vec<CommandData>,
         enable_caching: bool
     ) -> Result<()> {
@@ -129,10 +129,7 @@ impl Compactor {
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             if let Err(err) = self.major_compaction(
                 LEVEL_0,
-                vec![
-                    VersionEdit::NewFile((vec![gen], 0), 0),
-                    VersionEdit::LastSequenceId(last_seq_id)
-                ]
+                vec![VersionEdit::NewFile((vec![gen], 0), 0), ]
             ).await {
                 error!("[LSMStore][major_compaction][error happen]: {:?}", err);
             }

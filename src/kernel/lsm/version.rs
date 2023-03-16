@@ -13,7 +13,7 @@ use crate::kernel::lsm::SSTableMap;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::lsm_kv::{Config, INIT_SEQ};
+use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KvsError::SSTableLostError;
@@ -32,8 +32,6 @@ pub(crate) enum VersionEdit {
     // 确保新File的Gen都是比旧Version更大(新鲜)
     // Level 0则请忽略第二位的index参数，默认会放至最尾
     NewFile(FileVec, usize),
-    // SSTable's SequenceId
-    LastSequenceId(i64),
     // // Level and SSTable Gen List
     // CompactPoint(usize, Vec<i64>),
 }
@@ -170,8 +168,6 @@ pub(crate) struct Version {
     meta_data: VersionMeta,
     /// 稀疏区间数据Block缓存
     block_cache: Arc<BlockCache>,
-    /// 用于MVCC的有序编号
-    last_sequence_id: i64,
     /// 清除信号发送器
     /// Drop时通知Cleaner进行删除
     clean_sender: Sender<CleanTag>
@@ -387,14 +383,12 @@ impl Version {
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         block_cache: &Arc<BlockCache>,
         clean_sender: Sender<CleanTag>,
-        last_sequence_id: i64
     ) -> Self {
         Self {
             version_num: 0,
             ss_tables_map: Arc::clone(ss_table_map),
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
-            last_sequence_id,
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_sender,
         }
@@ -406,7 +400,6 @@ impl Version {
         ss_table_map: &Arc<RwLock<SSTableMap>>,
         block_cache: &Arc<BlockCache>,
         clean_sender: Sender<CleanTag>,
-        last_sequence_id: i64,
     ) -> Result<Self> {
         let read_guard_map = ss_table_map.read().await;
         let level_slice = Self::level_layered(
@@ -428,7 +421,6 @@ impl Version {
             level_slice,
             meta_data: VersionMeta { size_of_disk, len },
             block_cache: Arc::clone(block_cache),
-            last_sequence_id,
             clean_sender,
         })
     }
@@ -446,14 +438,12 @@ impl Version {
                 ss_table_map,
                 block_cache,
                 sender,
-                INIT_SEQ
             ).await?
         } else {
             let mut version = Self::empty(
                 ss_table_map,
                 block_cache,
                 sender,
-                INIT_SEQ
             );
 
             version.apply(vec_log, true).await?;
@@ -528,9 +518,6 @@ impl Version {
                             self.level_slice[level].insert(index, gen);
                         }
                     }
-                }
-                VersionEdit::LastSequenceId(last_sequence_id) => {
-                    self.last_sequence_id = last_sequence_id;
                 }
             }
         }
@@ -742,12 +729,11 @@ impl Drop for Version {
 /// 使用特定格式进行display
 fn version_display(new_version: &Version, method: &str) {
     info!(
-            "[Version][{}]: version_num: {}, len: {}, size_of_disk: {}, last_sequence_id: {}",
+            "[Version][{}]: version_num: {}, len: {}, size_of_disk: {}",
             method,
             new_version.version_num,
             new_version.get_len(),
             new_version.get_size_of_disk(),
-            new_version.last_sequence_id,
         );
 }
 
@@ -901,7 +887,6 @@ mod tests {
                 VersionEdit::NewFile((vec![1], 0),0),
                 VersionEdit::NewFile((vec![2], 0),0),
                 VersionEdit::DeleteFile((vec![2], 0)),
-                VersionEdit::LastSequenceId(4),
             ];
 
             ver_status_1.insert_vec_ss_table(vec![ss_table_1], false).await?;
@@ -916,8 +901,6 @@ mod tests {
                 VersionStatus::load_with_path(config, &wal).await?;
             let version_2 = ver_status_2.current().await;
 
-            assert_eq!(version_1.last_sequence_id, 4);
-            assert_eq!(version_2.last_sequence_id, 4);
             assert_eq!(version_1.level_slice, version_2.level_slice);
             assert_eq!(version_1.meta_data, version_2.meta_data);
 

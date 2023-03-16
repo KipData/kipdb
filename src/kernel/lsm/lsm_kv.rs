@@ -15,9 +15,10 @@ use tracing::error;
 use crate::KvsError;
 use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
-use crate::kernel::lsm::{block, MemMap, MemTable};
+use crate::kernel::lsm::block;
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::log::LogLoader;
+use crate::kernel::lsm::mem_table::{MemMap, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
@@ -44,7 +45,7 @@ pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 100;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-pub(crate) const INIT_SEQ: i64 = i64::MIN;
+static SEQ_COUNT: AtomicI64 = AtomicI64::new(0);
 
 static GEN_BUF: AtomicI64 = AtomicI64::new(0);
 
@@ -98,7 +99,7 @@ impl StoreInner {
                     vec_data.into_iter()
                         .rev()
                         .unique_by(CommandData::get_key_clone)
-                        .map(|cmd| (cmd.get_key_clone(), (cmd, INIT_SEQ)))
+                        .map(|cmd| (cmd.get_key_clone(), cmd))
                 )
             }
         };
@@ -470,14 +471,27 @@ impl Config {
     }
 }
 
+/// 插入时SEQ id生成器
+///
+/// 与GenBuffer比较大的不同在于
+/// - SeqBuffer随着每次重启都会重置为0，而seq上限很高，可以在此次运行时生成有序且不相同的id
+/// - GenBuffer以时间戳为基础，每次保证每次重启都保证时间有序，但不足以作为Seq的生成，因为上限较低
+pub(crate) struct SeqBuffer {}
+
 pub(crate) struct GenBuffer {}
+
+impl SeqBuffer {
+    pub(crate) fn create_seq() -> i64 {
+        SEQ_COUNT.fetch_add(1, Ordering::Relaxed)
+    }
+}
 
 impl GenBuffer {
     /// 将GEN_BUF初始化至当前时间戳
     ///
     /// 与create_gen相对应，需要将GEN初始化为当前时间戳
     pub(crate) fn init() {
-        GEN_BUF.store(Local::now().timestamp(), Ordering::Relaxed);
+        GEN_BUF.store(Local::now().timestamp_millis(), Ordering::Relaxed);
     }
 
     pub(crate) fn create_gen() -> i64 {
@@ -510,8 +524,17 @@ mod tests {
     use std::time::{Duration, Instant};
     use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, LsmStore};
+    use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, LsmStore, SeqBuffer};
     use crate::kernel::{KVStore, Result};
+
+    #[test]
+    fn test_seq_create() {
+        let i_1 = SeqBuffer::create_seq();
+
+        let i_2 = SeqBuffer::create_seq();
+
+        assert!(i_1 < i_2);
+    }
 
     #[test]
     fn test_gen_create() {

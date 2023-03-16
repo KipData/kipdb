@@ -2,9 +2,9 @@ use std::sync::Arc;
 use crossbeam_skiplist::SkipMap;
 use optimistic_lock_coupling::OptimisticLockCouplingReadGuard;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, wal_put};
-use crate::kernel::lsm::{key_encode_with_seq, MemTable, TableInner};
+use crate::kernel::lsm::lsm_kv::{Config, SeqBuffer, wal_put};
 use crate::kernel::lsm::log::LogLoader;
+use crate::kernel::lsm::mem_table::{key_encode_with_seq, MemTable, TableInner};
 use crate::kernel::lsm::version::Version;
 use crate::KvsError;
 
@@ -25,7 +25,7 @@ impl<'a> Transaction<'a> {
         wal: &Arc<LogLoader>
     ) -> Result<Transaction<'a>> {
         Ok(Self {
-            seq_id: GenBuffer::create_gen(),
+            seq_id: SeqBuffer::create_seq(),
             read_inner,
             version,
             writer_buf: SkipMap::new(),
@@ -101,13 +101,12 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    pub(crate) fn insert_batch_data(inner: &TableInner, vec_data: Vec<(Vec<u8>, CommandData)>) -> Result<()> {
+    fn insert_batch_data(inner: &TableInner, vec_data: Vec<(Vec<u8>, CommandData)>) -> Result<()> {
         // 将seq_id作为低位
-        let seq_id = GenBuffer::create_gen();
+        let seq_id = SeqBuffer::create_seq();
 
         for (cmd_key, cmd) in vec_data {
-            let key = key_encode_with_seq(cmd_key, seq_id)?;
-            let _ignore = inner.mem_table.insert(key, (cmd, seq_id));
+            let _ignore = inner.mem_table.insert(key_encode_with_seq(cmd_key, seq_id)?, cmd);
         }
 
         Ok(())
