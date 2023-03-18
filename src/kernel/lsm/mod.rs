@@ -17,6 +17,7 @@ mod log;
 mod mvcc;
 mod block;
 mod mem_table;
+mod iterator;
 
 /// Footer序列化长度定长
 /// 注意Footer序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致Footer在不同数据时，长度不一致

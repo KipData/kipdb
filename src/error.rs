@@ -38,17 +38,16 @@ pub enum KvsError {
     /// 而错误则是内存存在索引却在硬盘中不存在这个数据
     #[fail(display = "WAL log load error")]
     WalLoadError,
-
     #[fail(display = "Could not found the SSTable")]
     SSTableLostError,
-
     /// Unexpected command type error.
     /// It indicated a corrupted log or a program bug.
     #[fail(display = "Unexpected command type")]
     UnexpectedCommandType,
-
     #[fail(display = "Process already exists")]
     ProcessExistsError,
+    #[fail(display = "数据索引越界")]
+    OutOfBounds,
 }
 
 #[derive(Fail, Debug)]

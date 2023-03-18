@@ -188,6 +188,12 @@ impl BlockItem for Index {
     }
 }
 
+impl Value {
+    pub(crate) fn value(&self) -> &Option<Vec<u8>> {
+        &self.bytes
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum CompressType {
     None,
@@ -427,6 +433,32 @@ impl Block<Value> {
     }
 }
 
+impl<T> Block<T> {
+    #[allow(dead_code)]
+    pub(crate) fn entry_len(&self) -> usize {
+        self.vec_entry.len()
+    }
+
+    /// 获取该Entry对应的shared_key前缀
+    ///
+    /// 具体原理是通过被固定的restart_interval进行前缀压缩的Block，
+    /// 通过index获取前方最近的Restart，得到的Key通过shared_len进行截取以此得到shared_key
+    fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
+        &self.vec_entry[index - index % self.restart_interval]
+            .1.key[0..shared_len]
+    }
+}
+
+impl<T> Block<T> where T: Clone {
+    pub(crate) fn get_item(&self, index: usize) -> KeyValue<T> {
+        let entry = &self.vec_entry[index].1;
+        (self.shared_key_prefix(index, entry.shared_len).into_iter()
+             .cloned()
+             .chain(entry.key.clone())
+             .collect_vec(), entry.item.clone())
+    }
+}
+
 impl<T> Block<T> where T: BlockItem {
     /// 新建Block，同时Block会进行前缀压缩
     pub(crate) fn new(vec_kv: Vec<KeyValue<T>>, restart_interval: usize) -> Block<T> {
@@ -486,7 +518,7 @@ impl<T> Block<T> where T: BlockItem {
             .item.clone()
     }
 
-    fn binary_search(&self, key: &[u8]) -> core::result::Result<usize, usize> {
+    pub(crate) fn binary_search(&self, key: &[u8]) -> core::result::Result<usize, usize> {
         self.vec_entry
             .binary_search_by(|(index, entry)| {
                 if entry.shared_len > 0 {
@@ -499,15 +531,6 @@ impl<T> Block<T> where T: BlockItem {
                     key.cmp(&entry.key)
                 }.reverse()
             })
-    }
-
-    /// 获取该Entry对应的shared_key前缀
-    ///
-    /// 具体原理是通过被固定的restart_interval进行前缀压缩的Block，
-    /// 通过index获取前方最近的Restart，得到的Key通过shared_len进行截取以此得到shared_key
-    fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
-        &self.vec_entry[index - index % self.restart_interval]
-            .1.key[0..shared_len]
     }
 
     /// 序列化后进行压缩
