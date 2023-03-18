@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use clap::{Parser};
 use itertools::Itertools;
 use tracing::{error, info};
@@ -105,7 +104,7 @@ async fn batch_set(client: &mut Client, batch: Vec<String>) -> Result<()> {
             .map(|(key, value)| {
                 CommandData::Set {
                     key: encode(key),
-                    value: Arc::new(encode(value))
+                    value: encode(value)
                 }
             }).collect_vec();
         batch_run_and_print(client, vec_batch_set, "Done!").await?;

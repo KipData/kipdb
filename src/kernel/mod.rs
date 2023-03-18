@@ -1,7 +1,6 @@
 use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
@@ -87,7 +86,7 @@ struct CommandPos {
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommandData {
-    Set { key: Vec<u8>, value: Arc<Vec<u8>> },
+    Set { key: Vec<u8>, value: Vec<u8> },
     Remove { key: Vec<u8> },
     Get { key: Vec<u8> }
 }
@@ -287,7 +286,7 @@ impl CommandData {
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                kv_store.set(&key, value_unwrap(value)).await.map(|_| options_none())
+                kv_store.set(&key, value).await.map(|_| options_none())
             }
             CommandData::Remove { key } => {
                 kv_store.remove(&key).await.map(|_| options_none())
@@ -300,7 +299,7 @@ impl CommandData {
 
     #[inline]
     pub fn set(key: Vec<u8>, value: Vec<u8>) -> Self {
-        Self::Set { key, value: Arc::new(value) }
+        Self::Set { key, value }
     }
 
     #[inline]
@@ -325,7 +324,7 @@ impl From<KeyValue> for CommandData {
         match r#type {
             0 => CommandData::Get { key },
             2 => CommandData::Remove { key },
-            _ => CommandData::Set { key, value: Arc::new(value) }
+            _ => CommandData::Set { key, value }
         }
     }
 }
@@ -336,7 +335,7 @@ impl From<CommandData> for KeyValue {
         match cmd_data {
             CommandData::Set { key, value } => KeyValue {
                 key,
-                value: value_unwrap(value),
+                value,
                 r#type: 1,
             },
             CommandData::Remove { key } => KeyValue {
@@ -370,13 +369,6 @@ impl From<Option<Vec<u8>>> for CommandOption {
             None => options_none()
         }
     }
-}
-
-/// 用于对解除Arc指针
-/// 确保value此时无其他数据引用
-#[allow(clippy::unwrap_used)]
-fn value_unwrap(value: Arc<Vec<u8>>) -> Vec<u8> {
-    Arc::try_unwrap(value).unwrap()
 }
 
 /// 现有日志文件序号排序
