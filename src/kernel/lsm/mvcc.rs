@@ -6,7 +6,7 @@ use crate::kernel::lsm::lsm_kv::{Config, SeqBuffer, wal_put};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{key_encode_with_seq, MemTable, TableInner};
 use crate::kernel::lsm::version::Version;
-use crate::KvsError;
+use crate::KernelError;
 
 pub struct Transaction<'a> {
     seq_id: i64,
@@ -68,7 +68,7 @@ impl<'a> Transaction<'a> {
                 key.to_vec(),
                 CommandData::remove(key.to_vec())
             );
-        } else { return Err(KvsError::KeyNotFound); }
+        } else { return Err(KernelError::KeyNotFound); }
 
         Ok(())
     }

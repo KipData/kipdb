@@ -5,7 +5,7 @@ use tokio::sync::oneshot::error::RecvError;
 /// Error type for kvs
 #[derive(Fail, Debug)]
 #[non_exhaustive]
-pub enum KvsError {
+pub enum KernelError {
     /// IO error
     #[fail(display = "{}", _0)]
     Io(#[cause] io::Error),
@@ -68,7 +68,7 @@ pub enum ConnectionError {
     #[fail(display = "server flush error")]
     FlushError,
     #[fail(display = "{}", _0)]
-    KvStoreError(#[cause] KvsError),
+    KvStoreError(#[cause] KernelError),
 }
 
 #[derive(Fail, Debug)]
@@ -80,7 +80,7 @@ pub enum CacheError {
     #[fail(display = "Cache size overflow")]
     CacheSizeOverFlow,
     #[fail(display = "{}", _0)]
-    KvStoreError(#[cause] KvsError),
+    KvStoreError(#[cause] KernelError),
 }
 
 impl From<io::Error> for ConnectionError {
@@ -90,55 +90,55 @@ impl From<io::Error> for ConnectionError {
     }
 }
 
-impl From<io::Error> for KvsError {
+impl From<io::Error> for KernelError {
     #[inline]
     fn from(err: io::Error) -> Self {
-        KvsError::Io(err)
+        KernelError::Io(err)
     }
 }
 
-impl From<RecvError> for KvsError {
+impl From<RecvError> for KernelError {
     #[inline]
     fn from(err: RecvError) -> Self {
-        KvsError::Recv(err)
+        KernelError::Recv(err)
     }
 }
 
-impl From<Box<bincode::ErrorKind>> for KvsError {
+impl From<Box<bincode::ErrorKind>> for KernelError {
     #[inline]
     fn from(err: Box<bincode::ErrorKind>) -> Self {
-        KvsError::SerdeBinCode(err)
+        KernelError::SerdeBinCode(err)
     }
 }
 
-impl From<sled::Error> for KvsError {
+impl From<sled::Error> for KernelError {
     #[inline]
     fn from(err: sled::Error) -> Self {
-        KvsError::Sled(err)
+        KernelError::Sled(err)
     }
 }
 
-impl From<KvsError> for ConnectionError {
+impl From<KernelError> for ConnectionError {
     #[inline]
-    fn from(err: KvsError) -> Self {
+    fn from(err: KernelError) -> Self {
         ConnectionError::KvStoreError(err)
     }
 }
 
-impl From<CacheError> for KvsError {
+impl From<CacheError> for KernelError {
     #[inline]
     fn from(value: CacheError) -> Self {
         match value {
             CacheError::KvStoreError(kv_error) => kv_error,
-            CacheError::CacheSizeOverFlow => KvsError::CacheSizeOverFlow,
-            CacheError::ShardingNotAlign => KvsError::CacheShardingNotAlign,
+            CacheError::CacheSizeOverFlow => KernelError::CacheSizeOverFlow,
+            CacheError::ShardingNotAlign => KernelError::CacheShardingNotAlign,
         }
     }
 }
 
-impl From<KvsError> for CacheError {
+impl From<KernelError> for CacheError {
     #[inline]
-    fn from(value: KvsError) -> Self {
+    fn from(value: KernelError) -> Self {
         CacheError::KvStoreError(value)
     }
 }

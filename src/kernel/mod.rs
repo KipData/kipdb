@@ -10,7 +10,7 @@ use itertools::Itertools;
 use tokio::time;
 
 use crate::kernel::io::{FileExtension, IoReader, IoWriter};
-use crate::KvsError;
+use crate::KernelError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
 pub mod hash_kv;
@@ -19,7 +19,7 @@ pub mod lsm;
 pub mod io;
 pub mod utils;
 
-pub type Result<T> = std::result::Result<T, KvsError>;
+pub type Result<T> = std::result::Result<T, KernelError>;
 
 pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
 
@@ -399,7 +399,7 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
         if lock_file.try_lock()? {
             return Ok(lock_file)
         } else if backoff > 4 {
-            return Err(KvsError::ProcessExistsError);
+            return Err(KernelError::ProcessExistsError);
         } else {
             time::sleep(Duration::from_millis(backoff * 100)).await;
 

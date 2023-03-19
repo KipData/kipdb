@@ -1,7 +1,9 @@
-mod block_iterator;
+mod block_iter;
+mod sstable_iter;
 
 use crate::kernel::Result;
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) enum Seek<'s> {
     // 第一个元素
@@ -14,16 +16,25 @@ pub(crate) enum Seek<'s> {
     Backward(&'s [u8])
 }
 
-pub(crate) trait Iterator: Send + Sync {
+impl<'s> Seek<'s> {
+    pub(crate) fn get_key(&self) -> Option<&'s [u8]> {
+        match self {
+            Seek::Forward(key) => Some(key),
+            Seek::Backward(key) => Some(key),
+
+            _ => None
+        }
+    }
+}
+
+pub(crate) trait Iterator<T>: Send + Sync {
     fn next(&mut self) -> Result<()>;
 
     fn prev(&mut self) -> Result<()>;
 
-    fn key(&mut self) -> &[u8];
-
-    fn value(&mut self) -> &Option<Vec<u8>>;
+    fn item(&self) -> &T;
 
     fn is_valid(&self) -> bool;
 
-    fn seek(&mut self, seek: Seek);
+    fn seek(&mut self, seek: Seek) -> Result<()>;
 }

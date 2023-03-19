@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sled::Db;
 use async_trait::async_trait;
 use crate::kernel::KVStore;
-use crate::KvsError;
+use crate::KernelError;
 
 #[derive(Debug)]
 pub struct SledStore {
@@ -53,8 +53,8 @@ impl KVStore for SledStore {
     async fn remove(&self, key: &[u8]) -> crate::kernel::Result<()> {
         match self.data_base.remove(key) {
             Ok(Some(_)) => { Ok(()) }
-            Ok(None) => { Err(KvsError::KeyNotFound) }
-            Err(e) => { Err(KvsError::Sled(e)) }
+            Ok(None) => { Err(KernelError::KeyNotFound) }
+            Err(e) => { Err(KernelError::Sled(e)) }
         }
     }
 

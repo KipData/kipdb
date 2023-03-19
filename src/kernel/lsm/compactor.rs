@@ -4,7 +4,7 @@ use futures::future;
 use itertools::Itertools;
 use tokio::sync::oneshot;
 use tracing::{error, info};
-use crate::KvsError;
+use crate::KernelError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, StoreInner};
@@ -162,7 +162,7 @@ impl Compactor {
     /// 因此大量数据压缩的情况下Level 1的SSTable数量会较多
     pub(crate) async fn major_compaction(&self, mut level: usize, mut vec_ver_edit: Vec<VersionEdit>) -> Result<()> {
         if level > 6 {
-            return Err(KvsError::LevelOver);
+            return Err(KernelError::LevelOver);
         }
 
         while level < 7 {

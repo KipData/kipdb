@@ -3,7 +3,7 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 use prost::Message;
 use crate::error::ConnectionError;
 use crate::kernel::{ByteUtils, CommandData};
-use crate::KvsError;
+use crate::KernelError;
 use crate::net::connection::Connection;
 use crate::net::{kv_encode_with_len, option_from_key_value, Result};
 use crate::proto::net_pb::{CommandOption, KeyValue};
@@ -97,7 +97,7 @@ impl Client {
                 })
                 .collect())
         } else {
-            Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
+            Err(ConnectionError::KvStoreError(KernelError::NotMatchCmd))
         }
     }
 
@@ -129,7 +129,7 @@ impl Client {
         if result_option.r#type == type_num {
             Ok(result_option.value)
         } else {
-            Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
+            Err(ConnectionError::KvStoreError(KernelError::NotMatchCmd))
         }
     }
 

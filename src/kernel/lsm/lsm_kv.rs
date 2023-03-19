@@ -12,7 +12,7 @@ use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tracing::error;
-use crate::KvsError;
+use crate::KernelError;
 use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
 use crate::kernel::lsm::block;
@@ -164,7 +164,7 @@ impl KVStore for LsmStore {
                    CommandData::remove(key.to_vec()), true
                 ).await
             }
-            None => { Err(KvsError::KeyNotFound) }
+            None => { Err(KernelError::KeyNotFound) }
         }
     }
 

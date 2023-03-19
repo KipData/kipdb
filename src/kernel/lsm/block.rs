@@ -8,7 +8,7 @@ use varuint::{ReadVarint, WriteVarint};
 use crate::kernel::{CommandData, Result};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::KvsError;
+use crate::KernelError;
 
 /// BlockCache类型 可同时缓存两种类型
 ///
@@ -189,6 +189,7 @@ impl BlockItem for Index {
 }
 
 impl Value {
+    #[allow(dead_code)]
     pub(crate) fn value(&self) -> &Option<Vec<u8>> {
         &self.bytes
     }
@@ -575,7 +576,7 @@ impl<T> Block<T> where T: BlockItem {
         if crc32fast::hash(&buf) == bincode::deserialize::<u32>(
             &buf[date_bytes_len..]
         )? {
-            return Err(KvsError::CrcMisMatch)
+            return Err(KernelError::CrcMisMatch)
         }
         buf.truncate(date_bytes_len);
 

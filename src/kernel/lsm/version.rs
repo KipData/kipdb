@@ -16,7 +16,7 @@ use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::KvsError::SSTableLostError;
+use crate::KernelError::SSTableLostError;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 

@@ -2,7 +2,7 @@ use crate::error::ConnectionError;
 
 use prost::Message;
 use crate::kernel::ByteUtils;
-use crate::KvsError;
+use crate::KernelError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
 mod connection;
@@ -29,7 +29,7 @@ fn option_from_key_value(kv: &KeyValue) -> Result<CommandOption> {
 /// CommandOption转换为KeyValue
 fn key_value_from_option(option: &CommandOption) -> Result<KeyValue> {
     if option.r#type != 0 {
-        Err(ConnectionError::KvStoreError(KvsError::NotMatchCmd))
+        Err(ConnectionError::KvStoreError(KernelError::NotMatchCmd))
     } else {
         Ok(KeyValue::decode(&*option.bytes)
             .map_err(|_| ConnectionError::DecodeError)?)
@@ -45,6 +45,6 @@ fn kv_encode_with_len(key_value: &KeyValue) -> Result<Vec<u8>> {
     if !vec.is_empty() {
         Ok(ByteUtils::tag_with_head(vec))
     } else {
-        Err(ConnectionError::KvStoreError(KvsError::DataEmpty))
+        Err(ConnectionError::KvStoreError(KernelError::DataEmpty))
     }
 }

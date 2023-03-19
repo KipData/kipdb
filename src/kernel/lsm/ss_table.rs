@@ -10,7 +10,7 @@ use crate::kernel::lsm::block::{Block, BlockBuilder, BlockCache, BlockItem, Bloc
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
-use crate::KvsError;
+use crate::KernelError;
 
 pub(crate) struct SSTable {
     inner: Arc<SSTableInner>
@@ -70,16 +70,16 @@ impl Scope {
         if !vec_scope.is_empty() {
             let start = vec_scope.iter()
                 .map(|scope| &scope.start)
-                .min().ok_or(KvsError::DataEmpty)?
+                .min().ok_or(KernelError::DataEmpty)?
                 .clone();
             let end = vec_scope.iter()
                 .map(|scope| &scope.end)
-                .max().ok_or(KvsError::DataEmpty)?
+                .max().ok_or(KernelError::DataEmpty)?
                 .clone();
 
             Ok(Scope { start, end })
         } else {
-            Err(KvsError::DataEmpty)
+            Err(KernelError::DataEmpty)
         }
     }
 
@@ -100,7 +100,7 @@ impl Scope {
                 Ok(Self::from_cmd_data(one, one))
             },
             _ => {
-                Err(KvsError::DataEmpty)
+                Err(KernelError::DataEmpty)
             },
         }
     }
@@ -169,40 +169,63 @@ impl SSTable {
         let inner = &self.inner;
         let reader = inner.reader.as_ref();
         if inner.meta.filter.contains(key) {
-            if let BlockType::Index(index_block) = block_cache.get_or_insert(
-                (self.get_gen(), None),
-                |_| {
-                    let Footer { index_offset, index_len, .. } = inner.footer;
-                    Ok(BlockType::Index(
-                        Self::loading_block(
-                            reader,
-                            index_offset,
-                            index_len as usize,
-                            CompressType::None,
-                            inner.meta.index_restart_interval
-                        )?
-                    ))
+            let index_block = self.get_index_block(block_cache)?;
+
+            if let BlockType::Data(data_block) =  block_cache.get_or_insert(
+                (self.get_gen(), Some(index_block.find_with_upper(key))),
+                |(_, index)| {
+                    let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
+                    Ok(Self::get_data_block_(inner, reader, index)?)
                 }
-            )? {
-                if let BlockType::Data(data_block) =  block_cache.get_or_insert(
-                    (self.get_gen(), Some(index_block.find_with_upper(key))),
-                    |(_, index)| {
-                        let index = (*index).ok_or_else(|| KvsError::DataEmpty)?;
-                        Ok(BlockType::Data(
-                            Self::loading_block(
-                                reader,
-                                index.offset(),
-                                index.len(),
-                                CompressType::LZ4,
-                                inner.meta.data_restart_interval
-                            )?
-                        ))
-                    }
-                )? { return Ok(data_block.find(key)); }
-            }
+            )? { return Ok(data_block.find(key)); }
         }
 
         Ok(None)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_data_block<'a>(&'a self, index: Index, block_cache: &'a BlockCache) -> Result<Option<&Block<Value>>> {
+        let inner = &self.inner;
+        Ok(block_cache.get_or_insert(
+            (self.get_gen(), Some(index)),
+            |(_, index)| {
+                let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
+                Ok(Self::get_data_block_(inner, inner.reader.as_ref(), index)?)
+            }
+        ).map(|block_type| {
+            if let BlockType::Data(data_block) = block_type {
+                Some(data_block)
+            } else { None }
+        })?)
+    }
+
+    fn get_data_block_(inner: &Arc<SSTableInner>, reader: &dyn IoReader, index: Index) -> Result<BlockType> {
+        Ok(BlockType::Data(
+            Self::loading_block(
+                reader, index.offset(), index.len(), CompressType::LZ4, inner.meta.data_restart_interval
+            )?
+        ))
+    }
+
+    pub(crate) fn get_index_block<'a>(&'a self, block_cache: &'a BlockCache) -> Result<&Block<Index>> {
+        let inner = &self.inner;
+        block_cache.get_or_insert(
+            (self.get_gen(), None),
+            |_| Ok(Self::get_index_block_(inner, inner.reader.as_ref())?)
+        ).map(|block_type| {
+            if let BlockType::Index(data_block) = block_type {
+                Some(data_block)
+            } else { None }
+        })?.ok_or(KernelError::DataEmpty)
+    }
+
+    fn get_index_block_(inner: &Arc<SSTableInner>, reader: &dyn IoReader) -> Result<BlockType> {
+        let Footer { index_offset, index_len, .. } = inner.footer;
+        Ok(BlockType::Index(
+            Self::loading_block(
+                reader, index_offset, index_len as usize, CompressType::None, inner.meta.index_restart_interval
+            )?
+        ))
     }
 
     fn loading_block<T>(
