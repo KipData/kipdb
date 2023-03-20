@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::{CommandData, Result};
 use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::compactor::MergeShardingVec;
-use crate::kernel::lsm::lsm_kv::{Config, GenBuffer};
+use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 
@@ -123,7 +123,7 @@ fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize) -> MergeShard
 
     for i in 0 .. part_size {
         // 减小create_gen影响的时间
-        slice[i].0 = GenBuffer::create_gen();
+        slice[i].0 = Gen::create();
         let mut data_len = 0;
         while !vec_data.is_empty() {
             if let Some(cmd_data) = vec_data.pop() {

@@ -181,7 +181,7 @@ mod tests {
     use crate::kernel::io::FileExtension;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::{CommandData, Result};
-    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH, GenBuffer};
+    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH, Gen};
 
     #[test]
     fn test_log_load() -> Result<()> {
@@ -201,7 +201,7 @@ mod tests {
         wal.log(&data_1)?;
         wal.log(&data_2)?;
 
-        let gen = wal.switch(GenBuffer::create_gen())?;
+        let gen = wal.switch(Gen::create())?;
 
         drop(wal);
 
