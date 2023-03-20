@@ -5,7 +5,7 @@ use itertools::Itertools;
 use optimistic_lock_coupling::{OptimisticLockCoupling, OptimisticLockCouplingReadGuard, OptimisticLockCouplingWriteGuard};
 use crate::kernel::Result;
 use crate::kernel::CommandData;
-use crate::kernel::lsm::lsm_kv::SeqBuffer;
+use crate::kernel::lsm::lsm_kv::Sequence;
 
 /// Value为此Key的Records(CommandData与seq_id)
 pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
@@ -46,7 +46,7 @@ impl MemTable {
         cmd: CommandData,
     ) -> Result<()> {
         // 将seq_id作为低位
-        let key = key_encode_with_seq(cmd.get_key_clone(), SeqBuffer::create_seq())?;
+        let key = key_encode_with_seq(cmd.get_key_clone(), Sequence::create())?;
 
         self.loop_read(|inner| {
             inner.mem_table.insert(key, cmd);
@@ -180,7 +180,7 @@ pub(crate) fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Result<Vec<u
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::lsm_kv::SeqBuffer;
+    use crate::kernel::lsm::lsm_kv::Sequence;
     use crate::kernel::{CommandData, Result};
     use crate::kernel::lsm::mem_table::{MemMap, MemTable};
 
@@ -193,7 +193,7 @@ mod tests {
 
         mem_table.insert_data(data_1)?;
 
-        let old_seq_id = SeqBuffer::create_seq();
+        let old_seq_id = Sequence::create();
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'1']));
 
@@ -203,7 +203,7 @@ mod tests {
 
         assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id)?, Some(vec![b'1']));
 
-        let new_seq_id = SeqBuffer::create_seq();
+        let new_seq_id = Sequence::create();
 
         assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id)?, Some(vec![b'2']));
 

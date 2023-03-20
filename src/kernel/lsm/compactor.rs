@@ -7,7 +7,7 @@ use tracing::{error, info};
 use crate::KvsError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::{CommandData, Result};
-use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, StoreInner};
+use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::MemTable;
@@ -96,7 +96,7 @@ impl Compactor {
     /// 需要保证获取到了MemTable的写锁以保证wal在switch时MemTable的数据和Wal不一致(多出几条)
     /// 当wal配置启用时，使用预先记录的gen作为结果
     fn switch_wal(&self) -> Result<i64> {
-        let next_gen = GenBuffer::create_gen();
+        let next_gen = Gen::create();
 
         Ok(if self.config().wal_enable {
             self.wal.switch(next_gen)?

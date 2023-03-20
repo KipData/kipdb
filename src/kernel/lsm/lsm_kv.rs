@@ -80,7 +80,7 @@ pub(crate) struct StoreInner {
 
 impl StoreInner {
     pub(crate) async fn new(config: Config) -> Result<(Self, LogLoader)> {
-        GenBuffer::init();
+        Gen::init();
 
         let (wal, option_success) = LogLoader::reload_with_check(
             config.clone(),
@@ -471,22 +471,22 @@ impl Config {
     }
 }
 
-/// 插入时SEQ id生成器
+/// 插入时Sequence id生成器
 ///
-/// 与GenBuffer比较大的不同在于
-/// - SeqBuffer随着每次重启都会重置为0，而seq上限很高，可以在此次运行时生成有序且不相同的id
-/// - GenBuffer以时间戳为基础，每次保证每次重启都保证时间有序，但不足以作为Seq的生成，因为上限较低
-pub(crate) struct SeqBuffer {}
+/// 与`Gen`比较大的不同在于
+/// - `Sequence`随着每次重启都会重置为0，而seq上限很高，可以在此次运行时生成有序且不相同的id
+/// - `Gen`以时间戳为基础，每次保证每次重启都保证时间有序，但不足以作为Seq的生成，因为上限较低
+pub(crate) struct Sequence {}
 
-pub(crate) struct GenBuffer {}
+pub(crate) struct Gen {}
 
-impl SeqBuffer {
-    pub(crate) fn create_seq() -> i64 {
+impl Sequence {
+    pub(crate) fn create() -> i64 {
         SEQ_COUNT.fetch_add(1, Ordering::Relaxed)
     }
 }
 
-impl GenBuffer {
+impl Gen {
     /// 将GEN_BUF初始化至当前时间戳
     ///
     /// 与create_gen相对应，需要将GEN初始化为当前时间戳
@@ -494,7 +494,7 @@ impl GenBuffer {
         GEN_BUF.store(Local::now().timestamp_millis(), Ordering::Relaxed);
     }
 
-    pub(crate) fn create_gen() -> i64 {
+    pub(crate) fn create() -> i64 {
         GEN_BUF.fetch_add(1, Ordering::Relaxed)
     }
 }
@@ -524,33 +524,33 @@ mod tests {
     use std::time::{Duration, Instant};
     use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::{Config, GenBuffer, LsmStore, SeqBuffer};
+    use crate::kernel::lsm::lsm_kv::{Config, Gen, LsmStore, Sequence};
     use crate::kernel::{KVStore, Result};
 
     #[test]
     fn test_seq_create() {
-        let i_1 = SeqBuffer::create_seq();
+        let i_1 = Sequence::create();
 
-        let i_2 = SeqBuffer::create_seq();
+        let i_2 = Sequence::create();
 
         assert!(i_1 < i_2);
     }
 
     #[test]
     fn test_gen_create() {
-        let i_1 = GenBuffer::create_gen();
+        let i_1 = Gen::create();
 
-        let i_2 = GenBuffer::create_gen();
+        let i_2 = Gen::create();
 
         assert!(i_1 < i_2);
 
-        GenBuffer::init();
-        let i_3 = GenBuffer::create_gen();
+        Gen::init();
+        let i_3 = Gen::create();
 
         sleep(Duration::from_secs(1));
 
-        GenBuffer::init();
-        let i_4 = GenBuffer::create_gen();
+        Gen::init();
+        let i_4 = Gen::create();
 
         assert!(i_3 > i_2);
         assert!(i_4 > i_3);
