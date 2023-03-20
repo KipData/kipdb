@@ -34,7 +34,7 @@ impl<'a> SSTableIterator<'a> {
         is_next: bool
     ) -> Result<BlockIterator<'a, Value>> {
         let mut iterator = BlockIterator::new(
-            ss_table.get_data_block(index_iter.item().1, block_cache)?
+            ss_table.get_data_block(index_iter.item_owner().1, block_cache)?
                 .ok_or(KernelError::DataEmpty)?
         );
         iterator.seek(if is_next { Seek::First } else { Seek::Last })?;
@@ -62,8 +62,8 @@ impl Iterator<KeyValue<Value>> for SSTableIterator<'_> {
         Ok(())
     }
 
-    fn item(&self) -> &KeyValue<Value> {
-        self.data_iter.item()
+    fn item_owner(&self) -> KeyValue<Value> {
+        self.data_iter.item_owner()
     }
 
     fn is_valid(&self) -> bool {
@@ -146,20 +146,20 @@ mod tests {
 
         let mut iterator = SSTableIterator::new(&ss_table, &cache)?;
         for i in 0..times - 1 {
-            assert_eq!(&iterator.item().0, vec_cmd[i].get_key());
+            assert_eq!(&iterator.item_owner().0, vec_cmd[i].get_key());
             iterator.next()?;
         }
 
         for i in 0..times - 1 {
-            assert_eq!(&iterator.item().0, vec_cmd[times - i - 1].get_key());
+            assert_eq!(&iterator.item_owner().0, vec_cmd[times - i - 1].get_key());
             iterator.prev()?;
         }
 
         iterator.seek(Seek::Backward(vec_cmd[114].get_key()))?;
-        assert_eq!(&iterator.item().0, vec_cmd[114].get_key());
+        assert_eq!(&iterator.item_owner().0, vec_cmd[114].get_key());
 
         iterator.seek(Seek::Forward(vec_cmd[514].get_key()))?;
-        assert_eq!(&iterator.item().0, vec_cmd[514].get_key());
+        assert_eq!(&iterator.item_owner().0, vec_cmd[514].get_key());
 
         Ok(())
     }

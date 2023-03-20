@@ -35,11 +35,21 @@ pub(crate) enum BlockType {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Entry<T> {
+pub(crate) struct Entry<T> {
     unshared_len: usize,
     shared_len: usize,
     key: Vec<u8>,
     item: T
+}
+
+impl<T> Entry<T> where T: BlockItem {
+    pub(crate) fn key(&self) -> &[u8] {
+        &self.key
+    }
+
+    pub(crate) fn item(&self) -> &T {
+        &self.item
+    }
 }
 
 impl<T> Entry<T> where T: BlockItem {
@@ -444,19 +454,30 @@ impl<T> Block<T> {
     ///
     /// 具体原理是通过被固定的restart_interval进行前缀压缩的Block，
     /// 通过index获取前方最近的Restart，得到的Key通过shared_len进行截取以此得到shared_key
-    fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
+    pub(crate) fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
         &self.vec_entry[index - index % self.restart_interval]
             .1.key[0..shared_len]
     }
-}
 
-impl<T> Block<T> where T: Clone {
-    pub(crate) fn get_item(&self, index: usize) -> KeyValue<T> {
-        let entry = &self.vec_entry[index].1;
-        (self.shared_key_prefix(index, entry.shared_len).into_iter()
-             .cloned()
-             .chain(entry.key.clone())
-             .collect_vec(), entry.item.clone())
+    pub(crate) fn restart_interval(&self) -> usize {
+        self.restart_interval
+    }
+
+    /// 获取指定index的entry
+    pub(crate) fn get_entry(&self, index: usize) -> &Entry<T> {
+        &self.vec_entry[index].1
+    }
+
+    /// 获取指定index所属restart的shared_len
+    ///
+    /// 当index为restart_entry时也会获取其区域内的其他节点相同的shared_len
+    pub(crate) fn restart_shared_len(&self, index: usize) -> usize {
+        if index % self.restart_interval != 0 {
+            self.get_entry(index).shared_len
+        } else {
+            self.vec_entry.get(index + 1)
+                .map_or(0, |(_, entry)| entry.shared_len)
+        }
     }
 }
 

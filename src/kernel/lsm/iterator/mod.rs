@@ -27,12 +27,16 @@ impl<'s> Seek<'s> {
     }
 }
 
+pub(crate) trait ReadIterator<T>: Iterator<T> {
+    fn item(&self) -> &T;
+}
+
 pub(crate) trait Iterator<T>: Send + Sync {
     fn next(&mut self) -> Result<()>;
 
     fn prev(&mut self) -> Result<()>;
 
-    fn item(&self) -> &T;
+    fn item_owner(&self) -> T;
 
     fn is_valid(&self) -> bool;
 
