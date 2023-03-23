@@ -1,5 +1,5 @@
-use crate::kernel::lsm::block::{BlockCache, Index, KeyValue, Value};
-use crate::kernel::lsm::iterator::{Iterator, Seek};
+use crate::kernel::lsm::block::{BlockCache, Index, Value};
+use crate::kernel::lsm::iterator::{DiskIter, Seek};
 use crate::kernel::lsm::iterator::block_iter::BlockIterator;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
@@ -33,8 +33,9 @@ impl<'a> SSTableIterator<'a> {
         index_iter: &BlockIterator<Index>,
         is_next: bool
     ) -> Result<BlockIterator<'a, Value>> {
+        let index = index_iter.value().clone();
         let mut iterator = BlockIterator::new(
-            ss_table.get_data_block(index_iter.item_owner().1, block_cache)?
+            ss_table.get_data_block(index, block_cache)?
                 .ok_or(KernelError::DataEmpty)?
         );
         iterator.seek(if is_next { Seek::First } else { Seek::Last })?;
@@ -43,7 +44,7 @@ impl<'a> SSTableIterator<'a> {
     }
 }
 
-impl Iterator<KeyValue<Value>> for SSTableIterator<'_> {
+impl DiskIter<Vec<u8>, Value> for SSTableIterator<'_> {
     fn next(&mut self) -> Result<()> {
         if let Err(KernelError::OutOfBounds) = self.data_iter.next() {
             self.index_iter.next()?;
@@ -62,8 +63,12 @@ impl Iterator<KeyValue<Value>> for SSTableIterator<'_> {
         Ok(())
     }
 
-    fn item_owner(&self) -> KeyValue<Value> {
-        self.data_iter.item_owner()
+    fn key(&self) -> Vec<u8> {
+        self.data_iter.key()
+    }
+
+    fn value(&self) -> &Value {
+        self.data_iter.value()
     }
 
     fn is_valid(&self) -> bool {
@@ -99,7 +104,7 @@ mod tests {
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::{CommandData, Result};
-    use crate::kernel::lsm::iterator::{Iterator, Seek};
+    use crate::kernel::lsm::iterator::{DiskIter, Seek};
     use crate::kernel::lsm::iterator::sstable_iter::SSTableIterator;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
@@ -146,20 +151,20 @@ mod tests {
 
         let mut iterator = SSTableIterator::new(&ss_table, &cache)?;
         for i in 0..times - 1 {
-            assert_eq!(&iterator.item_owner().0, vec_cmd[i].get_key());
+            assert_eq!(&iterator.key(), vec_cmd[i].get_key());
             iterator.next()?;
         }
 
         for i in 0..times - 1 {
-            assert_eq!(&iterator.item_owner().0, vec_cmd[times - i - 1].get_key());
+            assert_eq!(&iterator.key(), vec_cmd[times - i - 1].get_key());
             iterator.prev()?;
         }
 
         iterator.seek(Seek::Backward(vec_cmd[114].get_key()))?;
-        assert_eq!(&iterator.item_owner().0, vec_cmd[114].get_key());
+        assert_eq!(&iterator.key(), vec_cmd[114].get_key());
 
         iterator.seek(Seek::Forward(vec_cmd[514].get_key()))?;
-        assert_eq!(&iterator.item_owner().0, vec_cmd[514].get_key());
+        assert_eq!(&iterator.key(), vec_cmd[514].get_key());
 
         Ok(())
     }

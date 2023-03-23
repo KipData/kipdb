@@ -27,16 +27,15 @@ impl<'s> Seek<'s> {
     }
 }
 
-pub(crate) trait ReadIterator<T>: Iterator<T> {
-    fn item(&self) -> &T;
-}
-
-pub(crate) trait Iterator<T>: Send + Sync {
+/// 硬盘迭代器
+pub(crate) trait DiskIter<K, V>: Send + Sync {
     fn next(&mut self) -> Result<()>;
 
     fn prev(&mut self) -> Result<()>;
 
-    fn item_owner(&self) -> T;
+    fn key(&self) -> K;
+
+    fn value(&self) -> &V;
 
     fn is_valid(&self) -> bool;
 
