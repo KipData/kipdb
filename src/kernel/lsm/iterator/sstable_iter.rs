@@ -1,22 +1,21 @@
 use crate::kernel::lsm::block::{BlockCache, Index, Value};
 use crate::kernel::lsm::iterator::{DiskIter, Seek};
-use crate::kernel::lsm::iterator::block_iter::BlockIterator;
+use crate::kernel::lsm::iterator::block_iter::BlockIter;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 use crate::KernelError;
 
-pub(crate) struct SSTableIterator<'a> {
+pub(crate) struct SSTableIter<'a> {
     ss_table: &'a SSTable,
-    data_iter: BlockIterator<'a, Value>,
-    index_iter: BlockIterator<'a, Index>,
+    data_iter: BlockIter<'a, Value>,
+    index_iter: BlockIter<'a, Index>,
     block_cache: &'a BlockCache
 }
 
-impl<'a> SSTableIterator<'a> {
+impl<'a> SSTableIter<'a> {
     #[allow(dead_code)]
     pub(crate) fn new(ss_table: &'a SSTable, block_cache: &'a BlockCache) -> Result<Self> {
-        let index_iter = BlockIterator::new(
-            ss_table.get_index_block(block_cache)?);
+        let index_iter = BlockIter::new(ss_table.get_index_block(block_cache)?);
         let data_iter = Self::data_iter_sync_(ss_table, block_cache, &index_iter, true)?;
 
         Ok(Self {
@@ -30,11 +29,11 @@ impl<'a> SSTableIterator<'a> {
     fn data_iter_sync_(
         ss_table: &'a SSTable,
         block_cache: &'a BlockCache,
-        index_iter: &BlockIterator<Index>,
+        index_iter: &BlockIter<Index>,
         is_next: bool
-    ) -> Result<BlockIterator<'a, Value>> {
+    ) -> Result<BlockIter<'a, Value>> {
         let index = index_iter.value().clone();
-        let mut iterator = BlockIterator::new(
+        let mut iterator = BlockIter::new(
             ss_table.get_data_block(index, block_cache)?
                 .ok_or(KernelError::DataEmpty)?
         );
@@ -42,9 +41,20 @@ impl<'a> SSTableIterator<'a> {
 
         Ok(iterator)
     }
+
+    fn data_iter_sync(&mut self, is_next: bool) -> Result<()> {
+        self.data_iter = Self::data_iter_sync_(
+            self.ss_table, self.block_cache, &self.index_iter, is_next
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn get_gen(&self) -> i64 {
+        self.ss_table.get_gen()
+    }
 }
 
-impl DiskIter<Vec<u8>, Value> for SSTableIterator<'_> {
+impl DiskIter<Vec<u8>, Value> for SSTableIter<'_> {
     fn next(&mut self) -> Result<()> {
         if let Err(KernelError::OutOfBounds) = self.data_iter.next() {
             self.index_iter.next()?;
@@ -85,15 +95,6 @@ impl DiskIter<Vec<u8>, Value> for SSTableIterator<'_> {
     }
 }
 
-impl SSTableIterator<'_> {
-    fn data_iter_sync(&mut self, is_next: bool) -> Result<()> {
-        self.data_iter = Self::data_iter_sync_(
-            self.ss_table, self.block_cache, &self.index_iter, is_next
-        )?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;
@@ -105,7 +106,7 @@ mod tests {
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::{CommandData, Result};
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
-    use crate::kernel::lsm::iterator::sstable_iter::SSTableIterator;
+    use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
@@ -149,7 +150,7 @@ mod tests {
             RandomState::default()
         )?;
 
-        let mut iterator = SSTableIterator::new(&ss_table, &cache)?;
+        let mut iterator = SSTableIter::new(&ss_table, &cache)?;
         for i in 0..times - 1 {
             assert_eq!(&iterator.key(), vec_cmd[i].get_key());
             iterator.next()?;

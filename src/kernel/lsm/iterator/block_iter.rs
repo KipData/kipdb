@@ -5,7 +5,7 @@ use crate::kernel::lsm::block::{Block, BlockItem};
 use crate::kernel::Result;
 use crate::KernelError;
 
-pub(crate) struct BlockIterator<'a, T> {
+pub(crate) struct BlockIter<'a, T> {
     block: &'a Block<T>,
     entry_len: usize,
 
@@ -13,13 +13,13 @@ pub(crate) struct BlockIterator<'a, T> {
     buf_shared_key: &'a [u8]
 }
 
-impl<'a, T> BlockIterator<'a, T> where T: BlockItem {
-    pub(crate) fn new(block: &'a Block<T>) -> BlockIterator<'a, T> {
+impl<'a, T> BlockIter<'a, T> where T: BlockItem {
+    pub(crate) fn new(block: &'a Block<T>) -> BlockIter<'a, T> {
         let buf_shared_key = block.shared_key_prefix(
             0, block.restart_shared_len(0)
         );
 
-        let iterator = BlockIterator {
+        let iterator = BlockIter {
             block,
             entry_len: block.entry_len(),
             offset: 0,
@@ -40,7 +40,7 @@ impl<'a, T> BlockIterator<'a, T> where T: BlockItem {
     }
 }
 
-impl<V> DiskIter<Vec<u8>, V> for BlockIterator<'_, V>
+impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
     where V: Sync + Send + BlockItem
 {
     fn next(&mut self) -> Result<()> {
@@ -110,7 +110,7 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIterator<'_, V>
 mod tests {
     use std::vec;
     use crate::kernel::lsm::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
-    use crate::kernel::lsm::iterator::block_iter::BlockIterator;
+    use crate::kernel::lsm::iterator::block_iter::BlockIter;
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
     use crate::kernel::Result;
 
@@ -122,7 +122,7 @@ mod tests {
             (vec![b'4'], Value::from(None)),
         ];
         let block = Block::new(data, DEFAULT_DATA_RESTART_INTERVAL);
-        let mut iterator = BlockIterator::new(&block);
+        let mut iterator = BlockIter::new(&block);
 
         assert!(iterator.is_valid());
 

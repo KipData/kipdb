@@ -167,7 +167,7 @@ pub(crate) struct Version {
     /// 统计数据
     meta_data: VersionMeta,
     /// 稀疏区间数据Block缓存
-    block_cache: Arc<BlockCache>,
+    pub(crate) block_cache: Arc<BlockCache>,
     /// 清除信号发送器
     /// Drop时通知Cleaner进行删除
     clean_sender: Sender<CleanTag>
@@ -627,6 +627,16 @@ impl Version {
             }
         }
         Some(vec)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn get_ss_tables_for_level(&self, level: usize) -> Vec<SSTable> {
+        let ss_table_map = self.ss_tables_map.read().await;
+
+        self.level_slice[level].iter()
+            .cloned()
+            .filter_map(|gen| ss_table_map.get(&gen))
+            .collect_vec()
     }
 
     /// 获取指定level中与scope冲突的
