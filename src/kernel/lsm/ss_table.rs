@@ -57,14 +57,6 @@ impl Scope {
         }
     }
 
-    /// 由Key构成scope
-    pub(crate) fn from_key(key: &[u8]) -> Self {
-        Scope {
-            start: key.to_owned(),
-            end: key.to_owned()
-        }
-    }
-
     /// 将多个scope重组融合成一个scope
     pub(crate) fn fusion(vec_scope :Vec<&Scope>) -> Result<Self> {
         if !vec_scope.is_empty() {
@@ -85,8 +77,14 @@ impl Scope {
 
     /// 判断scope之间是否相交
     pub(crate) fn meet(&self, target: &Scope) -> bool {
-        (self.start.le(&target.start) && self.end.ge(&target.start)) ||
-            (self.start.le(&target.end) && self.end.ge(&target.end))
+        (self.start.le(&target.start) && self.end.ge(&target.start))
+            || (self.start.le(&target.end) && self.end.ge(&target.end))
+    }
+
+    /// 判断key与Scope是否相交
+    pub(crate) fn meet_with_key(&self, key: &[u8]) -> bool {
+        self.start.as_slice().le(key)
+            && self.end.as_slice().ge(key)
     }
 
     /// 由一组Command组成一个scope
@@ -183,7 +181,6 @@ impl SSTable {
         Ok(None)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_data_block<'a>(&'a self, index: Index, block_cache: &'a BlockCache) -> Result<Option<&Block<Value>>> {
         let inner = &self.inner;
         Ok(block_cache.get_or_insert(

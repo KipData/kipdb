@@ -13,7 +13,6 @@ pub(crate) struct SSTableIter<'a> {
 }
 
 impl<'a> SSTableIter<'a> {
-    #[allow(dead_code)]
     pub(crate) fn new(ss_table: &'a SSTable, block_cache: &'a BlockCache) -> Result<Self> {
         let index_iter = BlockIter::new(ss_table.get_index_block(block_cache)?);
         let data_iter = Self::data_iter_sync_(ss_table, block_cache, &index_iter, true)?;

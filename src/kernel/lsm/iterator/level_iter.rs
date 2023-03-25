@@ -1,7 +1,7 @@
 use crate::kernel::lsm::block::{BlockCache, Value};
 use crate::kernel::lsm::iterator::{DiskIter, Seek};
 use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
-use crate::kernel::lsm::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 use crate::KernelError;
 
@@ -40,7 +40,7 @@ impl<'a> LevelIter<'a> {
     fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<()> {
         let (offset, ss_table) = self.ss_tables.iter()
             .enumerate()
-            .find(|(_, ss_table)| ss_table.get_scope().meet(&Scope::from_key(key)))
+            .find(|(_, ss_table)| ss_table.get_scope().meet_with_key(key))
             .ok_or(KernelError::DataEmpty)?;
 
         self.sst_iter_sync(ss_table, offset, seek)?;

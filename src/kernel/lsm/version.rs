@@ -674,13 +674,12 @@ impl Version {
             }
         }
         // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的SSTable
-        let key_scope = Scope::from_key(key);
         for level in 1..7 {
             if let Some(ss_table) = Self::rfind_ss_table(
                 &self.level_slice,
                 &ss_table_map,
                 level,
-                |ss_table| ss_table.get_scope().meet(&key_scope)
+                |ss_table| ss_table.get_scope().meet_with_key(key)
             ).await {
                 if let Some(value) =
                     Self::query_with_ss_table(key, block_cache, &ss_table)?
