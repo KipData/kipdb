@@ -17,6 +17,7 @@ use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
 use crate::kernel::lsm::block;
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
+use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{MemMap, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
@@ -301,6 +302,10 @@ impl LsmStore {
             std::hint::spin_loop();
         }
     }
+
+    pub async fn disk_iter(&self) -> Result<VersionIter> {
+        VersionIter::new(self.current_version().await).await
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -561,7 +566,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {
-            let times = 5000;
+            let times = 10000;
 
             let value = b"Stray birds of summer come to my window to sing and fly away.
             And yellow leaves of autumn, which have no songs, flutter and fall

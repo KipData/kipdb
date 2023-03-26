@@ -639,6 +639,23 @@ impl Version {
             .collect_vec()
     }
 
+    /// 获取所有ss_table
+    pub(crate) async fn get_all_ss_tables(&self) -> Vec<Vec<SSTable>> {
+        let ss_table_map = self.ss_tables_map.read().await;
+        let mut all_ss_tables = Vec::with_capacity(7);
+
+        for level in 0..7 {
+            all_ss_tables.push(
+                self.level_slice[level].iter()
+                    .cloned()
+                    .filter_map(|gen| ss_table_map.get(&gen))
+                    .collect_vec()
+            )
+        }
+
+        all_ss_tables
+    }
+
     /// 获取指定level中与scope冲突的
     pub(crate) async fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<SSTable> {
         let mut vec = Vec::new();
@@ -666,10 +683,12 @@ impl Version {
             .rev()
         {
             if let Some(ss_table) = ss_table_map.get(gen) {
-                if let Some(value) =
-                    Self::query_with_ss_table(key, block_cache, &ss_table)?
-                {
-                    return Ok(Some(value))
+                if ss_table.get_scope().meet_with_key(key) {
+                    if let Some(value) =
+                        Self::query_with_ss_table(key, block_cache, &ss_table)?
+                    {
+                        return Ok(Some(value))
+                    }
                 }
             }
         }

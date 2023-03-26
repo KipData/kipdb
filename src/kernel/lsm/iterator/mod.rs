@@ -1,10 +1,11 @@
 mod block_iter;
 mod sstable_iter;
 mod level_iter;
+pub(crate) mod version_iter;
 
 use crate::kernel::Result;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub(crate) enum Seek<'s> {
     // 第一个元素

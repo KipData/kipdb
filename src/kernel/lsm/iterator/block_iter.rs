@@ -19,13 +19,12 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
             0, block.restart_shared_len(0)
         );
 
-        let iterator = BlockIter {
+        BlockIter {
             block,
             entry_len: block.entry_len(),
             offset: 0,
             buf_shared_key,
-        };
-        iterator
+        }
     }
 
     pub(crate) fn offset_move(&mut self, offset: usize) {
@@ -98,7 +97,7 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
             Seek::Backward(key) => {
                 let offset = self.block.binary_search(key)
                     .unwrap_or_else(|index| index);
-                self.offset_move(offset)
+                self.offset_move(if offset < self.entry_len { offset } else { offset - 1 })
             }
         }
 

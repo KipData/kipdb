@@ -15,7 +15,7 @@ pub(crate) struct SSTableIter<'a> {
 impl<'a> SSTableIter<'a> {
     pub(crate) fn new(ss_table: &'a SSTable, block_cache: &'a BlockCache) -> Result<Self> {
         let index_iter = BlockIter::new(ss_table.get_index_block(block_cache)?);
-        let data_iter = Self::data_iter_sync_(ss_table, block_cache, &index_iter, true)?;
+        let data_iter = Self::data_iter_sync_(ss_table, block_cache, &index_iter, Seek::First)?;
 
         Ok(Self {
             ss_table,
@@ -29,21 +29,21 @@ impl<'a> SSTableIter<'a> {
         ss_table: &'a SSTable,
         block_cache: &'a BlockCache,
         index_iter: &BlockIter<Index>,
-        is_next: bool
+        seek: Seek
     ) -> Result<BlockIter<'a, Value>> {
         let index = index_iter.value().clone();
         let mut iterator = BlockIter::new(
             ss_table.get_data_block(index, block_cache)?
                 .ok_or(KernelError::DataEmpty)?
         );
-        iterator.seek(if is_next { Seek::First } else { Seek::Last })?;
+        iterator.seek(seek)?;
 
         Ok(iterator)
     }
 
-    fn data_iter_sync(&mut self, is_next: bool) -> Result<()> {
+    fn data_iter_sync(&mut self, seek: Seek) -> Result<()> {
         self.data_iter = Self::data_iter_sync_(
-            self.ss_table, self.block_cache, &self.index_iter, is_next
+            self.ss_table, self.block_cache, &self.index_iter, seek
         )?;
         Ok(())
     }
@@ -57,7 +57,7 @@ impl DiskIter<Vec<u8>, Value> for SSTableIter<'_> {
     fn next(&mut self) -> Result<()> {
         if let Err(KernelError::OutOfBounds) = self.data_iter.next() {
             self.index_iter.next()?;
-            self.data_iter_sync(true)?;
+            self.data_iter_sync(Seek::First)?;
         }
 
         Ok(())
@@ -66,7 +66,7 @@ impl DiskIter<Vec<u8>, Value> for SSTableIter<'_> {
     fn prev(&mut self) -> Result<()> {
         if let Err(KernelError::OutOfBounds) = self.data_iter.prev() {
             self.index_iter.prev()?;
-            self.data_iter_sync(false)?;
+            self.data_iter_sync(Seek::Last)?;
         }
 
         Ok(())
@@ -86,10 +86,9 @@ impl DiskIter<Vec<u8>, Value> for SSTableIter<'_> {
 
     fn seek(&mut self, seek: Seek) -> Result<()> {
         self.index_iter.seek(
-            if let Some(key) = seek.get_key() { Seek::Backward(key) } else { seek.clone() }
+            if let Some(key) = seek.get_key() { Seek::Backward(key) } else { seek }
         )?;
-        self.data_iter_sync(true)?;
-        self.data_iter.seek(seek)?;
+        self.data_iter_sync(seek)?;
         Ok(())
     }
 }
