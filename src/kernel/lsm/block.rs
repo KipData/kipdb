@@ -200,7 +200,7 @@ impl BlockItem for Index {
 
 impl Value {
     #[allow(dead_code)]
-    pub(crate) fn value_clone(&self) -> Option<Vec<u8>> {
+    pub(crate) fn bytes_clone(&self) -> Option<Vec<u8>> {
         self.bytes.clone()
     }
 }
