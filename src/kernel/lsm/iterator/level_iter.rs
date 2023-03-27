@@ -209,6 +209,12 @@ mod tests {
         iterator.seek(Seek::Backward(vec_cmd[2048].get_key()))?;
         assert_eq!(&iterator.key(), vec_cmd[2048].get_key());
 
+        iterator.seek(Seek::First)?;
+        assert_eq!(&iterator.key(), vec_cmd[0].get_key());
+
+        iterator.seek(Seek::Last)?;
+        assert_eq!(&iterator.key(), vec_cmd[3999].get_key());
+
         Ok(())
     }
 }

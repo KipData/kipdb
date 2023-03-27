@@ -48,6 +48,10 @@ impl<'a> SSTableIter<'a> {
         Ok(())
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.ss_table.len()
+    }
+
     pub(crate) fn get_gen(&self) -> i64 {
         self.ss_table.get_gen()
     }

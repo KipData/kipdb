@@ -1,6 +1,6 @@
-mod block_iter;
-mod sstable_iter;
-mod level_iter;
+pub(crate) mod block_iter;
+pub(crate) mod sstable_iter;
+pub(crate) mod level_iter;
 pub(crate) mod version_iter;
 
 use crate::kernel::Result;

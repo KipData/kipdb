@@ -239,34 +239,6 @@ impl SSTable {
         )
     }
 
-    /// 获取SsTable内所有的正常数据
-    pub(crate) async fn all(&self) -> Result<Vec<CommandData>> {
-        let inner = &self.inner;
-        let Footer{ index_offset, index_len, .. } = inner.footer;
-
-        let index_block = Self::loading_block::<Index>(
-            inner.reader.as_ref(),
-            index_offset,
-            index_len as usize,
-            CompressType::None,
-            inner.meta.index_restart_interval
-        )?;
-        Ok(index_block.all_value()
-            .into_iter()
-            .flat_map(|index| {
-                Self::loading_block::<Value>(
-                    inner.reader.as_ref(),
-                    index.offset(),
-                    index.len(),
-                    CompressType::LZ4,
-                    inner.meta.data_restart_interval
-                ).and_then(Block::all_entry)
-            })
-            .flatten()
-            .map(CommandData::from)
-            .collect_vec())
-    }
-
     /// 通过一组SSTable收集对应的Gen
     pub(crate) fn collect_gen(vec_ss_table: &[SSTable]) -> Result<Vec<i64>> {
         Ok(vec_ss_table.iter()
@@ -413,10 +385,6 @@ mod tests {
                 let key = vec_cmd[i].get_key();
                 assert_eq!(ss_table.query_with_key(key, &cache)?, Some(value.to_vec()))
             }
-
-            let vec_cmd_ss = ss_table.all().await?;
-
-            assert_eq!(vec_cmd_ss.len(), vec_cmd.len());
 
             Ok(())
         })

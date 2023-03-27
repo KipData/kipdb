@@ -7,8 +7,11 @@ use tracing::{error, info};
 use crate::KernelError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::{CommandData, Result};
+use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
+use crate::kernel::lsm::iterator::DiskIter;
+use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::MemTable;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
@@ -259,7 +262,7 @@ impl Compactor {
 
             // 数据合并并切片
             let vec_merge_sharding =
-                Self::data_merge_and_sharding(&vec_ss_table_final, config).await?;
+                Self::data_merge_and_sharding(&vec_ss_table_final, &version.block_cache, config).await?;
 
             info!("[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]", start.elapsed());
 
@@ -274,13 +277,14 @@ impl Compactor {
     /// 真他妈完美
     async fn data_merge_and_sharding(
         vec_ss_table: &[SSTable],
+        block_cache: &BlockCache,
         config: &Config
     ) -> Result<MergeShardingVec> {
         // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
         // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
         let map_futures = vec_ss_table.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(SSTable::all);
+            .map(|ss_table| Self::ss_table_all_data(block_cache, ss_table));
         let vec_cmd_data = future::try_join_all(map_futures)
             .await?
             .into_iter()
@@ -290,6 +294,19 @@ impl Compactor {
             .sorted_unstable_by_key(CommandData::get_key_clone)
             .collect();
         Ok(data_sharding(vec_cmd_data, config.sst_file_size))
+    }
+
+    async fn ss_table_all_data(block_cache: &BlockCache, ss_table: &SSTable) -> Result<Vec<CommandData>> {
+        let mut iter = SSTableIter::new(ss_table, block_cache)?;
+        let mut vec_cmd = Vec::with_capacity(iter.len());
+        loop {
+            vec_cmd.push(match iter.value().value_clone() {
+                None => { CommandData::remove(iter.key()) }
+                Some(bytes) => { CommandData::set(iter.key(), bytes) }
+            });
+            if let Err(KernelError::OutOfBounds) = iter.next() { break }
+        }
+        Ok(vec_cmd)
     }
 
     pub(crate) fn config(&self) -> &Config {

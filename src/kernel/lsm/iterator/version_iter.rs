@@ -39,10 +39,16 @@ impl<T> DerefMut for InnerPtr<T> {
     }
 }
 
+/// Version键值对迭代器
+///
+/// Tips: VersionIter与其他迭代器有一个不同点：VersionIter从最新/最大的键值向最后迭代
+/// 因为Level0的数据是可能冲突的，因此由最后/新的SSTable开始向前/旧的SSTable进行遍历
 pub struct VersionIter<'a> {
     // 该死的生命周期
     all_ss_tables: InnerPtr<Vec<Vec<SSTable>>>,
     version: InnerPtr<Arc<Version>>,
+    // 用于SeekLast
+    level_upper: usize,
 
     offset: usize,
     level_iter: LevelIter<'a>
@@ -62,17 +68,30 @@ impl<'a> VersionIter<'a> {
             )).into()
         );
 
-        let level_iter = unsafe {
+        let mut level_iter = unsafe {
             LevelIter::new(
                 &all_ss_tables.as_ref()[0], LEVEL_0, &version.0.as_ref().block_cache
             )?
         };
+        level_iter.seek(Seek::Last)?;
+
+        // 找到最大Level值
+        let mut level_upper = 7;
+        unsafe {
+            for level_ss_tables in all_ss_tables.as_ref().iter().rev() {
+                if level_ss_tables.is_empty() { level_upper -= 1 } else { break }
+            }
+        };
+        if level_upper == 0 {
+            return Err(KernelError::DataEmpty)
+        }
 
         Ok(Self {
             all_ss_tables,
             offset: 0,
             level_iter,
             version,
+            level_upper,
         })
     }
 
@@ -105,10 +124,10 @@ impl<'a> VersionIter<'a> {
 
 impl DiskIter<Vec<u8>, Value> for VersionIter<'_> {
     fn next(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.level_iter.next() {
+        if let Err(KernelError::OutOfBounds) = self.level_iter.prev() {
             let next_level = self.offset + 1;
             if next_level < 7 && self.is_valid() {
-                self.iter_sync(next_level, Seek::First)?;
+                self.iter_sync(next_level, Seek::Last)?;
             } else {
                 return Err(KernelError::OutOfBounds);
             }
@@ -118,9 +137,9 @@ impl DiskIter<Vec<u8>, Value> for VersionIter<'_> {
     }
 
     fn prev(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.level_iter.prev() {
+        if let Err(KernelError::OutOfBounds) = self.level_iter.next() {
             if self.offset > 0 && self.is_valid() {
-                self.iter_sync(self.offset - 1, Seek::Last)?;
+                self.iter_sync(self.offset - 1, Seek::First)?;
             } else {
                 return Err(KernelError::OutOfBounds);
             }
@@ -144,10 +163,10 @@ impl DiskIter<Vec<u8>, Value> for VersionIter<'_> {
     fn seek(&mut self, seek: Seek) -> Result<()> {
         match seek {
             Seek::First => {
-                self.iter_sync(0, Seek::First)?;
+                self.iter_sync(0, Seek::Last)?;
             }
             Seek::Last => {
-                self.iter_sync(6, Seek::Last)?;
+                self.iter_sync(self.level_upper - 1, Seek::First)?;
             }
             Seek::Forward(key) => {
                 self.seek_ward(key, seek)?;
@@ -170,7 +189,7 @@ impl Drop for VersionIter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use bincode::Options;
     use itertools::Itertools;
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
@@ -195,7 +214,7 @@ mod tests {
             let mut vec_kv = Vec::new();
 
             for i in 0..times {
-                let vec_u8 = bincode::serialize(&i)?;
+                let vec_u8 = bincode::options().with_big_endian().serialize(&i)?;
                 vec_kv.push((
                     vec_u8.clone(),
                     vec_u8.into_iter()
@@ -213,44 +232,35 @@ mod tests {
                 kv_store.flush().await?;
             }
 
-            let (vec_k, vec_v): (HashSet<Vec<u8>>, HashSet<Vec<u8>>) = vec_kv.iter()
-                .cloned().unzip();
-
             let mut iterator = kv_store.disk_iter().await?;
 
-            // 被排列后的SSTable是没法直接进行排序的
-            // 因为他们之间的Level顺序和新旧顺序会打乱原有顺序，因此此处使用HashSet对其进行唯一判断
-            let mut vec_k_clone_next = vec_k.clone();
-            let mut vec_v_clone_next = vec_v.clone();
-            for _ in 0..times - 1 {
-                assert!(vec_k_clone_next.contains(&iterator.key()));
-                let _ = vec_k_clone_next.remove(&iterator.key());
-                assert!(vec_v_clone_next.contains(&iterator.value().value_clone().unwrap()));
-                let _ = vec_v_clone_next.remove(&iterator.value().value_clone().unwrap());
+            for i in 0..times - 1 {
+                assert_eq!(&iterator.key(), &vec_kv[times - i - 1].0);
                 iterator.next()?;
             }
 
-            let mut vec_k_clone_prev = vec_k.clone();
-            let mut vec_v_clone_prev = vec_v.clone();
-            for _ in 0..times - 1 {
-                assert!(vec_k_clone_prev.contains(&iterator.key()));
-                let _ = vec_k_clone_prev.remove(&iterator.key());
-                assert!(vec_v_clone_prev.contains(&iterator.value().value_clone().unwrap()));
-                let _ = vec_v_clone_prev.remove(&iterator.value().value_clone().unwrap());
+            for i in 0..times - 1 {
+                assert_eq!(&iterator.key(), &vec_kv[i].0);
                 iterator.prev()?;
             }
 
             iterator.seek(Seek::Backward(&vec_kv[114].0))?;
-            assert!(vec_k.contains(&vec_kv[114].0));
+            assert_eq!(&iterator.key(),  &vec_kv[114].0);
 
             iterator.seek(Seek::Forward(&vec_kv[1024].0))?;
-            assert!(vec_k.contains(&vec_kv[1024].0));
+            assert_eq!(&iterator.key(),  &vec_kv[1024].0);
 
             iterator.seek(Seek::Forward(&vec_kv[2333].0))?;
-            assert!(vec_k.contains(&vec_kv[2333].0));
+            assert_eq!(&iterator.key(),  &vec_kv[2333].0);
 
             iterator.seek(Seek::Backward(&vec_kv[2048].0))?;
-            assert!(vec_k.contains(&vec_kv[2048].0));
+            assert_eq!(&iterator.key(),  &vec_kv[2048].0);
+
+            iterator.seek(Seek::First)?;
+            assert_eq!(&iterator.key(),  &vec_kv[4999].0);
+
+            iterator.seek(Seek::Last)?;
+            assert_eq!(&iterator.key(),  &vec_kv[0].0);
 
             Ok(())
         })
