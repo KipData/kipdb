@@ -278,7 +278,11 @@ impl Compactor {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
         let map_futures_l = ss_tables_l.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(|ss_table| Self::ss_table_all_data(block_cache, &ss_table));
+            .map(|ss_table| Self::ss_table_load_data(
+                block_cache,
+                &ss_table,
+                |vec_cmd, iter| vec_cmd.push(Self::cmd_for_iter(iter.key(), &iter))
+            ));
 
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
@@ -293,9 +297,12 @@ impl Compactor {
         // 过滤: 基于l进行数据过滤避免冗余的数据迭代导致占用大量内存占用
         let sharding_ll = future::try_join_all(
             ss_tables_ll.iter()
-                .map(|ss_table| {
-                    Self::ss_table_filter_data(block_cache, &key_set, ss_table)
-                })
+                .map(|ss_table| Self::ss_table_load_data(block_cache, ss_table, |vec_cmd, iter| {
+                    let key = iter.key();
+                    if !key_set.contains(&key) {
+                        vec_cmd.push(Self::cmd_for_iter(key, &iter));
+                    }
+                }))
         ).await?;
 
         let vec_cmd_data = sharding_l
@@ -309,24 +316,13 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, config.sst_file_size))
     }
 
-    async fn ss_table_filter_data(block_cache: &BlockCache, key_set: &HashSet<&Vec<u8>>, ss_table: &SSTable) -> Result<Vec<CommandData>> {
+    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, mut fn_mut: F) -> Result<Vec<CommandData>>
+        where F: FnMut(&mut Vec<CommandData>, &SSTableIter)
+    {
         let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
         loop {
-            let key = iter.key();
-            if !key_set.contains(&key) {
-                vec_cmd.push(Self::cmd_for_iter(key, &iter));
-            }
-            if let Err(KernelError::OutOfBounds) = iter.next() { break }
-        }
-        Ok(vec_cmd)
-    }
-
-    async fn ss_table_all_data(block_cache: &BlockCache, ss_table: &SSTable) -> Result<Vec<CommandData>> {
-        let mut iter = SSTableIter::new(ss_table, block_cache)?;
-        let mut vec_cmd = Vec::with_capacity(iter.len());
-        loop {
-            vec_cmd.push(Self::cmd_for_iter(iter.key(), &iter));
+            fn_mut(&mut vec_cmd, &iter);
             if let Err(KernelError::OutOfBounds) = iter.next() { break }
         }
         Ok(vec_cmd)
