@@ -233,9 +233,9 @@ fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     let reader = factory.reader(1, io_type)?;
     let data_write1 = vec![b'1', b'2', b'3'];
     let data_write2 = vec![b'4', b'5', b'6'];
-    let (pos_1, len_1) = writer.write(data_write1)?;
-    let (pos_2, len_2) = writer.write(data_write2)?;
-    writer.flush()?;
+    let (pos_1, len_1) = writer.io_write(data_write1)?;
+    let (pos_2, len_2) = writer.io_write(data_write2)?;
+    writer.io_flush()?;
     let data_read = reader.read_with_pos(0, 6)?;
 
     assert_eq!(vec![b'1', b'2', b'3', b'4', b'5', b'6'], data_read);

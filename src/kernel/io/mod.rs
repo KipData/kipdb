@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
 use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
 use crate::kernel::io::direct::{DirectIoReader, DirectIoWriter};
 use crate::kernel::io::mmap::{MMapIoReader, MMapIoWriter};
@@ -113,7 +114,7 @@ impl IoFactory {
     }
 }
 
-pub trait IoReader: Send + Sync + 'static {
+pub trait IoReader: Send + Sync + 'static + Read {
 
     fn get_gen(&self) -> i64;
 
@@ -136,9 +137,9 @@ pub trait IoReader: Send + Sync + 'static {
     }
 }
 
-pub trait IoWriter: Send + Sync + 'static {
+pub trait IoWriter: Send + Sync + 'static + Write {
 
-    fn write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)>;
+    fn io_write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)>;
 
-    fn flush(&mut self) -> Result<()>;
+    fn io_flush(&mut self) -> Result<()>;
 }

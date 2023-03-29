@@ -110,22 +110,10 @@ impl CommandPackage {
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
     pub(crate) fn write(writer: &mut dyn IoWriter, cmd: &CommandData) -> Result<(u64, usize)> {
-        let (start, len) = writer.write(
+        let (start, len) = writer.io_write(
             ByteUtils::tag_with_head(bincode::serialize(cmd)?)
         )?;
         Ok((start + 4, len - 4))
-    }
-
-    pub(crate) fn write_batch(writer: &mut dyn IoWriter, vec_cmd: &[CommandData]) -> Result<(u64, usize)> {
-        let bytes = vec_cmd.iter()
-            .filter_map(|cmd_data| {
-                bincode::serialize(cmd_data)
-                    .map(ByteUtils::tag_with_head).ok()
-            })
-            .flatten()
-            .collect_vec();
-
-        writer.write(bytes)
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
@@ -134,26 +122,10 @@ impl CommandPackage {
         Ok(bincode::deserialize(cmd_u8.as_slice()).ok())
     }
 
-    /// 获取bytes之中所有的CommandData
-    pub(crate) fn from_bytes_to_unpack_vec(bytes: &[u8]) -> Result<Vec<CommandData>> {
-        Ok(ByteUtils::sharding_tag_bytes(bytes).into_iter()
-            .filter_map(|cmd_u8| bincode::deserialize(cmd_u8).ok())
-            .collect_vec())
-    }
-
     /// 获取reader之中所有的CommandPackage
     pub(crate) fn from_read_to_vec(reader: &dyn IoReader) -> Result<Vec<CommandPackage>> {
         Self::from_bytes_to_vec(
             reader.bytes()?
-                .as_slice()
-        )
-    }
-
-    /// 获取reader之中所有的CommandData
-    pub(crate) fn from_read_to_unpack_vec(reader: &dyn IoReader) -> Result<Vec<CommandData>> {
-        Self::from_bytes_to_unpack_vec(
-            reader
-                .bytes()?
                 .as_slice()
         )
     }

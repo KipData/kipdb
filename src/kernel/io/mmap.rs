@@ -51,17 +51,33 @@ impl MMapIoWriter {
     }
 }
 
+impl Write for MMapIoWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.writer.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
 impl IoWriter for MMapIoWriter {
-    fn write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
+    fn io_write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
         let start_pos = self.writer.pos;
 
         Ok(self.writer.write(&buf).map(|len| (start_pos, len))?)
     }
 
-    fn flush(&mut self) -> Result<()> {
+    fn io_flush(&mut self) -> Result<()> {
         self.writer.flush()?;
 
         Ok(())
+    }
+}
+
+impl Read for MMapIoReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.reader.read(buf)
     }
 }
 

@@ -6,19 +6,18 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Local;
 use fslock::LockFile;
-use itertools::Itertools;
 use tokio::select;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tracing::error;
 use crate::KvsError;
-use crate::kernel::{CommandData, DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
+use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
 use crate::kernel::lsm::block;
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::mem_table::{MemMap, MemTable};
+use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
@@ -45,7 +44,7 @@ pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 100;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
-static SEQ_COUNT: AtomicI64 = AtomicI64::new(0);
+static SEQ_COUNT: AtomicI64 = AtomicI64::new(1);
 
 static GEN_BUF: AtomicI64 = AtomicI64::new(0);
 
@@ -82,27 +81,18 @@ impl StoreInner {
     pub(crate) async fn new(config: Config) -> Result<(Self, LogLoader)> {
         Gen::init();
 
-        let (wal, option_success) = LogLoader::reload_with_check(
+        let (wal, reload_data) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
-
-        let mem_map = match option_success {
-            None => MemMap::new(),
-            Some(vec_data) => {
-                // Q: 为什么INIT_SEQ作为Seq id?
-                // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
-                // 因此不会影响Version的读取顺序
-                MemMap::from_iter(
-                    // 倒序唯一化，保留最新的数据
-                    vec_data.into_iter()
-                        .rev()
-                        .unique_by(CommandData::get_key_clone)
-                        .map(|cmd| (cmd.get_key_clone(), cmd))
-                )
-            }
-        };
+        // Q: 为什么INIT_SEQ作为Seq id?
+        // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
+        // 因此不会影响Version的读取顺序
+        let mem_map = MemMap::from_iter(
+            reload_data.into_iter()
+                .map(|(key, value)| (InternalKey::new_with_seq(key, 0), value))
+        );
 
         // 初始化wal日志
         let ver_status = VersionStatus::load_with_path(config.clone().clone(), &wal).await?;
@@ -136,9 +126,7 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data(
-            CommandData::set(key.to_vec(), value), true
-        ).await
+        self.append_cmd_data((key.to_vec(), Some(value))).await
     }
 
     #[inline]
@@ -159,12 +147,8 @@ impl KVStore for LsmStore {
     #[inline]
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
-            Some(_) => {
-                self.append_cmd_data(
-                   CommandData::remove(key.to_vec()), true
-                ).await
-            }
-            None => { Err(KvsError::KeyNotFound) }
+            Some(_) => self.append_cmd_data((key.to_vec(), None)).await,
+            None => Err(KvsError::KeyNotFound)
         }
     }
 
@@ -199,15 +183,15 @@ impl Drop for LsmStore {
 impl LsmStore {
 
     /// 追加数据
-    async fn append_cmd_data(&self, cmd: CommandData, wal_write: bool) -> Result<()> {
+    async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         // Wal与MemTable双写
-        if self.is_enable_wal() && wal_write {
+        if self.is_enable_wal() {
             wal_put(
-                &self.wal, &cmd, !self.is_async_wal()
+                &self.wal, data.clone(), !self.is_async_wal()
             ).await;
         }
 
-        self.mem_table().insert_data(cmd)?;
+        self.mem_table().insert_data(data)?;
         Ok(())
     }
 
@@ -500,19 +484,18 @@ impl Gen {
 }
 
 /// 日志记录，可选以Task类似的异步写数据或同步
-pub(crate) async fn wal_put(wal: &Arc<LogLoader>, cmd: &CommandData, is_sync: bool) {
+pub(crate) async fn wal_put(wal: &Arc<LogLoader>, data: KeyValue, is_sync: bool) {
     if is_sync {
-        wal_put_(wal, cmd);
+        wal_put_(wal, data);
     } else {
         let wal = Arc::clone(wal);
-        let cmd_clone = cmd.clone();
         let _ignore = tokio::spawn(async move {
-            wal_put_(&wal, &cmd_clone);
+            wal_put_(&wal, data);
         });
     }
 
-    fn wal_put_(wal: &Arc<LogLoader>, cmd: &CommandData) {
-        if let Err(err) = wal.log(cmd) {
+    fn wal_put_(wal: &Arc<LogLoader>, data: KeyValue) {
+        if let Err(err) = wal.log(data) {
             error!("[LsmStore][wal_put][error happen]: {:?}", err);
         }
     }

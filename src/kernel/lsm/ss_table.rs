@@ -3,11 +3,11 @@ use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::info;
-use crate::kernel::CommandData;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::{MetaBlock, Footer, TABLE_FOOTER_SIZE};
 use crate::kernel::lsm::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index, Value};
 use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KvsError;
@@ -49,11 +49,11 @@ pub(crate) struct Scope {
 
 impl Scope {
 
-    /// 由CommandData组成的Key构成scope
-    pub(crate) fn from_cmd_data(first: &CommandData, last: &CommandData) -> Self {
+    /// 由KeyValue组成的Key构成scope
+    pub(crate) fn from_data(first: &KeyValue, last: &KeyValue) -> Self {
         Scope {
-            start: first.get_key_clone(),
-            end: last.get_key_clone()
+            start: first.0.clone(),
+            end: last.0.clone()
         }
     }
 
@@ -89,15 +89,15 @@ impl Scope {
             (self.start.le(&target.end) && self.end.ge(&target.end))
     }
 
-    /// 由一组Command组成一个scope
+    /// 由一组KeyValue组成一个scope
     #[allow(clippy::pattern_type_mismatch)]
-    pub(crate) fn from_vec_cmd_data(vec_mem_data: &Vec<CommandData>) -> Result<Self> {
+    pub(crate) fn from_vec_data(vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => {
-                Ok(Self::from_cmd_data(first, last))
+                Ok(Self::from_data(first, last))
             },
             [one] => {
-                Ok(Self::from_cmd_data(one, one))
+                Ok(Self::from_data(one, one))
             },
             _ => {
                 Err(KvsError::DataEmpty)
@@ -220,7 +220,7 @@ impl SSTable {
     }
 
     /// 获取SsTable内所有的正常数据
-    pub(crate) async fn all(&self) -> Result<Vec<CommandData>> {
+    pub(crate) async fn all(&self) -> Result<Vec<KeyValue>> {
         let inner = &self.inner;
         let Footer{ index_offset, index_len, .. } = inner.footer;
 
@@ -243,7 +243,7 @@ impl SSTable {
                 ).and_then(Block::all_entry)
             })
             .flatten()
-            .map(CommandData::from)
+            .map(|(key, Value { bytes, .. })| (key, bytes))
             .collect_vec())
     }
 
@@ -272,11 +272,11 @@ impl SSTable {
         config: &Config,
         gen: i64,
         io_factory: &IoFactory,
-        vec_mem_data: Vec<CommandData>,
+        vec_mem_data: Vec<KeyValue>,
         level: usize
     ) -> Result<SSTable>{
         // 获取数据的Key涵盖范围
-        let scope = Scope::from_vec_cmd_data(&vec_mem_data)?;
+        let scope = Scope::from_vec_data(&vec_mem_data)?;
         let len = vec_mem_data.len();
         let data_restart_interval = config.data_restart_interval;
         let index_restart_interval = config.index_restart_interval;
@@ -289,8 +289,9 @@ impl SSTable {
                 .index_restart_interval(index_restart_interval)
         );
         for data in vec_mem_data {
-            let _ = filter.insert(data.get_key());
-            builder.add(data);
+            let (key, value) = data;
+            let _ = filter.insert(&key);
+            builder.add((key, Value::from(value)));
         }
         let meta = MetaBlock {
             scope,
@@ -311,14 +312,14 @@ impl SSTable {
             size_of_disk: (data_bytes.len() + index_bytes.len() + meta_bytes.len() + TABLE_FOOTER_SIZE) as u32,
         };
         let mut writer = io_factory.writer(gen, IoType::Direct)?;
-        let _ = writer.write(
+        let _ = writer.io_write(
             data_bytes.into_iter()
                 .chain(index_bytes)
                 .chain(meta_bytes)
                 .chain(bincode::serialize(&footer)?)
                 .collect_vec()
         )?;
-        writer.flush()?;
+        writer.io_flush()?;
         info!("[SsTable: {}][create_form_index][MetaBlock]: {:?}", gen, meta);
         Ok(SSTable {
             inner: Arc::new(
@@ -344,7 +345,7 @@ mod tests {
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::{CommandData, Result};
+    use crate::kernel::Result;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
@@ -363,40 +364,35 @@ mod tests {
                 16,
                 RandomState::default()
             )?;
-            let mut vec_cmd = Vec::new();
+            let mut vec_data = Vec::new();
             let times = 2333;
 
             for i in 0..times {
-                vec_cmd.push(
-                    CommandData::set(
-                        bincode::options().with_big_endian().serialize(&i)?,
-                        value.to_vec()
-                    )
+                vec_data.push(
+                    (bincode::options().with_big_endian().serialize(&i)?, Some(value.to_vec()))
                 );
             }
             let ss_table = SSTable::create_for_mem_table(
                 &config,
                 1,
                 &sst_factory,
-                vec_cmd.clone(),
+                vec_data.clone(),
                 0
             )?;
             for i in 0..times {
-                let key = vec_cmd[i].get_key();
-                assert_eq!(ss_table.query_with_key(key, &cache)?, Some(value.to_vec()))
+                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.to_vec()))
             }
             drop(ss_table);
             let ss_table = SSTable::load_from_file(
                 sst_factory.reader(1, IoType::MMap)?
             )?;
             for i in 0..times {
-                let key = vec_cmd[i].get_key();
-                assert_eq!(ss_table.query_with_key(key, &cache)?, Some(value.to_vec()))
+                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.to_vec()))
             }
 
-            let vec_cmd_ss = ss_table.all().await?;
+            let vec_data_sst = ss_table.all().await?;
 
-            assert_eq!(vec_cmd_ss.len(), vec_cmd.len());
+            assert_eq!(vec_data_sst.len(), vec_data.len());
 
             Ok(())
         })

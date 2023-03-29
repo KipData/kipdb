@@ -35,11 +35,11 @@ pub(crate) enum BlockType {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Entry<T> {
+pub(crate) struct Entry<T> {
     unshared_len: usize,
     shared_len: usize,
-    key: Vec<u8>,
-    item: T
+    pub(crate) key: Vec<u8>,
+    pub(crate) item: T
 }
 
 impl<T> Entry<T> where T: BlockItem {
@@ -57,7 +57,7 @@ impl<T> Entry<T> where T: BlockItem {
         }
     }
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
 
         let _ignore = buf.write_varint(self.unshared_len as u32)?;
@@ -68,7 +68,7 @@ impl<T> Entry<T> where T: BlockItem {
         Ok(buf)
     }
 
-    fn decode_with_cursor(cursor: &mut Cursor<Vec<u8>>) -> Result<Vec<(usize, Self)>> {
+    pub(crate) fn decode_with_cursor(cursor: &mut Cursor<Vec<u8>>) -> Result<Vec<(usize, Self)>> {
         let mut vec_entry = Vec::new();
         let mut index = 0;
 
@@ -98,7 +98,7 @@ impl<T> Entry<T> where T: BlockItem {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct Value {
     value_len: usize,
-    bytes: Option<Vec<u8>>
+    pub(crate) bytes: Option<Vec<u8>>
 }
 
 impl From<Option<Vec<u8>>> for Value {
@@ -135,13 +135,13 @@ impl Index {
 
 pub(crate) trait BlockItem: Sized + Clone {
     /// 由于需要直接连续序列化，因此使用Read进行Bytes读取
-    fn decode<T>(reader: &mut T) -> Result<Self> where T: Read;
+    fn decode<T>(reader: &mut T) -> Result<Self> where T: Read + ?Sized;
 
     fn encode(&self) -> Result<Vec<u8>>;
 }
 
 impl BlockItem for Value {
-    fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read {
+    fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read + ?Sized {
         let value_len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
 
         let bytes = (value_len > 0)
@@ -169,7 +169,7 @@ impl BlockItem for Value {
 }
 
 impl BlockItem for Index {
-    fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read {
+    fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read + ?Sized {
         let offset = ReadVarint::<u32>::read_varint(&mut reader)?;
         let len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
 
@@ -355,13 +355,9 @@ impl BlockBuilder {
     /// 插入需要构建为Block的键值对
     ///
     /// 请注意add的键值对需要自行保证key顺序插入,否则可能会出现问题
-    pub(crate) fn add<T>(&mut self, into_key_value: T)
-        where T: Into<Option<KeyValue<Value>>>
-    {
-        if let Some(key_value) = into_key_value.into() {
-            self.buf.add(key_value);
-            self.len += 1;
-        }
+    pub(crate) fn add(&mut self, key_value: KeyValue<Value>) {
+        self.buf.add(key_value);
+        self.len += 1;
         // 超过指定的Block大小后进行Block构建(默认为4K大小)
         if self.is_out_of_byte() {
             self.build_();
@@ -645,7 +641,7 @@ mod tests {
     use std::io::Cursor;
     use bincode::Options;
     use itertools::Itertools;
-    use crate::kernel::{CommandData, Result};
+    use crate::kernel::Result;
     use crate::kernel::lsm::block::{Block, BlockBuilder, BlockOptions, CompressType, Entry, Index, Value};
     use crate::kernel::utils::lru_cache::LruCache;
 
@@ -669,7 +665,7 @@ mod tests {
     #[test]
     fn test_block() -> Result<()> {
         let value = b"Let life be beautiful like summer flowers";
-        let mut vec_cmd = Vec::new();
+        let mut vec_data = Vec::new();
 
         let times = 2333;
         let options = BlockOptions::new();
@@ -680,14 +676,12 @@ mod tests {
             key.append(
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
-            vec_cmd.push(
-                CommandData::set(key, value.to_vec()
-                )
-            );
+            vec_data.push((key, Some(value.to_vec())));
         }
 
-        for cmd in vec_cmd.iter().cloned() {
-            builder.add(cmd);
+        for data in vec_data.iter().cloned() {
+            let (key, value) = data;
+            builder.add((key, Value::from(value)));
         }
 
         let block = builder.vec_block[0].0.clone();
@@ -701,7 +695,7 @@ mod tests {
         let mut cache = LruCache::new(5)?;
 
         for i in 0..times {
-            let key = vec_cmd[i].get_key();
+            let key = &vec_data[i].0;
             let data_block = cache.get_or_insert(
                 index_block.find_with_upper(key),
                 |index| {

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use crossbeam_skiplist::SkipMap;
 use optimistic_lock_coupling::OptimisticLockCouplingReadGuard;
-use crate::kernel::{CommandData, Result};
+use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Sequence, wal_put};
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::mem_table::{key_encode_with_seq, MemTable, TableInner};
+use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::version::Version;
 use crate::KvsError;
 
@@ -12,7 +12,7 @@ pub struct Transaction<'a> {
     seq_id: i64,
     read_inner: OptimisticLockCouplingReadGuard<'a, TableInner>,
     version: Arc<Version>,
-    writer_buf: SkipMap<Vec<u8>, CommandData>,
+    writer_buf: SkipMap<Vec<u8>, Option<Vec<u8>>>,
     wal: Arc<LogLoader>,
     config: &'a Config,
 }
@@ -39,12 +39,12 @@ impl<'a> Transaction<'a> {
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
     pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         if let Some(value) = self.writer_buf.get(key)
-            .and_then(|entry| entry.value().get_value_clone())
+            .and_then(|entry| entry.value().clone())
         {
             return Ok(Some(value));
         }
 
-        if let Some(value) = MemTable::find_with_inner(key, self.seq_id, &self.read_inner)? {
+        if let Some(value) = MemTable::find_with_inner(key, self.seq_id, &self.read_inner) {
             return Ok(Some(value));
         }
 
@@ -56,18 +56,12 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn set(&mut self, key: &[u8], value: Vec<u8>) {
-        let _ignore = self.writer_buf.insert(
-            key.to_vec(),
-            CommandData::set(key.to_vec(), value)
-        );
+        let _ignore = self.writer_buf.insert(key.to_vec(), Some(value));
     }
 
     pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
         if self.get(key).await?.is_some() {
-            let _ignore = self.writer_buf.insert(
-                key.to_vec(),
-                CommandData::remove(key.to_vec())
-            );
+            let _ignore = self.writer_buf.insert(key.to_vec(), None);
         } else { return Err(KvsError::KeyNotFound); }
 
         Ok(())
@@ -77,8 +71,11 @@ impl<'a> Transaction<'a> {
         // Wal与MemTable双写
         if self.config.wal_enable {
             for entry in self.writer_buf.iter() {
+                let key = entry.key().clone();
+                let value = entry.value().clone();
+
                 wal_put(
-                    &self.wal, entry.value(), !self.config.wal_async_put_enable
+                    &self.wal, (key, value), !self.config.wal_async_put_enable
                 ).await;
             }
         }
@@ -101,12 +98,12 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    fn insert_batch_data(inner: &TableInner, vec_data: Vec<(Vec<u8>, CommandData)>) -> Result<()> {
+    fn insert_batch_data(inner: &TableInner, vec_data: Vec<KeyValue>) -> Result<()> {
         // 将seq_id作为低位
         let seq_id = Sequence::create();
 
-        for (cmd_key, cmd) in vec_data {
-            let _ignore = inner.mem_table.insert(key_encode_with_seq(cmd_key, seq_id)?, cmd);
+        for (key, value) in vec_data {
+            let _ignore = inner.mem_table.insert(InternalKey::new_with_seq(key, seq_id), value);
         }
 
         Ok(())

@@ -152,7 +152,7 @@ impl HashStore {
             }
 
             // 将所有写入刷入压缩文件中
-            compact_handler.0.flush()?;
+            compact_handler.0.io_flush()?;
             manifest.insert_io_handler(compact_gen, compact_handler);
             // 清除过期文件等信息
             manifest.retain(compact_gen, &self.io_factory)?;
@@ -201,7 +201,7 @@ impl KVStore for HashStore {
         let mut manifest = self.manifest.write();
 
         Ok(manifest.current_io_writer()?
-            .flush()?)
+            .io_flush()?)
     }
 
     #[inline]
@@ -420,7 +420,7 @@ impl Manifest {
     pub(crate) fn compaction_increment(&mut self, factory: &IoFactory) -> Result<(i64, IoHandler)> {
         // 将数据刷入硬盘防止丢失
         self.current_io_writer()?
-            .flush()?;
+            .io_flush()?;
         // 获取当前current
         let current = self.current_gen;
         let next_gen = current + 2;
