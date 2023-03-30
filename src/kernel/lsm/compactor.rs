@@ -287,7 +287,7 @@ impl Compactor {
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
         // 获取Level l的唯一KeySet用于Level ll的迭代过滤数据
-        let key_set: HashSet<&Vec<u8>> = sharding_l.iter()
+        let filter_set_l: HashSet<&Vec<u8>> = sharding_l.iter()
             .flatten()
             .map(CommandData::get_key)
             .collect();
@@ -299,15 +299,16 @@ impl Compactor {
             ss_tables_ll.iter()
                 .map(|ss_table| Self::ss_table_load_data(block_cache, ss_table, |vec_cmd, iter| {
                     let key = iter.key();
-                    if !key_set.contains(&key) {
+                    if !filter_set_l.contains(&key) {
                         vec_cmd.push(Self::cmd_for_iter(key, &iter));
                     }
                 }))
         ).await?;
 
-        let vec_cmd_data = sharding_l
+        // 使用sharding_ll来链接sharding_l以保持数据倒序的顺序是由新->旧
+        let vec_cmd_data = sharding_ll
             .into_iter()
-            .chain(sharding_ll)
+            .chain(sharding_l)
             .flatten()
             .rev()
             .unique_by(CommandData::get_key_clone)
