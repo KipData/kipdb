@@ -280,7 +280,6 @@ impl KVStore for HashStore {
         Ok(manifest.io_index
             .values()
             .filter_map(|(_, reader)| reader.file_size().ok())
-            .into_iter()
             .sum::<u64>())
     }
 

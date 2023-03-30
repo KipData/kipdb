@@ -9,7 +9,7 @@ pub enum Command {
     Get { key: String },
     Flush,
 
-    #[clap(help = "cli.exe batch-set [keys]... [values]...")]
+    #[clap(about = "cli.exe batch-set [keys]... [values]...")]
     BatchSet { batch: Vec<String> },
     BatchRemove { keys: Vec<String> },
     BatchGet { keys: Vec<String> },

@@ -167,7 +167,7 @@ impl MemTable {
         if let Some(value) = MemTable::find_(&internal_key, &inner.mem_table) {
             Some(value)
         } else if let Some(mem_map) = &inner.immut_table {
-            MemTable::find_(&internal_key, &mem_map)
+            MemTable::find_(&internal_key, mem_map)
         } else {
             None
         }
