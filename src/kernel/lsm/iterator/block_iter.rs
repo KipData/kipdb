@@ -96,8 +96,8 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
             }
             Seek::Backward(key) => {
                 let offset = self.block.binary_search(key)
-                    .unwrap_or_else(|index| index);
-                self.offset_move(if offset < self.entry_len { offset } else { offset - 1 })
+                    .unwrap_or_else(|index| if index < self.entry_len { index } else { self.entry_len - 1 });
+                self.offset_move(offset)
             }
         }
 
