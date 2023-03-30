@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use futures::future;
@@ -288,7 +289,7 @@ impl Compactor {
         // 获取Level l的唯一KeySet用于Level ll的迭代过滤数据
         let filter_set_l: HashSet<&Vec<u8>> = sharding_l.iter()
             .flatten()
-            .map(CommandData::get_key)
+            .map(|key_value| &key_value.0)
             .collect();
 
         // 通过KeySet过滤出Level l中需要补充的数据
@@ -316,8 +317,8 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, config.sst_file_size))
     }
 
-    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, mut fn_mut: F) -> Result<Vec<CommandData>>
-        where F: FnMut(&mut Vec<CommandData>, &SSTableIter)
+    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, mut fn_mut: F) -> Result<Vec<KeyValue>>
+        where F: FnMut(&mut Vec<KeyValue>, &SSTableIter)
     {
         let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
@@ -329,11 +330,8 @@ impl Compactor {
     }
 
     // 获取当前iter迭代的元素并组装为CommandData
-    fn cmd_for_iter(key: Vec<u8>, iter: &SSTableIter) -> CommandData {
-        match iter.value().bytes_clone() {
-            None => { CommandData::remove(key) }
-            Some(bytes) => { CommandData::set(key, bytes) }
-        }
+    fn cmd_for_iter(key: Vec<u8>, iter: &SSTableIter) -> KeyValue {
+        (key, iter.value().bytes_clone())
     }
 
     pub(crate) fn config(&self) -> &Config {

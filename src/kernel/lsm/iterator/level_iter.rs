@@ -130,7 +130,7 @@ mod tests {
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::{CommandData, Result};
+    use crate::kernel::Result;
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
@@ -147,7 +147,7 @@ mod tests {
         )?;
 
         let value = b"What you are you do not see, what you see is your shadow.";
-        let mut vec_cmd = Vec::new();
+        let mut vec_data = Vec::new();
 
         let times = 4000;
 
@@ -157,12 +157,11 @@ mod tests {
             key.append(
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
-            vec_cmd.push(
-                CommandData::set(key, value.to_vec()
-                )
+            vec_data.push(
+                (key, Some(value.to_vec()))
             );
         }
-        let (slice_1, slice_2) = vec_cmd.split_at(2000);
+        let (slice_1, slice_2) = vec_data.split_at(2000);
 
         let ss_table_1 = SSTable::create_for_mem_table(
             &config,
@@ -188,32 +187,32 @@ mod tests {
 
         let mut iterator = LevelIter::new(&ss_tables, 0, &cache)?;
         for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), vec_cmd[i].get_key());
+            assert_eq!(&iterator.key(), &vec_data[i].0);
             iterator.next()?;
         }
 
         for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), vec_cmd[times - i - 1].get_key());
+            assert_eq!(&iterator.key(), &vec_data[times - i - 1].0);
             iterator.prev()?;
         }
 
-        iterator.seek(Seek::Backward(vec_cmd[114].get_key()))?;
-        assert_eq!(&iterator.key(), vec_cmd[114].get_key());
+        iterator.seek(Seek::Backward(&vec_data[114].0))?;
+        assert_eq!(&iterator.key(), &vec_data[114].0);
 
-        iterator.seek(Seek::Forward(vec_cmd[1024].get_key()))?;
-        assert_eq!(&iterator.key(), vec_cmd[1024].get_key());
+        iterator.seek(Seek::Forward(&vec_data[1024].0))?;
+        assert_eq!(&iterator.key(), &vec_data[1024].0);
 
-        iterator.seek(Seek::Forward(vec_cmd[3333].get_key()))?;
-        assert_eq!(&iterator.key(), vec_cmd[3333].get_key());
+        iterator.seek(Seek::Forward(&vec_data[3333].0))?;
+        assert_eq!(&iterator.key(), &vec_data[3333].0);
 
-        iterator.seek(Seek::Backward(vec_cmd[2048].get_key()))?;
-        assert_eq!(&iterator.key(), vec_cmd[2048].get_key());
+        iterator.seek(Seek::Backward(&vec_data[2048].0))?;
+        assert_eq!(&iterator.key(), &vec_data[2048].0);
 
         iterator.seek(Seek::First)?;
-        assert_eq!(&iterator.key(), vec_cmd[0].get_key());
+        assert_eq!(&iterator.key(), &vec_data[0].0);
 
         iterator.seek(Seek::Last)?;
-        assert_eq!(&iterator.key(), vec_cmd[3999].get_key());
+        assert_eq!(&iterator.key(), &vec_data[3999].0);
 
         Ok(())
     }

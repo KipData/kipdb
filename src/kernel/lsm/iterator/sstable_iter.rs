@@ -106,7 +106,7 @@ mod tests {
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::{CommandData, Result};
+    use crate::kernel::Result;
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
     use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
@@ -123,7 +123,7 @@ mod tests {
         )?;
 
         let value = b"What you are you do not see, what you see is your shadow.";
-        let mut vec_cmd = Vec::new();
+        let mut vec_data = Vec::new();
 
         let times = 2333;
 
@@ -133,9 +133,8 @@ mod tests {
             key.append(
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
-            vec_cmd.push(
-                CommandData::set(key, value.to_vec()
-                )
+            vec_data.push(
+                (key, Some(value.to_vec()))
             );
         }
 
@@ -143,7 +142,7 @@ mod tests {
             &config,
             1,
             &sst_factory,
-            vec_cmd.clone(),
+            vec_data.clone(),
             0
         )?;
         let cache = ShardingLruCache::new(
@@ -154,20 +153,20 @@ mod tests {
 
         let mut iterator = SSTableIter::new(&ss_table, &cache)?;
         for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), vec_cmd[i].get_key());
+            assert_eq!(&iterator.key(), &vec_data[i].0);
             iterator.next()?;
         }
 
         for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), vec_cmd[times - i - 1].get_key());
+            assert_eq!(&iterator.key(), &vec_data[times - i - 1].0);
             iterator.prev()?;
         }
 
-        iterator.seek(Seek::Backward(vec_cmd[114].get_key()))?;
-        assert_eq!(&iterator.key(), vec_cmd[114].get_key());
+        iterator.seek(Seek::Backward(&vec_data[114].0))?;
+        assert_eq!(&iterator.key(), &vec_data[114].0);
 
-        iterator.seek(Seek::Forward(vec_cmd[514].get_key()))?;
-        assert_eq!(&iterator.key(), vec_cmd[514].get_key());
+        iterator.seek(Seek::Forward(&vec_data[514].0))?;
+        assert_eq!(&iterator.key(), &vec_data[514].0);
 
         Ok(())
     }

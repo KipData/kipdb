@@ -62,7 +62,7 @@ impl<'a> Transaction<'a> {
     pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
         if self.get(key).await?.is_some() {
             let _ignore = self.writer_buf.insert(key.to_vec(), None);
-        } else { return Err(KvsError::KeyNotFound); }
+        } else { return Err(KernelError::KeyNotFound); }
 
         Ok(())
     }

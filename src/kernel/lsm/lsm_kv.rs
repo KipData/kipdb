@@ -11,7 +11,6 @@ use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tracing::error;
-use crate::KvsError;
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
 use crate::kernel::lsm::block;
@@ -22,6 +21,7 @@ use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
+use crate::KernelError;
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_LEN: usize = 2333;
 
@@ -149,7 +149,7 @@ impl KVStore for LsmStore {
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
             Some(_) => self.append_cmd_data((key.to_vec(), None)).await,
-            None => Err(KvsError::KeyNotFound)
+            None => Err(KernelError::KeyNotFound)
         }
     }
 
@@ -287,6 +287,7 @@ impl LsmStore {
         }
     }
 
+    #[inline]
     pub async fn disk_iter(&self) -> Result<VersionIter> {
         VersionIter::new(self.current_version().await).await
     }
