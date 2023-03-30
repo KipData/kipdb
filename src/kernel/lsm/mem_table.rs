@@ -1,19 +1,63 @@
+use std::cmp::Ordering;
 use std::collections::Bound;
 use std::mem;
 use crossbeam_skiplist::SkipMap;
 use itertools::Itertools;
 use optimistic_lock_coupling::{OptimisticLockCoupling, OptimisticLockCouplingReadGuard, OptimisticLockCouplingWriteGuard};
 use crate::kernel::Result;
-use crate::kernel::CommandData;
 use crate::kernel::lsm::lsm_kv::Sequence;
 
 /// Value为此Key的Records(CommandData与seq_id)
-pub(crate) type MemMap = SkipMap<Vec<u8>, CommandData>;
+pub(crate) type MemMap = SkipMap<InternalKey, Option<Vec<u8>>>;
+
+pub(crate) type KeyValue = (Vec<u8>, Option<Vec<u8>>);
 
 /// seq_id的上限值
 ///
 /// 用于默认的key的填充(补充使UserKey为高位，因此默认获取最新的seq_id数据)
-const SEQ_MAX: [u8; 8] = [u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, u8::MAX, 127];
+const SEQ_MAX: i64 = i64::MAX;
+
+pub(crate) fn key_value_bytes_len(key_value: &KeyValue) -> usize {
+    key_value.0.len() + key_value.1.as_ref().map(Vec::len).unwrap_or(0)
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub(crate) struct InternalKey {
+    key: Vec<u8>,
+    seq_id: i64,
+}
+
+impl PartialOrd<Self> for InternalKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.key.partial_cmp(&other.key)
+            .and_then(|ord| match ord {
+                Ordering::Less => Some(Ordering::Less),
+                Ordering::Equal => self.seq_id.partial_cmp(&other.seq_id),
+                Ordering::Greater => Some(Ordering::Greater),
+            })
+    }
+}
+
+impl Ord for InternalKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key.cmp(&other.key)
+            .then_with(|| self.seq_id.cmp(&other.seq_id))
+    }
+}
+
+impl InternalKey {
+    pub(crate) fn new(key: Vec<u8>) -> Self {
+        InternalKey { key, seq_id: Sequence::create() }
+    }
+
+    pub(crate) fn new_with_seq(key: Vec<u8>, seq_id: i64) -> Self {
+        InternalKey { key, seq_id }
+    }
+
+    pub(crate) fn get_key(&self) -> &Vec<u8> {
+        &self.key
+    }
+}
 
 pub(crate) struct MemTable {
     pub(crate) inner: OptimisticLockCoupling<TableInner>
@@ -43,13 +87,11 @@ impl MemTable {
     #[allow(unused_results)]
     pub(crate) fn insert_data(
         &self,
-        cmd: CommandData,
+        data: KeyValue,
     ) -> Result<()> {
-        // 将seq_id作为低位
-        let key = key_encode_with_seq(cmd.get_key_clone(), Sequence::create())?;
-
         self.loop_read(|inner| {
-            inner.mem_table.insert(key, cmd);
+            let (key, value) = data;
+            inner.mem_table.insert(InternalKey::new(key), value);
         });
 
         Ok(())
@@ -64,7 +106,7 @@ impl MemTable {
     }
 
     /// 尝试判断至是否超出阈值并尝试获取写锁进行MemTable数据转移 (弹出数据为有序的)
-    pub(crate) fn try_exceeded_then_swap(&self, exceeded: usize) -> Option<Vec<CommandData>> {
+    pub(crate) fn try_exceeded_then_swap(&self, exceeded: usize) -> Option<Vec<KeyValue>> {
         // 以try_write以判断是否存在事务进行读取而防止发送Minor Compaction而导致MemTable数据异常
         if let Ok(mut inner) = self.inner.write() {
             if inner.mem_table.len() >= exceeded {
@@ -75,7 +117,7 @@ impl MemTable {
     }
 
     /// MemTable将数据弹出并转移到immutable中  (弹出数据为有序的)
-    pub(crate) fn swap(&self) -> Option<Vec<CommandData>> {
+    pub(crate) fn swap(&self) -> Option<Vec<KeyValue>> {
         loop {
             if let Ok(mut inner) = self.inner.write() {
                 return Self::swap_(&mut inner);
@@ -84,14 +126,18 @@ impl MemTable {
         }
     }
 
-    fn swap_(inner: &mut OptimisticLockCouplingWriteGuard<TableInner>) -> Option<Vec<CommandData>> {
+    fn swap_(inner: &mut OptimisticLockCouplingWriteGuard<TableInner>) -> Option<Vec<KeyValue>> {
         (!inner.mem_table.is_empty())
             .then(|| {
                 let mut vec_data = inner.mem_table.iter()
-                    .map(|entry| entry.value().clone())
+                    .map(|entry| {
+                        let key = entry.key().get_key().clone();
+                        let value = entry.value().clone();
+                        (key, value)
+                    })
                     // rev以使用最后(最新)的key
                     .rev()
-                    .unique_by(CommandData::get_key_clone)
+                    .unique_by(|(k, _)| k.clone())
                     .collect_vec();
 
                 vec_data.reverse();
@@ -106,52 +152,40 @@ impl MemTable {
 
     pub(crate) fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
         // 填充SEQ_MAX使其变为最高位以尽可能获取最新数据
-        let mut encode_key = key.to_vec();
-        encode_key.append(
-            &mut SEQ_MAX.to_vec()
-        );
+        let internal_key = InternalKey::new_with_seq(key.to_vec(), SEQ_MAX);
         self.loop_read(|inner| {
-            Self::find_(&encode_key, key, &inner.mem_table)
+            Self::find_(&internal_key, &inner.mem_table)
                 .or_else(|| {
                     inner.immut_table.as_ref()
-                        .and_then(|mem_map| Self::find_(&encode_key, key, mem_map))
+                        .and_then(|mem_map| Self::find_(&internal_key, mem_map))
                 })
         })
     }
 
-    pub(crate) fn find_with_inner(key: &[u8], seq_id: i64, inner: &TableInner) -> Result<Option<Vec<u8>>> {
-        return if let Some(value) = find_with_seq_(key, seq_id, &inner.mem_table)? {
-            Ok(Some(value))
+    pub(crate) fn find_with_inner(key: &[u8], seq_id: i64, inner: &TableInner) -> Option<Vec<u8>> {
+        let internal_key = InternalKey::new_with_seq(key.to_vec(), seq_id);
+        if let Some(value) = MemTable::find_(&internal_key, &inner.mem_table) {
+            Some(value)
         } else if let Some(mem_map) = &inner.immut_table {
-            find_with_seq_(key, seq_id, mem_map)
+            MemTable::find_(&internal_key, mem_map)
         } else {
-            Ok(None)
-        };
-
-        /// 通过sequence_id对mem_table的数据进行获取
-        ///
-        /// 获取第一个小于等于sequence_id的数据
-        fn find_with_seq_(key: &[u8], sequence_id: i64, mem_map: &MemMap) -> Result<Option<Vec<u8>>> {
-            key_encode_with_seq(key.to_vec(), sequence_id)
-                .map(|seq_key| MemTable::find_(&seq_key, key, mem_map))
-
+            None
         }
     }
 
-    /// 查询时附带sequence_id进行历史数据查询
+    /// 查询时附带seq_id进行历史数据查询
     #[allow(dead_code)]
-    fn find_with_sequence_id(&self, key: &[u8], sequence_id: i64) -> Result<Option<Vec<u8>>> {
+    fn find_with_sequence_id(&self, key: &[u8], seq_id: i64) -> Option<Vec<u8>> {
         self.loop_read(|inner| {
-            Self::find_with_inner(key, sequence_id, &inner)
+            Self::find_with_inner(key, seq_id, &inner)
         })
     }
 
-    fn find_(seq_key: &[u8], user_key: &[u8], mem_map: &MemMap) -> Option<Vec<u8>> {
-        mem_map.upper_bound(Bound::Included(seq_key))
+    fn find_(internal_key: &InternalKey, mem_map: &MemMap) -> Option<Vec<u8>> {
+        mem_map.upper_bound(Bound::Included(internal_key))
             .and_then(|entry| {
-                let data = entry.value();
-                (user_key == data.get_key())
-                    .then(|| data.get_value_clone())
+                (internal_key.get_key() == entry.key().get_key())
+                    .then(|| entry.value().clone())
             })
             .flatten()
     }
@@ -168,28 +202,18 @@ impl MemTable {
     }
 }
 
-/// 将key与seq_id进行混合编码
-///
-/// key在高位，seq_id在低位
-pub(crate) fn key_encode_with_seq(mut key: Vec<u8>, seq_id: i64) -> Result<Vec<u8>> {
-    key.append(
-        &mut bincode::serialize(&seq_id)?
-    );
-    Ok(key)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::kernel::lsm::lsm_kv::Sequence;
-    use crate::kernel::{CommandData, Result};
+    use crate::kernel::Result;
     use crate::kernel::lsm::mem_table::{MemMap, MemTable};
 
     #[test]
     fn test_mem_table_find() -> Result<()> {
         let mem_table = MemTable::new(MemMap::new());
 
-        let data_1 = CommandData::set(vec![b'k'], vec![b'1']);
-        let data_2 = CommandData::set(vec![b'k'], vec![b'2']);
+        let data_1 = (vec![b'k'], Some(vec![b'1']));
+        let data_2 = (vec![b'k'], Some(vec![b'2']));
 
         mem_table.insert_data(data_1)?;
 
@@ -201,11 +225,11 @@ mod tests {
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(vec![b'2']));
 
-        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id)?, Some(vec![b'1']));
+        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id), Some(vec![b'1']));
 
         let new_seq_id = Sequence::create();
 
-        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id)?, Some(vec![b'2']));
+        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id), Some(vec![b'2']));
 
         Ok(())
     }
@@ -214,15 +238,15 @@ mod tests {
     fn test_mem_table_swap() -> Result<()> {
         let mem_table = MemTable::new(MemMap::new());
 
-        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'1']))?;
-        mem_table.insert_data(CommandData::set(vec![b'k', b'1'], vec![b'2']))?;
-        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'1']))?;
-        mem_table.insert_data(CommandData::set(vec![b'k', b'2'], vec![b'2']))?;
+        mem_table.insert_data((vec![b'k', b'1'], Some(vec![b'1'])))?;
+        mem_table.insert_data((vec![b'k', b'1'], Some(vec![b'2'])))?;
+        mem_table.insert_data((vec![b'k', b'2'], Some(vec![b'1'])))?;
+        mem_table.insert_data((vec![b'k', b'2'], Some(vec![b'2'])))?;
 
         let mut vec_unique_sort_with_cmd_key = mem_table.swap().unwrap();
 
-        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some(CommandData::set(vec![b'k', b'2'], vec![b'2'])));
-        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some(CommandData::set(vec![b'k', b'1'], vec![b'2'])));
+        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((vec![b'k', b'2'], Some(vec![b'2']))));
+        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((vec![b'k', b'1'], Some(vec![b'2']))));
 
         Ok(())
     }

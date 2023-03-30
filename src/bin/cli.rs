@@ -100,7 +100,6 @@ async fn batch_set(client: &mut Client, batch: Vec<String>) -> Result<()> {
     if batch.len() % 2 == 0 {
         let (keys, values) = batch.split_at(batch.len() / 2);
         let vec_batch_set = keys.iter().zip(values)
-            .into_iter()
             .map(|(key, value)| {
                 CommandData::Set {
                     key: encode(key),

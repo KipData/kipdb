@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::collections::hash_map::{Iter, RandomState, Values};
 use growable_bloom_filter::GrowableBloom;
 use serde::{Deserialize, Serialize};
-use crate::kernel::{CommandData, Result};
+use crate::kernel::Result;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::compactor::MergeShardingVec;
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
+use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 
@@ -111,10 +112,10 @@ impl Footer {
 /// CommandData数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
 /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
 /// TODO: Block对齐封装,替代此方法
-fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize) -> MergeShardingVec {
+fn data_sharding(mut vec_data: Vec<KeyValue>, file_size: usize) -> MergeShardingVec {
     // 向上取整计算SSTable数量
     let part_size = (vec_data.iter()
-        .map(CommandData::bytes_len)
+        .map(key_value_bytes_len)
         .sum::<usize>() + file_size - 1) / file_size;
 
     vec_data.reverse();
@@ -126,13 +127,13 @@ fn data_sharding(mut vec_data: Vec<CommandData>, file_size: usize) -> MergeShard
         slice[i].0 = Gen::create();
         let mut data_len = 0;
         while !vec_data.is_empty() {
-            if let Some(cmd_data) = vec_data.pop() {
-                data_len += cmd_data.bytes_len();
+            if let Some(key_value) = vec_data.pop() {
+                data_len += key_value_bytes_len(&key_value);
                 if data_len >= file_size && i < part_size - 1 {
-                    slice[i + 1].1.push(cmd_data);
+                    slice[i + 1].1.push(key_value);
                     break
                 }
-                slice[i].1.push(cmd_data);
+                slice[i].1.push(key_value);
             } else { break }
         }
     }

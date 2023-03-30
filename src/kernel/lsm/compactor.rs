@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use futures::future;
@@ -7,14 +6,14 @@ use tokio::sync::oneshot;
 use tracing::{error, info};
 use crate::KernelError;
 use crate::kernel::io::IoFactory;
-use crate::kernel::{CommandData, Result};
+use crate::kernel::Result;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::DiskIter;
 use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::mem_table::MemTable;
+use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
 
@@ -22,7 +21,7 @@ pub(crate) const LEVEL_0: usize = 0;
 
 /// 数据分片集
 /// 包含对应分片的Gen与数据
-pub(crate) type MergeShardingVec = Vec<(i64, Vec<CommandData>)>;
+pub(crate) type MergeShardingVec = Vec<(i64, Vec<KeyValue>)>;
 
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
 pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
@@ -115,7 +114,7 @@ impl Compactor {
     pub(crate) async fn minor_compaction(
         &self,
         gen: i64,
-        values: Vec<CommandData>,
+        values: Vec<KeyValue>,
         enable_caching: bool
     ) -> Result<()> {
         if !values.is_empty() {
@@ -311,8 +310,8 @@ impl Compactor {
             .chain(sharding_l)
             .flatten()
             .rev()
-            .unique_by(CommandData::get_key_clone)
-            .sorted_unstable_by_key(CommandData::get_key_clone)
+            .unique_by(|(key, _)| key.clone())
+            .sorted_unstable_by_key(|(key, _)| key.clone())
             .collect();
         Ok(data_sharding(vec_cmd_data, config.sst_file_size))
     }
