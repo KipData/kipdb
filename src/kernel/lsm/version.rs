@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use crate::kernel::{CommandData, Result, sorted_gen_list};
+use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType};
 use crate::kernel::lsm::SSTableMap;
 use crate::kernel::lsm::block::BlockCache;
@@ -207,50 +207,40 @@ impl VersionStatus {
         {
             let reader = sst_factory.reader(gen, IoType::Direct)?;
 
-            if let Some(ss_table) = match SSTable::load_from_file(reader) {
-                Ok(ss_table) => Some(ss_table),
+            let ss_table = match SSTable::load_from_file(reader) {
+                Ok(ss_table) => ss_table,
                 Err(err) => {
                     warn!(
                         "[LSMStore][Load SSTable: {}][try to reload with wal][Error]: {:?}",
                         gen, err
                     );
-                    Self::reload_with_wal(&config, wal, &sst_factory, gen).await?
+                    SSTable::create_for_mem_table(
+                        &config, gen, &sst_factory, wal.load(gen)?, LEVEL_0
+                    )?
                 }
-            } {
-                Self::ss_table_insert(
-                    &mut ss_table_map,
-                    &sst_factory,
-                    ss_table,
-                    true
-                )?
-            }
+            };
+            Self::ss_table_insert(&mut ss_table_map, &sst_factory, ss_table, true)?
         }
 
         let ss_table_map = Arc::new(RwLock::new(ss_table_map));
 
-        let ver_log = LogLoader::reload(
+        let (ver_log, vec_reload_edit) = LogLoader::reload(
             config.clone(),
             DEFAULT_VERSION_PATH,
             FileExtension::Manifest
         )?;
 
 
-        let vec_edit = ver_log.load_last()?
-            .unwrap_or(vec![])
+        let vec_log = vec_reload_edit
             .into_iter()
-            .filter_map(|cmd| {
-                if let CommandData::Get { key } = cmd {
-                    bincode::deserialize(key.as_slice())
-                        .ok()
-                } else { None }
-            })
+            .filter_map(|key_value| bincode::deserialize(&key_value.0).ok())
             .collect_vec();
 
         // TODO: 对channel进行配置
         let (tag_sender, tag_rev) = channel(20);
         let version = Arc::new(
             Version::load_from_log(
-                vec_edit,
+                vec_log,
                 &ss_table_map,
                 &block_cache,
                 tag_sender.clone()
@@ -274,29 +264,6 @@ impl VersionStatus {
             ver_log,
             _cleaner_tx: tag_sender,
         })
-    }
-
-    /// 从Wal恢复SSTable数据
-    ///
-    /// 仅能恢复Level0的SSTable
-    async fn reload_with_wal(
-        config: &Config,
-        wal: &LogLoader,
-        sst_factory: &Arc<IoFactory>,
-        gen: i64
-    ) -> Result<Option<SSTable>> {
-        Ok(if let Some(vec_mem_data) = wal.load(gen)? {
-            Some(SSTable::create_for_mem_table(
-                config,
-                gen,
-                sst_factory,
-                vec_mem_data,
-                LEVEL_0
-            )?)
-        } else {
-            None
-        })
-
     }
 
     fn ss_table_insert(
@@ -344,10 +311,10 @@ impl VersionStatus {
                 .as_ref()
         );
 
-        let vec_cmd_data = vec_version_edit.iter()
+        let vec_data = vec_version_edit.iter()
             .filter_map(|edit| {
                 bincode::serialize(&edit).ok()
-                    .map(CommandData::get)
+                    .map(|key| (key, None))
             })
             .collect_vec();
 
@@ -356,7 +323,7 @@ impl VersionStatus {
         version_display(&new_version, "log_and_apply");
 
         self.ver_log
-            .log_batch(&vec_cmd_data)?;
+            .log_batch(vec_data)?;
         self.inner
             .write().await
             .inner = Arc::new(new_version);
@@ -748,7 +715,7 @@ mod tests {
     use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, Version, VersionEdit, VersionStatus};
-    use crate::kernel::{CommandData, Result};
+    use crate::kernel::Result;
 
     #[test]
     fn test_version_clean() -> Result<()> {
@@ -758,7 +725,7 @@ mod tests {
 
             let config = Config::new(temp_dir.into_path());
 
-            let (wal, _) = LogLoader::reload_with_check(
+            let (wal, _) = LogLoader::reload(
                 config.clone(),
                 DEFAULT_WAL_PATH,
                 FileExtension::Log
@@ -779,7 +746,7 @@ mod tests {
                 &config,
                 1,
                 &sst_factory,
-                vec![CommandData::get(b"test".to_vec())],
+                vec![(b"test".to_vec(), None)],
                 0
             )?;
 
@@ -787,7 +754,7 @@ mod tests {
                 &config,
                 2,
                 &sst_factory,
-                vec![CommandData::get(b"test".to_vec())],
+                vec![(b"test".to_vec(), None)],
                 0
             )?;
 
@@ -850,7 +817,7 @@ mod tests {
 
             let config = Config::new(temp_dir.into_path());
 
-            let wal = LogLoader::reload(
+            let (wal, _) = LogLoader::reload(
                 config.clone(),
                 DEFAULT_WAL_PATH,
                 FileExtension::Log
@@ -871,7 +838,7 @@ mod tests {
                 &config,
                 1,
                 &sst_factory,
-                vec![CommandData::get(b"test".to_vec())],
+                vec![(b"test".to_vec(), None)],
                 0
             )?;
 
@@ -879,7 +846,7 @@ mod tests {
                 &config,
                 2,
                 &sst_factory,
-                vec![CommandData::get(b"test".to_vec())],
+                vec![(b"test".to_vec(), None)],
                 0
             )?;
 

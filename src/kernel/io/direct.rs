@@ -46,6 +46,12 @@ impl DirectIoWriter {
     }
 }
 
+impl Read for DirectIoReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.fs.lock().read(buf)
+    }
+}
+
 impl IoReader for DirectIoReader {
     fn get_gen(&self) -> i64 {
         self.gen
@@ -72,14 +78,24 @@ impl IoReader for DirectIoReader {
     }
 }
 
+impl Write for DirectIoWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.fs.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.fs.flush()
+    }
+}
+
 impl IoWriter for DirectIoWriter {
-    fn write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
+    fn io_write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
         let start_pos = self.fs.stream_position()?;
 
         Ok(self.fs.write(&buf).map(|len| (start_pos, len))?)
     }
 
-    fn flush(&mut self) -> Result<()> {
+    fn io_flush(&mut self) -> Result<()> {
         self.fs.flush()?;
         Ok(())
     }

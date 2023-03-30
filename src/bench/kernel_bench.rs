@@ -1,13 +1,12 @@
-use chrono::Local;
+use std::sync::atomic::{AtomicU64, Ordering};
 use criterion::{Criterion, criterion_group, criterion_main};
-use itertools::Itertools;
 use tempfile::TempDir;
 use kip_db::kernel::{KVStore, hash_kv::HashStore};
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::sled_kv::SledStore;
 use kip_db::kernel::Result;
 
-/// 持久化内核的bench测试
+/// 持久化内核的简易bench测试
 fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -18,7 +17,6 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
 
     let key1: Vec<u8> = encode_key("key1").unwrap();
     let key2: Vec<u8> = encode_key("key2").unwrap();
-    let key3: Vec<u8> = encode_key("key3").unwrap();
     let value1: Vec<u8> = encode_key("value1").unwrap();
 
     let store = rt.block_on(async {
@@ -46,28 +44,23 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
         }));
 
     // 使用count进行动态的数据名变更防止数据重复而导致不写入
+    let seq_buf_set = AtomicU64::new(0);
+    let value = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
+                            abcdefghijklmnopqrstuvwxyz
+                            0123456789)(*&^%$#@!~".to_vec();
     c.bench_function(&store_name_with_test::<T>("set value"), |b|
         b.to_async(&rt).iter(|| {
             async {
-                let timestamp = Local::now().timestamp_nanos() as u64;
-                let vec_time = bincode::serialize(&timestamp).unwrap();
-                let vec_all = vec_time.into_iter()
-                    .chain(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ
-                            abcdefghijklmnopqrstuvwxyz
-                            0123456789)(*&^%$#@!~".to_vec())
-                    .collect_vec();
-                store.set(&vec_all, vec_all.clone()).await
+                store.set(&seq_buf_set.fetch_add(1, Ordering::SeqCst).to_be_bytes(), value.clone()).await
                     .unwrap();
             }
         }));
 
+    let seq_buf_remove = AtomicU64::new(0);
     c.bench_function(&store_name_with_test::<T>("remove not exist value"), |b|
         b.to_async(&rt).iter(|| {
             async {
-                match store.remove(&key3).await {
-                    Ok(_) => {}
-                    Err(_) => {}
-                };
+                let _ = store.remove(&seq_buf_remove.fetch_add(1, Ordering::SeqCst).to_be_bytes()).await;
             }
         }));
 }

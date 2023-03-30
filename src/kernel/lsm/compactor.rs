@@ -6,11 +6,11 @@ use tokio::sync::oneshot;
 use tracing::{error, info};
 use crate::KvsError;
 use crate::kernel::io::IoFactory;
-use crate::kernel::{CommandData, Result};
+use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::mem_table::MemTable;
+use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
 
@@ -18,7 +18,7 @@ pub(crate) const LEVEL_0: usize = 0;
 
 /// 数据分片集
 /// 包含对应分片的Gen与数据
-pub(crate) type MergeShardingVec = Vec<(i64, Vec<CommandData>)>;
+pub(crate) type MergeShardingVec = Vec<(i64, Vec<KeyValue>)>;
 
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
 pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
@@ -111,7 +111,7 @@ impl Compactor {
     pub(crate) async fn minor_compaction(
         &self,
         gen: i64,
-        values: Vec<CommandData>,
+        values: Vec<KeyValue>,
         enable_caching: bool
     ) -> Result<()> {
         if !values.is_empty() {
@@ -146,7 +146,7 @@ impl Compactor {
     ///
     /// 3、获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
     ///
-    /// 4、vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<CommandData>
+    /// 4、vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
     ///
     /// 6、并行将每个分片各自生成SSTable
     ///
@@ -269,7 +269,7 @@ impl Compactor {
         }
     }
 
-    /// 以SSTables的数据归并再排序后切片，获取以Command的Key值由小到大的切片排序
+    /// 以SSTables的数据归并再排序后切片，获取以KeyValue的Key值由小到大的切片排序
     /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
     /// 真他妈完美
     async fn data_merge_and_sharding(
@@ -286,8 +286,8 @@ impl Compactor {
             .into_iter()
             .flatten()
             .rev()
-            .unique_by(CommandData::get_key_clone)
-            .sorted_unstable_by_key(CommandData::get_key_clone)
+            .unique_by(|(key, _)| key.clone())
+            .sorted_unstable_by_key(|(key, _)| key.clone())
             .collect();
         Ok(data_sharding(vec_cmd_data, config.sst_file_size))
     }

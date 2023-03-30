@@ -1,18 +1,18 @@
 use std::collections::VecDeque;
+use std::io::Cursor;
+use itertools::Itertools;
 use parking_lot::Mutex;
-use tracing::error;
-use crate::kernel::{CommandData, CommandPackage, Result, sorted_gen_list};
+use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
+use crate::kernel::io::IoReader;
+use crate::kernel::lsm::block::{Entry, Value};
 use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::mem_table::KeyValue;
 
-const SUCCESS_FS_GEN: i64 = 000_000_000;
-
-// TODO: 使用Block进行替代
 pub(crate) struct LogLoader {
     factory: IoFactory,
     config: Config,
     inner: Mutex<Inner>,
-    check_success: bool,
 }
 
 struct Inner {
@@ -22,31 +22,19 @@ struct Inner {
 }
 
 impl LogLoader {
-    /// 通过日志进行WalLoader和MemMap的数据重载
-    pub(crate) fn reload_with_check(
-        config: Config,
-        path_name: &str,
-        extension: FileExtension
-    ) -> Result<(Self, Option<Vec<CommandData>>)> {
-        let (mut loader, last_gen) = Self::reload_(
-            config,
-            path_name,
-            extension
-        )?;
-        loader.check_success = true;
-
-        let option_data = Self::check_and_reload(&loader.factory, last_gen)?;
-
-        Ok((loader, option_data))
-    }
-
     pub(crate) fn reload(
         config: Config,
         path_name: &str,
         extension: FileExtension
-    ) -> Result<Self> {
-        Self::reload_(config, path_name, extension)
-            .map(|(loader, _)| loader)
+    ) -> Result<(Self, Vec<KeyValue>)> {
+        let (loader, last_gen) = Self::reload_(
+            config,
+            path_name,
+            extension
+        )?;
+        let reload_data = loader.load(last_gen)?;
+
+        Ok((loader, reload_data))
     }
 
     fn reload_(
@@ -80,51 +68,36 @@ impl LogLoader {
             factory,
             config,
             inner,
-            check_success: false,
         }, last_gen))
     }
 
-    /// 同时检测并恢复数据，防止数据异常而丢失
-    fn check_and_reload(
-        factory: &IoFactory,
-        last_gen: i64,
-    ) -> Result<Option<Vec<CommandData>>> {
-        // 当存在SUCCESS_FS时，代表Drop不正常，因此恢复最新的gen日志进行恢复
-        if factory.has_gen(SUCCESS_FS_GEN)? {
-            let reader = factory.reader(last_gen, IoType::MMap)?;
-            return Ok(Some(CommandPackage::from_read_to_unpack_vec(reader.as_ref())?));
-        } else { let _ignore = factory.create_fs(SUCCESS_FS_GEN)?; }
+    pub(crate) fn log(&self, data: KeyValue) -> Result<()> {
+        let bytes = Self::data_to_bytes(data)?;
 
-        Ok(None)
-    }
-
-    pub(crate) fn log(&self, cmd: &CommandData) -> Result<()> {
-        let mut inner = self.inner.lock();
-        let _ignore = CommandPackage::write(inner.writer.as_mut(), cmd)?;
+        let _ = self.inner.lock()
+            .writer.io_write(bytes)?;
         Ok(())
     }
 
-    pub(crate) fn log_batch(&self, vec_cmd: &[CommandData]) -> Result<()> {
-        let mut inner = self.inner.lock();
-        let _ignore = CommandPackage::write_batch(inner.writer.as_mut(), vec_cmd)?;
+    fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
+        let (key, value) = data;
+        Entry::new(0, key.len(), key, Value::from(value)).encode()
+    }
+
+    pub(crate) fn log_batch(&self, vec_data: Vec<KeyValue>) -> Result<()> {
+        let bytes = vec_data.into_iter()
+            .filter_map(|data| Self::data_to_bytes(data).ok())
+            .flatten()
+            .collect_vec();
+
+        let _ = self.inner.lock()
+            .writer.io_write(bytes)?;
         Ok(())
     }
 
     pub(crate) fn flush(&self) -> Result<()> {
         self.inner.lock()
-            .writer.flush()
-    }
-
-    pub(crate) fn last_gen(&self) -> Option<i64> {
-        self.inner.lock()
-            .vec_gen.back()
-            .cloned()
-    }
-
-    pub(crate) fn load_last(&self) -> Result<Option<Vec<CommandData>>> {
-        if let Some(gen) = self.last_gen() {
-            self.load(gen)
-        } else { Ok(None) }
+            .writer.io_flush()
     }
 
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
@@ -133,7 +106,7 @@ impl LogLoader {
         let mut inner = self.inner.lock();
 
         let current_gen = inner.current_gen;
-        inner.writer.flush()?;
+        inner.writer.io_flush()?;
 
         // 去除一半的SSTable
         let vec_len = inner.vec_gen.len();
@@ -154,24 +127,12 @@ impl LogLoader {
     }
 
     /// 通过Gen载入数据进行读取
-    #[allow(clippy::if_then_some_else_none)]
-    pub(crate) fn load(&self, gen: i64) -> Result<Option<Vec<CommandData>>> {
-        Ok(if self.factory.has_gen(gen)? {
-            let reader = self.factory.reader(gen, IoType::MMap)?;
-            Some(CommandPackage::from_read_to_unpack_vec(reader.as_ref())?)
-        } else { None })
-    }
-}
-
-impl Drop for LogLoader {
-    // 使用drop释放SUCCESS_FS，以代表此次运行正常
-    fn drop(&mut self) {
-        let _ignore = self.check_success
-            .then(|| {
-                if let Err(err) = self.factory.clean(SUCCESS_FS_GEN) {
-                    error!("[WALLoader][drop][error]: {err:?}")
-                }
-            });
+    pub(crate) fn load(&self, gen: i64) -> Result<Vec<KeyValue>> {
+        Ok(Entry::<Value>::decode_with_cursor(&mut Cursor::new(
+            IoReader::bytes(self.factory.reader(gen, IoType::MMap)?.as_ref())?
+        ))?.into_iter()
+            .map(|(_, Entry{ key, item, .. })| (key, item.bytes))
+            .collect_vec())
     }
 }
 
@@ -180,7 +141,7 @@ mod tests {
     use tempfile::TempDir;
     use crate::kernel::io::FileExtension;
     use crate::kernel::lsm::log::LogLoader;
-    use crate::kernel::{CommandData, Result};
+    use crate::kernel::Result;
     use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH, Gen};
 
     #[test]
@@ -189,62 +150,61 @@ mod tests {
 
         let config = Config::new(temp_dir.into_path());
 
-        let wal = LogLoader::reload(
+        let (wal, _) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
 
-        let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
-        let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
+        let data_1 = (b"kip_key_1".to_vec(), Some(b"kip_value".to_vec()));
+        let data_2 = (b"kip_key_2".to_vec(), Some(b"kip_value".to_vec()));
 
-        wal.log(&data_1)?;
-        wal.log(&data_2)?;
+        wal.log(data_1.clone())?;
+        wal.log(data_2.clone())?;
 
         let gen = wal.switch(Gen::create())?;
 
         drop(wal);
 
-        let wal = LogLoader::reload(
+        let (wal, _) = LogLoader::reload(
             config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
-        let option = wal.load(gen)?;
 
-        assert_eq!(option, Some(vec![data_1, data_2]));
+        assert_eq!(wal.load(gen)?, vec![data_1, data_2]);
 
         Ok(())
     }
 
     #[test]
-    fn test_log_reload_check() -> Result<()> {
+    fn test_log_reload() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let config = Config::new(temp_dir.into_path());
 
-        let (wal_1, _) = LogLoader::reload_with_check(
+        let (wal_1, _) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
 
-        let data_1 = CommandData::set(b"kip_key_1".to_vec(), b"kip_value".to_vec());
-        let data_2 = CommandData::set(b"kip_key_2".to_vec(), b"kip_value".to_vec());
+        let data_1 = (b"kip_key_1".to_vec(), Some(b"kip_value".to_vec()));
+        let data_2 = (b"kip_key_2".to_vec(), Some(b"kip_value".to_vec()));
 
-        wal_1.log(&data_1)?;
-        wal_1.log(&data_2)?;
+        wal_1.log(data_1.clone())?;
+        wal_1.log(data_2.clone())?;
 
         wal_1.flush()?;
         // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复
 
-        let (_, option_vec) = LogLoader::reload_with_check(
+        let (_, reload_data) = LogLoader::reload(
             config,
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
 
-        assert_eq!(option_vec, Some(vec![data_1, data_2]));
+        assert_eq!(reload_data, vec![data_1, data_2]);
 
         Ok(())
     }
