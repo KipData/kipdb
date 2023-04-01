@@ -278,11 +278,7 @@ impl Compactor {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
         let map_futures_l = ss_tables_l.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(|ss_table| Self::ss_table_load_data(
-                block_cache,
-                &ss_table,
-                |vec_cmd, iter| vec_cmd.push(Self::cmd_for_iter(iter.key(), &iter))
-            ));
+            .map(|ss_table| Self::ss_table_load_data(block_cache, &ss_table, |_| true));
 
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
@@ -295,15 +291,10 @@ impl Compactor {
         // 通过KeySet过滤出Level l中需要补充的数据
         // 并行: 因为即使l为0时，此时的ll(Level 1)仍然保证SSTable数据之间排列有序且不冲突，因此并行迭代不会导致数据冲突
         // 过滤: 基于l进行数据过滤避免冗余的数据迭代导致占用大量内存占用
-        let sharding_ll = future::try_join_all(
-            ss_tables_ll.iter()
-                .map(|ss_table| Self::ss_table_load_data(block_cache, ss_table, |vec_cmd, iter| {
-                    let key = iter.key();
-                    if !filter_set_l.contains(&key) {
-                        vec_cmd.push(Self::cmd_for_iter(key, &iter));
-                    }
-                }))
-        ).await?;
+        let sharding_ll = future::try_join_all(ss_tables_ll.iter()
+                .map(|ss_table| Self::ss_table_load_data(
+                    block_cache, ss_table, |key| !filter_set_l.contains(key))
+                )).await?;
 
         // 使用sharding_ll来链接sharding_l以保持数据倒序的顺序是由新->旧
         let vec_cmd_data = sharding_ll
@@ -317,21 +308,21 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, config.sst_file_size))
     }
 
-    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, mut fn_mut: F) -> Result<Vec<KeyValue>>
-        where F: FnMut(&mut Vec<KeyValue>, &SSTableIter)
+    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
+        where F: Fn(&Vec<u8>) -> bool
     {
         let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
         loop {
-            fn_mut(&mut vec_cmd, &iter);
-            if let Err(KernelError::OutOfBounds) = iter.next() { break }
+            match iter.next() {
+                Ok(item) => {
+                    if fn_is_filter(&item.0) { vec_cmd.push(item) }
+                }
+                Err(KernelError::OutOfBounds) => break,
+                Err(e) => { return Err(e) }
+            }
         }
         Ok(vec_cmd)
-    }
-
-    // 获取当前iter迭代的元素并组装为CommandData
-    fn cmd_for_iter(key: Vec<u8>, iter: &SSTableIter) -> KeyValue {
-        (key, iter.value().bytes_clone())
     }
 
     pub(crate) fn config(&self) -> &Config {

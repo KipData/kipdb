@@ -17,8 +17,7 @@ pub(crate) struct LevelIter<'a> {
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
     pub(crate) fn new(ss_tables: &'a Vec<SSTable>, level: usize, block_cache: &'a BlockCache) -> Result<LevelIter<'a>> {
-        let ss_table = &ss_tables[0];
-        let sst_iter = SSTableIter::new(&ss_table, block_cache)?;
+        let sst_iter = SSTableIter::new(&ss_tables[0], block_cache)?;
 
         Ok(Self {
             ss_tables,
@@ -29,94 +28,84 @@ impl<'a> LevelIter<'a> {
         })
     }
 
-    fn sst_iter_sync(&mut self, ss_table: &'a SSTable, offset: usize, seek: Seek) -> Result<()> {
-        if ss_table.get_gen() != self.sst_iter.get_gen() {
-            self.sst_iter = SSTableIter::new(ss_table, &self.block_cache)?;
-        }
+    fn sst_iter_seek(&mut self, seek: Seek, offset: usize) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
         self.offset = offset;
-        self.sst_iter.seek(seek)?;
-
-        Ok(())
+        if self.is_valid() {
+            let ss_table = &self.ss_tables[offset];
+            if ss_table.get_gen() != self.sst_iter.get_gen() {
+                self.sst_iter = SSTableIter::new(ss_table, &self.block_cache)?;
+            }
+            self.sst_iter.seek(seek)
+        } else { Err(KernelError::OutOfBounds) }
     }
 
-    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<()> {
+    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
         let i = self.ss_tables.len() - 1;
         // 对Level 0中的SSTable数据范围是可能重复的，因此需要遍历确认数据才能判断是否存在数据
         if self.level > 0 {
-            let (offset, ss_table) = self.ss_tables.iter().rev()
+            let (offset, _) = self.ss_tables.iter().rev()
                 .enumerate()
                 .rfind(|(_, ss_table)| ss_table.get_scope().meet_with_key(key))
                 .ok_or(KernelError::DataEmpty)?;
 
-            self.sst_iter_sync(ss_table, i - offset, seek)?;
+            self.sst_iter_seek(seek, i - offset)
         } else {
-            for (offset, ss_table) in self.ss_tables.iter().rev().enumerate() {
-                self.sst_iter_sync(ss_table, i - offset, seek)?;
-                if key == &self.key() { break }
+            let mut item = (vec![], None);
+            for (offset, _) in self.ss_tables.iter().rev().enumerate() {
+                item = self.sst_iter_seek(seek, i - offset)?;
+                if key == &item.0 { break }
             }
+            Ok(item)
         }
-        Ok(())
     }
 }
 
 impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
-    fn next(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.sst_iter.next() {
-            let next_offset = self.offset + 1;
-            if next_offset < self.ss_tables.len() && self.is_valid() {
-                self.sst_iter_sync(&self.ss_tables[next_offset], next_offset, Seek::First)?;
-            } else {
-                return Err(KernelError::OutOfBounds);
-            }
+    type Item = (Vec<u8>, Option<Vec<u8>>);
+
+    fn next(&mut self) -> Result<Self::Item> {
+        match self.sst_iter.next() {
+            Ok(item) => Ok(item),
+            Err(KernelError::OutOfBounds) => {
+                self.sst_iter_seek(Seek::First, self.offset + 1)
+            },
+            Err(e) => Err(e)
         }
-
-        Ok(())
     }
 
-    fn prev(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.sst_iter.prev() {
-            if self.offset > 0 && self.is_valid() {
-                let last_offset = self.offset - 1;
-                self.sst_iter_sync(&self.ss_tables[last_offset], last_offset, Seek::Last)?;
-            } else {
-                return Err(KernelError::OutOfBounds);
-            }
+    fn prev(&mut self) -> Result<Self::Item> {
+        match self.sst_iter.prev() {
+            Ok(item) => Ok(item),
+            Err(KernelError::OutOfBounds) => {
+                if self.offset > 0 {
+                    self.sst_iter_seek(Seek::Last, self.offset - 1)
+                } else {
+                    Err(KernelError::OutOfBounds)
+                }
+            },
+            Err(e) => Err(e)
         }
-
-        Ok(())
-    }
-
-    fn key(&self) -> Vec<u8> {
-        self.sst_iter.key()
-    }
-
-    fn value(&self) -> &Value {
-        self.sst_iter.value()
     }
 
     fn is_valid(&self) -> bool {
-        self.offset < self.ss_tables.len() && self.sst_iter.is_valid()
+        self.offset < self.ss_tables.len()
     }
 
-    fn seek(&mut self, seek: Seek) -> Result<()> {
+    fn seek(&mut self, seek: Seek) -> Result<Self::Item> {
         match seek {
             Seek::First => {
-                let first = self.ss_tables.first().ok_or(KernelError::DataEmpty)?;
-                self.sst_iter_sync(first, 0, Seek::First)?;
+                self.sst_iter_seek(Seek::First, 0)
             }
             Seek::Last => {
-                let last = self.ss_tables.last().ok_or(KernelError::DataEmpty)?;
-                self.sst_iter_sync(last, self.ss_tables.len() - 1, Seek::Last)?;
+                self.sst_iter_seek(Seek::Last, self.ss_tables.len() - 1)
             }
             Seek::Forward(key) => {
-                self.seek_ward(key, seek)?;
+                self.seek_ward(key, seek)
             }
             Seek::Backward(key) => {
-                self.seek_ward(key, seek)?;
+                self.seek_ward(key, seek)
             }
         }
-
-        Ok(())
     }
 }
 
@@ -186,33 +175,25 @@ mod tests {
         let ss_tables = vec![ss_table_1, ss_table_2];
 
         let mut iterator = LevelIter::new(&ss_tables, 0, &cache)?;
-        for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), &vec_data[i].0);
-            iterator.next()?;
+        for i in 0..times {
+            assert_eq!(iterator.next()?, vec_data[i]);
         }
 
-        for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), &vec_data[times - i - 1].0);
-            iterator.prev()?;
+        for i in (0..times - 1).rev() {
+            assert_eq!(iterator.prev()?, vec_data[i]);
         }
 
-        iterator.seek(Seek::Backward(&vec_data[114].0))?;
-        assert_eq!(&iterator.key(), &vec_data[114].0);
+        assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?, vec_data[114]);
 
-        iterator.seek(Seek::Forward(&vec_data[1024].0))?;
-        assert_eq!(&iterator.key(), &vec_data[1024].0);
+        assert_eq!(iterator.seek(Seek::Forward(&vec_data[1024].0))?, vec_data[1024]);
 
-        iterator.seek(Seek::Forward(&vec_data[3333].0))?;
-        assert_eq!(&iterator.key(), &vec_data[3333].0);
+        assert_eq!(iterator.seek(Seek::Forward(&vec_data[3333].0))?, vec_data[3333]);
 
-        iterator.seek(Seek::Backward(&vec_data[2048].0))?;
-        assert_eq!(&iterator.key(), &vec_data[2048].0);
+        assert_eq!(iterator.seek(Seek::Backward(&vec_data[2048].0))?, vec_data[2048]);
 
-        iterator.seek(Seek::First)?;
-        assert_eq!(&iterator.key(), &vec_data[0].0);
+        assert_eq!(iterator.seek(Seek::First)?, vec_data[0]);
 
-        iterator.seek(Seek::Last)?;
-        assert_eq!(&iterator.key(), &vec_data[3999].0);
+        assert_eq!(iterator.seek(Seek::Last)?, vec_data[3999]);
 
         Ok(())
     }

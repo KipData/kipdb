@@ -50,6 +50,7 @@ pub struct VersionIter<'a> {
     // 用于SeekLast
     level_upper: usize,
 
+    init_buf: Option<(Vec<u8>, Option<Vec<u8>>)>,
     offset: usize,
     level_iter: LevelIter<'a>
 }
@@ -73,7 +74,7 @@ impl<'a> VersionIter<'a> {
                 &all_ss_tables.as_ref()[0], LEVEL_0, &version.0.as_ref().block_cache
             )?
         };
-        level_iter.seek(Seek::Last)?;
+        let init_buf = level_iter.seek(Seek::Last).ok();
 
         // 找到最大Level值
         let mut level_upper = 7;
@@ -92,91 +93,88 @@ impl<'a> VersionIter<'a> {
             level_iter,
             version,
             level_upper,
+            init_buf,
         })
     }
 
-    fn iter_sync(&mut self, level: usize, seek: Seek) -> Result<()> {
-        if self.offset != level {
-            unsafe {
-                self.level_iter = LevelIter::new(
+    fn iter_sync(&mut self, offset: usize, seek: Seek) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let is_level_eq = self.offset != offset;
+        self.offset = offset;
 
-                    &self.all_ss_tables.as_ref()[level],
-                    level,
-                    &self.version.0.as_ref().block_cache
-                )?;
+        if self.is_valid() {
+            if is_level_eq {
+                unsafe {
+                    self.level_iter = LevelIter::new(
+                        &self.all_ss_tables.as_ref()[offset],
+                        offset,
+                        &self.version.0.as_ref().block_cache
+                    )?;
+                }
             }
-            self.offset = level;
+            self.level_iter.seek(seek)
+        } else {
+            Err(KernelError::OutOfBounds)
         }
-        self.level_iter.seek(seek)?;
-
-        Ok(())
     }
 
-    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<()> {
+    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let mut item = (vec![], None);
         for level in 0..7 {
-            self.iter_sync(level, seek)?;
-            if self.level_iter.key() == key { break }
+            item = self.iter_sync(level, seek)?;
+            if key == &item.0 { break }
         }
 
-        Ok(())
+        Ok(item)
     }
 }
 
 impl DiskIter<Vec<u8>, Value> for VersionIter<'_> {
-    fn next(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.level_iter.prev() {
-            let next_level = self.offset + 1;
-            if next_level < 7 && self.is_valid() {
-                self.iter_sync(next_level, Seek::Last)?;
-            } else {
-                return Err(KernelError::OutOfBounds);
-            }
+    type Item = (Vec<u8>, Option<Vec<u8>>);
+
+    fn next(&mut self) -> Result<Self::Item> {
+        // 弹出初始化seek时的第一位数据
+        if let Some(item) = self.init_buf.take() {
+            return Ok(item);
         }
 
-        Ok(())
-    }
-
-    fn prev(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.level_iter.next() {
-            if self.offset > 0 && self.is_valid() {
-                self.iter_sync(self.offset - 1, Seek::First)?;
-            } else {
-                return Err(KernelError::OutOfBounds);
-            }
+        match self.level_iter.prev() {
+            Ok(item) => Ok(item),
+            Err(KernelError::OutOfBounds) => {
+                self.iter_sync(self.offset + 1, Seek::Last)
+            },
+            Err(e) => Err(e)
         }
-
-        Ok(())
     }
 
-    fn key(&self) -> Vec<u8> {
-        self.level_iter.key()
-    }
-
-    fn value(&self) -> &Value {
-        self.level_iter.value()
+    fn prev(&mut self) -> Result<Self::Item> {
+        match self.level_iter.next() {
+            Ok(item) => Ok(item),
+            Err(KernelError::OutOfBounds) => {
+                self.iter_sync(self.offset - 1, Seek::First)
+            },
+            Err(e) => Err(e)
+        }
     }
 
     fn is_valid(&self) -> bool {
-        self.offset <= 7 && self.level_iter.is_valid()
+        self.offset < 7
     }
 
-    fn seek(&mut self, seek: Seek) -> Result<()> {
+    fn seek(&mut self, seek: Seek) -> Result<Self::Item> {
         match seek {
             Seek::First => {
-                self.iter_sync(0, Seek::Last)?;
+                self.iter_sync(0, Seek::Last)
             }
             Seek::Last => {
-                self.iter_sync(self.level_upper - 1, Seek::First)?;
+                self.iter_sync(self.level_upper - 1, Seek::First)
             }
             Seek::Forward(key) => {
-                self.seek_ward(key, seek)?;
+                self.seek_ward(key, seek)
             }
             Seek::Backward(key) => {
-                self.seek_ward(key, seek)?;
+                self.seek_ward(key, seek)
             }
         }
-
-        Ok(())
     }
 }
 
@@ -234,35 +232,32 @@ mod tests {
 
             let mut iterator = kv_store.disk_iter().await?;
 
-            for i in 0..times - 1 {
-                assert_eq!(&iterator.key(), &vec_kv[times - i - 1].0);
-                iterator.next()?;
+            for i in (0..times).rev() {
+                assert_eq!(iterator.next()?, kv_trans(vec_kv[i].clone()));
             }
 
-            for i in 0..times - 1 {
-                assert_eq!(&iterator.key(), &vec_kv[i].0);
-                iterator.prev()?;
+            for i in 1..times {
+                assert_eq!(iterator.prev()?, kv_trans(vec_kv[i].clone()));
             }
 
-            iterator.seek(Seek::Backward(&vec_kv[114].0))?;
-            assert_eq!(&iterator.key(),  &vec_kv[114].0);
+            assert_eq!(iterator.seek(Seek::Backward(&vec_kv[114].0))?,  kv_trans(vec_kv[114].clone()));
 
-            iterator.seek(Seek::Forward(&vec_kv[1024].0))?;
-            assert_eq!(&iterator.key(),  &vec_kv[1024].0);
+            assert_eq!(iterator.seek(Seek::Forward(&vec_kv[1024].0))?,  kv_trans(vec_kv[1024].clone()));
 
-            iterator.seek(Seek::Forward(&vec_kv[2333].0))?;
-            assert_eq!(&iterator.key(),  &vec_kv[2333].0);
+            assert_eq!(iterator.seek(Seek::Forward(&vec_kv[2333].0))?,  kv_trans(vec_kv[2333].clone()));
 
-            iterator.seek(Seek::Backward(&vec_kv[2048].0))?;
-            assert_eq!(&iterator.key(),  &vec_kv[2048].0);
+            assert_eq!(iterator.seek(Seek::Backward(&vec_kv[2048].0))?,  kv_trans(vec_kv[2048].clone()));
 
-            iterator.seek(Seek::First)?;
-            assert_eq!(&iterator.key(),  &vec_kv[4999].0);
+            assert_eq!(iterator.seek(Seek::First)?,  kv_trans(vec_kv[4999].clone()));
 
-            iterator.seek(Seek::Last)?;
-            assert_eq!(&iterator.key(),  &vec_kv[0].0);
+            assert_eq!(iterator.seek(Seek::Last)?,  kv_trans(vec_kv[0].clone()));
 
             Ok(())
         })
+    }
+
+    fn kv_trans(kv: (Vec<u8>, Vec<u8>)) -> (Vec<u8>, Option<Vec<u8>>) {
+        let (key, value) = kv;
+        (key, Some(value))
     }
 }

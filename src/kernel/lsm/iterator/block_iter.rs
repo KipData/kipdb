@@ -5,6 +5,9 @@ use crate::kernel::lsm::block::{Block, BlockItem};
 use crate::kernel::Result;
 use crate::KernelError;
 
+/// Block迭代器
+///
+/// Tips: offset偏移会额外向上偏移一位以使用0作为迭代的下界判断是否向前溢出了
 pub(crate) struct BlockIter<'a, T> {
     block: &'a Block<T>,
     entry_len: usize,
@@ -27,87 +30,80 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
         }
     }
 
-    pub(crate) fn offset_move(&mut self, offset: usize) {
+    fn item(&self) -> (Vec<u8>, T) {
+        let offset = self.offset - 1;
+        let entry = self.block.get_entry(offset);
+
+        (if offset % self.block.restart_interval() != 0 {
+            self.buf_shared_key.iter()
+                .chain(entry.key())
+                .copied()
+                .collect_vec()
+        } else { entry.key().to_vec() }, entry.item().clone())
+    }
+
+    fn offset_move(&mut self, offset: usize) -> Result<(Vec<u8>, T)>{
         let block = self.block;
         let restart_interval = block.restart_interval();
-        if self.offset / restart_interval != offset / restart_interval {
-            self.buf_shared_key = block.shared_key_prefix(
-                offset, block.restart_shared_len(offset)
-            );
-        }
+
+        let old_offset = self.offset;
         self.offset = offset;
+
+        if offset > 0 {
+            let real_offset = offset - 1;
+            if old_offset - 1 / restart_interval != real_offset / restart_interval {
+                self.buf_shared_key = block.shared_key_prefix(
+                    real_offset, block.restart_shared_len(real_offset)
+                );
+            }
+            Ok(self.item())
+        } else { Err(KernelError::OutOfBounds) }
     }
 }
 
 impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
     where V: Sync + Send + BlockItem
 {
-    fn next(&mut self) -> Result<()> {
-        let next_offset = self.offset + 1;
-        if next_offset < self.entry_len && self.is_valid() {
-            self.offset_move(next_offset)
-        } else {
-            return Err(KernelError::OutOfBounds);
-        }
-        Ok(())
+    type Item = (Vec<u8>, V);
+
+    fn next(&mut self) -> Result<Self::Item> {
+        if self.is_valid() || self.offset == 0 {
+            self.offset_move(self.offset + 1)
+        } else { Err(KernelError::OutOfBounds) }
     }
 
-    fn prev(&mut self) -> Result<()> {
-        if self.is_valid() && self.offset > 0 {
+    fn prev(&mut self) -> Result<Self::Item> {
+        if self.is_valid() || self.offset == self.entry_len {
             self.offset_move(self.offset - 1)
-        } else {
-            return Err(KernelError::OutOfBounds);
-        }
-        Ok(())
-    }
-
-    fn key(&self) -> Vec<u8> {
-        let entry = self.block.get_entry(self.offset);
-
-        if self.offset % self.block.restart_interval() != 0 {
-            self.buf_shared_key.iter()
-                .chain(entry.key())
-                .copied()
-                .collect_vec()
-        } else { entry.key().to_vec() }
-    }
-
-    fn value(&self) -> &V {
-        self.block.get_entry(self.offset)
-            .item()
+        } else { Err(KernelError::OutOfBounds) }
     }
 
     fn is_valid(&self) -> bool {
-        self.offset < self.entry_len
+        self.offset > 0 && self.offset < self.entry_len
     }
 
-    fn seek(&mut self, seek: Seek) -> Result<()> {
-        match seek {
-            Seek::First => {
-                self.offset_move(0)
-            }
-            Seek::Last => {
-                self.offset_move(self.entry_len - 1)
-            }
+    fn seek(&mut self, seek: Seek) -> Result<Self::Item> {
+        self.offset_move(match seek {
+            Seek::First => 0,
+            Seek::Last => self.entry_len - 1,
             Seek::Forward(key) => {
-                let offset = self.block.binary_search(key)
-                    .unwrap_or_else(|index| index.checked_sub(1).unwrap_or(0));
-                self.offset_move(offset)
+                self.block.binary_search(key)
+                    .unwrap_or_else(|index| index.checked_sub(1).unwrap_or(0))
             }
             Seek::Backward(key) => {
-                let offset = self.block.binary_search(key)
-                    .unwrap_or_else(|index| if index < self.entry_len { index } else { self.entry_len - 1 });
-                self.offset_move(offset)
+                self.block.binary_search(key)
+                    .unwrap_or_else(|index| {
+                        if index < self.entry_len { index } else { self.entry_len - 1 }
+                    })
             }
-        }
-
-        Ok(())
+        } + 1)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::vec;
+    use bincode::Options;
     use crate::kernel::lsm::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
     use crate::kernel::lsm::iterator::block_iter::BlockIter;
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
@@ -123,35 +119,63 @@ mod tests {
         let block = Block::new(data, DEFAULT_DATA_RESTART_INTERVAL);
         let mut iterator = BlockIter::new(&block);
 
-        assert!(iterator.is_valid());
+        assert!(!iterator.is_valid());
 
-        assert_eq!(&iterator.key(), &vec![b'1']);
-        iterator.next()?;
-        assert_eq!(&iterator.key(), &vec![b'2']);
-        iterator.next()?;
-        assert_eq!(&iterator.key(), &vec![b'4']);
+        assert_eq!(iterator.next()?, (vec![b'1'], Value::from(None)));
+
+        assert_eq!(iterator.next()?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+
+        assert_eq!(iterator.next()?, (vec![b'4'], Value::from(None)));
 
         assert!(iterator.next().is_err());
 
-        assert_eq!(&iterator.key(), &vec![b'4']);
-        iterator.prev()?;
-        assert_eq!(&iterator.key(), &vec![b'2']);
-        iterator.prev()?;
-        assert_eq!(&iterator.key(), &vec![b'1']);
+        assert_eq!(iterator.prev()?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+
+        assert_eq!(iterator.prev()?, (vec![b'1'], Value::from(None)));
 
         assert!(iterator.prev().is_err());
 
-        iterator.seek(Seek::First)?;
-        assert_eq!(&iterator.key(), &vec![b'1']);
+        assert_eq!(iterator.seek(Seek::First)?, (vec![b'1'], Value::from(None)));
 
-        iterator.seek(Seek::Last)?;
-        assert_eq!(&iterator.key(), &vec![b'4']);
+        assert_eq!(iterator.seek(Seek::Last)?, (vec![b'4'], Value::from(None)));
 
-        iterator.seek(Seek::Forward(&vec![b'3']))?;
-        assert_eq!(&iterator.key(), &vec![b'2']);
+        assert_eq!(iterator.seek(Seek::Forward(&vec![b'2']))?, (vec![b'2'], Value::from(Some(vec![b'0']))));
 
-        iterator.seek(Seek::Backward(&vec![b'3']))?;
-        assert_eq!(&iterator.key(), &vec![b'4']);
+        assert_eq!(iterator.seek(Seek::Backward(&vec![b'2']))?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+
+        assert_eq!(iterator.seek(Seek::Forward(&vec![b'3']))?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+
+        assert_eq!(iterator.seek(Seek::Backward(&vec![b'3']))?, (vec![b'4'], Value::from(None)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_iterator_1000() -> Result<()> {
+        let mut vec_data = Vec::new();
+        let value = b"What you are you do not see, what you see is your shadow.";
+
+        let times = 1000;
+        // 默认使用大端序进行序列化，保证顺序正确性
+        for i in 0..times {
+            let mut key = b"KipDB-".to_vec();
+            key.append(
+                &mut bincode::options().with_big_endian().serialize(&i)?
+            );
+            vec_data.push(
+                (key, Value::from(Some(value.to_vec())))
+            );
+        }
+        let block = Block::new(vec_data.clone(), DEFAULT_DATA_RESTART_INTERVAL);
+        let mut iterator = BlockIter::new(&block);
+
+        for i in 0..times {
+            assert_eq!(iterator.next()?, vec_data[i]);
+        }
+
+        for i in (0..times - 1).rev() {
+            assert_eq!(iterator.prev()?, vec_data[i]);
+        }
 
         Ok(())
     }

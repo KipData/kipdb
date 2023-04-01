@@ -31,15 +31,13 @@ impl<'s> Seek<'s> {
 
 /// 硬盘迭代器
 pub(crate) trait DiskIter<K, V>: Send + Sync {
-    fn next(&mut self) -> Result<()>;
+    type Item;
 
-    fn prev(&mut self) -> Result<()>;
+    fn next(&mut self) -> Result<Self::Item>;
 
-    fn key(&self) -> K;
-
-    fn value(&self) -> &V;
+    fn prev(&mut self) -> Result<Self::Item>;
 
     fn is_valid(&self) -> bool;
 
-    fn seek(&mut self, seek: Seek) -> Result<()>;
+    fn seek(&mut self, seek: Seek) -> Result<Self::Item>;
 }

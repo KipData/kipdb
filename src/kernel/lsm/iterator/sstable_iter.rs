@@ -14,8 +14,12 @@ pub(crate) struct SSTableIter<'a> {
 
 impl<'a> SSTableIter<'a> {
     pub(crate) fn new(ss_table: &'a SSTable, block_cache: &'a BlockCache) -> Result<Self> {
-        let index_iter = BlockIter::new(ss_table.get_index_block(block_cache)?);
-        let data_iter = Self::data_iter_sync_(ss_table, block_cache, &index_iter, Seek::First)?;
+        let mut index_iter = BlockIter::new(
+            ss_table.get_index_block(block_cache)?
+        );
+        let data_iter = Self::data_iter_init(
+            ss_table, block_cache, index_iter.next()?.1
+        )?;
 
         Ok(Self {
             ss_table,
@@ -25,27 +29,16 @@ impl<'a> SSTableIter<'a> {
         })
     }
 
-    fn data_iter_sync_(
-        ss_table: &'a SSTable,
-        block_cache: &'a BlockCache,
-        index_iter: &BlockIter<Index>,
-        seek: Seek
-    ) -> Result<BlockIter<'a, Value>> {
-        let index = index_iter.value().clone();
-        let mut iterator = BlockIter::new(
+    fn data_iter_init(ss_table: &'a SSTable, block_cache: &'a BlockCache, index: Index) -> Result<BlockIter<'a, Value>> {
+        Ok(BlockIter::new(
             ss_table.get_data_block(index, block_cache)?
                 .ok_or(KernelError::DataEmpty)?
-        );
-        iterator.seek(seek)?;
-
-        Ok(iterator)
+        ))
     }
 
-    fn data_iter_sync(&mut self, seek: Seek) -> Result<()> {
-        self.data_iter = Self::data_iter_sync_(
-            self.ss_table, self.block_cache, &self.index_iter, seek
-        )?;
-        Ok(())
+    fn data_iter_seek(&mut self, seek: Seek, index: Index) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        self.data_iter = Self::data_iter_init(self.ss_table, self.block_cache, index)?;
+        self.data_iter.seek(seek).map(|(key, value)| (key, value.bytes))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -57,43 +50,40 @@ impl<'a> SSTableIter<'a> {
     }
 }
 
-impl DiskIter<Vec<u8>, Value> for SSTableIter<'_> {
-    fn next(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.data_iter.next() {
-            self.index_iter.next()?;
-            self.data_iter_sync(Seek::First)?;
+impl DiskIter<Vec<u8>, Vec<u8>> for SSTableIter<'_> {
+    type Item = (Vec<u8>, Option<Vec<u8>>);
+
+    fn next(&mut self) -> Result<Self::Item> {
+        match self.data_iter.next() {
+            Ok((key, value)) => Ok((key, value.bytes)),
+            Err(KernelError::OutOfBounds) => {
+                let index = self.index_iter.next()?.1;
+                self.data_iter_seek(Seek::First, index)
+            }
+            Err(e) => Err(e)
         }
-
-        Ok(())
     }
 
-    fn prev(&mut self) -> Result<()> {
-        if let Err(KernelError::OutOfBounds) = self.data_iter.prev() {
-            self.index_iter.prev()?;
-            self.data_iter_sync(Seek::Last)?;
+    fn prev(&mut self) -> Result<Self::Item> {
+        match self.data_iter.prev() {
+            Ok((key, value)) => Ok((key, value.bytes)),
+            Err(KernelError::OutOfBounds) => {
+                let index = self.index_iter.prev()?.1;
+                self.data_iter_seek(Seek::Last, index)
+            }
+            Err(e) => Err(e)
         }
-
-        Ok(())
-    }
-
-    fn key(&self) -> Vec<u8> {
-        self.data_iter.key()
-    }
-
-    fn value(&self) -> &Value {
-        self.data_iter.value()
     }
 
     fn is_valid(&self) -> bool {
         self.index_iter.is_valid() && self.data_iter.is_valid()
     }
 
-    fn seek(&mut self, seek: Seek) -> Result<()> {
-        self.index_iter.seek(
+    fn seek(&mut self, seek: Seek) -> Result<Self::Item> {
+        let index = self.index_iter.seek(
             if let Some(key) = seek.get_key() { Seek::Backward(key) } else { seek }
-        )?;
-        self.data_iter_sync(seek)?;
-        Ok(())
+        )?.1;
+        self.data_iter_seek(seek, index)
     }
 }
 
@@ -152,21 +142,22 @@ mod tests {
         )?;
 
         let mut iterator = SSTableIter::new(&ss_table, &cache)?;
-        for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), &vec_data[i].0);
-            iterator.next()?;
+
+        for i in 0..times {
+            assert_eq!(iterator.next()?, vec_data[i]);
         }
 
-        for i in 0..times - 1 {
-            assert_eq!(&iterator.key(), &vec_data[times - i - 1].0);
-            iterator.prev()?;
+        for i in (0..times - 1).rev() {
+            assert_eq!(iterator.prev()?, vec_data[i]);
         }
 
-        iterator.seek(Seek::Backward(&vec_data[114].0))?;
-        assert_eq!(&iterator.key(), &vec_data[114].0);
+        assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?, vec_data[114]);
 
-        iterator.seek(Seek::Forward(&vec_data[514].0))?;
-        assert_eq!(&iterator.key(), &vec_data[514].0);
+        assert_eq!(iterator.seek(Seek::Forward(&vec_data[514].0))?, vec_data[514]);
+
+        assert_eq!(iterator.seek(Seek::First)?, vec_data[0]);
+
+        assert_eq!(iterator.seek(Seek::Last)?, vec_data[times - 1]);
 
         Ok(())
     }
