@@ -1,4 +1,5 @@
 use core::slice::SlicePattern;
+use std::cmp::min;
 use std::iter::Iterator;
 use bytes::Bytes;
 use itertools::Itertools;
@@ -94,9 +95,7 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
             }
             Seek::Backward(key) => {
                 self.block.binary_search(key)
-                    .unwrap_or_else(|index| {
-                        if index < self.entry_len { index } else { self.entry_len - 1 }
-                    })
+                    .unwrap_or_else(|index| min(self.entry_len - 1, index))
             }
         } + 1)
     }

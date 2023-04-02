@@ -471,7 +471,7 @@ impl<T> Block<T> where T: BlockItem {
     pub(crate) fn find_with_upper(&self, key: &[u8]) -> T {
         let entries_len = self.vec_entry.len();
         let index = self.binary_search(key)
-            .unwrap_or_else(|index| if index < entries_len { index } else { entries_len - 1 });
+            .unwrap_or_else(|index| min(entries_len - 1, index));
         self.vec_entry[index].1
             .item.clone()
     }
