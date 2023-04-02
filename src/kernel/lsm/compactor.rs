@@ -146,7 +146,7 @@ impl Compactor {
     /// 1. 获取当前Version，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
     /// 2. vec_ss_table_l的每个SSTable中的scope属性进行融合，并以此获取下一Level与该scope相交的SSTable，命名为vec_ss_table_l_1
     /// 3. 获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
-    /// 4. vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<CommandData>
+    /// 4. vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
     /// 6. 并行将每个分片各自生成SSTable
     /// 7. 生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
     /// 8. 将变更的SSTable插入至vec_ver_edit以持久化
@@ -264,7 +264,7 @@ impl Compactor {
         }
     }
 
-    /// 以SSTables的数据归并再排序后切片，获取以Command的Key值由小到大的切片排序
+    /// 以SSTables的数据归并再排序后切片，获取以KeyValue的Key值由小到大的切片排序
     /// 1. 并行获取Level l(当前等级)的待合并SSTables_l的全量数据
     /// 2. 基于SSTables_l获取唯一KeySet用于迭代过滤
     /// 3. 并行对Level ll的SSTables_ll通过KeySet进行迭代同时过滤数据

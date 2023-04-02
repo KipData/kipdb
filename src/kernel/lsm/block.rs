@@ -5,7 +5,7 @@ use bytes::{Buf, BufMut};
 use itertools::Itertools;
 use lz4::Decoder;
 use varuint::{ReadVarint, WriteVarint};
-use crate::kernel::{CommandData, Result};
+use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KernelError;
@@ -317,33 +317,6 @@ pub(crate) struct BlockBuilder {
     len: usize,
     buf: BlockBuf,
     vec_block: Vec<(Block<Value>, Vec<u8>)>
-}
-
-impl From<CommandData> for Option<KeyValue<Value>> {
-    #[inline]
-    fn from(value: CommandData) -> Self {
-        match value {
-            CommandData::Set { key, value } => {
-                Some((key,Value::from(Some(Vec::clone(&value)))))
-            },
-            CommandData::Remove { key } => {
-                Some((key, Value::from(None)))
-            },
-            CommandData::Get { .. } => None,
-        }
-    }
-}
-
-impl From<KeyValue<Value>> for CommandData {
-    #[inline]
-    fn from(key_value: KeyValue<Value>) -> Self {
-        let (key, value) = key_value;
-        if let Some(bytes) = value.bytes {
-            CommandData::set(key, bytes)
-        } else {
-            CommandData::remove(key)
-        }
-    }
 }
 
 /// 获取键值对得到其空间占用数

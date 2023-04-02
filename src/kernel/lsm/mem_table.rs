@@ -7,7 +7,7 @@ use optimistic_lock_coupling::{OptimisticLockCoupling, OptimisticLockCouplingRea
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::Sequence;
 
-/// Value为此Key的Records(CommandData与seq_id)
+/// Value为此Key的Records(Key与seq_id)
 pub(crate) type MemMap = SkipMap<InternalKey, Option<Vec<u8>>>;
 
 pub(crate) type KeyValue = (Vec<u8>, Option<Vec<u8>>);
