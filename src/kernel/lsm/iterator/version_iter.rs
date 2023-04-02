@@ -1,10 +1,12 @@
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
+use bytes::Bytes;
 use crate::kernel::lsm::block::Value;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::iterator::{DiskIter, Seek};
 use crate::kernel::lsm::iterator::level_iter::LevelIter;
+use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
@@ -50,7 +52,7 @@ pub struct VersionIter<'a> {
     // 用于SeekLast
     level_upper: usize,
 
-    init_buf: Option<(Vec<u8>, Option<Vec<u8>>)>,
+    init_buf: Option<KeyValue>,
     offset: usize,
     level_iter: LevelIter<'a>
 }
@@ -97,7 +99,7 @@ impl<'a> VersionIter<'a> {
         })
     }
 
-    fn iter_sync(&mut self, offset: usize, seek: Seek) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    fn iter_sync(&mut self, offset: usize, seek: Seek) -> Result<KeyValue> {
         let is_level_eq = self.offset != offset;
         self.offset = offset;
 
@@ -117,8 +119,8 @@ impl<'a> VersionIter<'a> {
         }
     }
 
-    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
-        let mut item = (vec![], None);
+    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<KeyValue> {
+        let mut item = (Bytes::new(), None);
         for level in 0..7 {
             item = self.iter_sync(level, seek)?;
             if key == &item.0 { break }
@@ -129,7 +131,7 @@ impl<'a> VersionIter<'a> {
 }
 
 impl DiskIter<Vec<u8>, Value> for VersionIter<'_> {
-    type Item = (Vec<u8>, Option<Vec<u8>>);
+    type Item = KeyValue;
 
     fn next(&mut self) -> Result<Self::Item> {
         // 弹出初始化seek时的第一位数据
@@ -188,11 +190,13 @@ impl Drop for VersionIter<'_> {
 #[cfg(test)]
 mod tests {
     use bincode::Options;
+    use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
     use crate::kernel::{KVStore, Result};
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
+    use crate::kernel::lsm::mem_table::KeyValue;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -256,8 +260,8 @@ mod tests {
         })
     }
 
-    fn kv_trans(kv: (Vec<u8>, Vec<u8>)) -> (Vec<u8>, Option<Vec<u8>>) {
+    fn kv_trans(kv: (Vec<u8>, Vec<u8>)) -> KeyValue {
         let (key, value) = kv;
-        (key, Some(value))
+        (Bytes::from(key), Some(Bytes::from(value)))
     }
 }

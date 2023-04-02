@@ -1,6 +1,7 @@
 use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::sync::Arc;
+use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -314,7 +315,7 @@ impl VersionStatus {
         let vec_data = vec_version_edit.iter()
             .filter_map(|edit| {
                 bincode::serialize(&edit).ok()
-                    .map(|key| (key, None))
+                    .map(|key| (Bytes::from(key), None))
             })
             .collect_vec();
 
@@ -640,7 +641,7 @@ impl Version {
     }
 
     /// 使用Key从现有SSTables中获取对应的数据
-    pub(crate) async fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(crate) async fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let ss_table_map = self.ss_tables_map.read().await;
         let block_cache = &self.block_cache;
 
@@ -682,7 +683,7 @@ impl Version {
         key: &[u8],
         block_cache: &BlockCache,
         ss_table: &SSTable
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Bytes>> {
         ss_table.query_with_key(key, block_cache)
     }
 
@@ -736,6 +737,7 @@ fn version_display(new_version: &Version, method: &str) {
 mod tests {
     use std::sync::Arc;
     use std::time::Duration;
+    use bytes::Bytes;
     use tempfile::TempDir;
     use tokio::time;
     use crate::kernel::io::{FileExtension, IoFactory};
@@ -774,7 +776,7 @@ mod tests {
                 &config,
                 1,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 
@@ -782,7 +784,7 @@ mod tests {
                 &config,
                 2,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 
@@ -866,7 +868,7 @@ mod tests {
                 &config,
                 1,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 
@@ -874,7 +876,7 @@ mod tests {
                 &config,
                 2,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 

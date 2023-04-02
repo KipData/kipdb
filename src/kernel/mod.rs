@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
+use bytes::Bytes;
 use fslock::LockFile;
 use futures::future;
 use itertools::Itertools;
@@ -39,7 +40,7 @@ pub trait KVStore: Send + Sync + 'static + Sized {
     async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()>;
 
     /// 通过键获取对应的值
-    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>>;
 
     /// 通过键删除键值对
     async fn remove(&self, key: &[u8]) -> Result<()>;
@@ -338,6 +339,16 @@ impl From<Option<Vec<u8>>> for CommandOption {
     fn from(item: Option<Vec<u8>>) -> Self {
         match item {
             Some(bytes) => CommandOption { r#type: 2, bytes, value: 0 },
+            None => options_none()
+        }
+    }
+}
+
+impl From<Option<Bytes>> for CommandOption {
+    #[inline]
+    fn from(item: Option<Bytes>) -> Self {
+        match item {
+            Some(bytes) => CommandOption { r#type: 2, bytes: bytes.to_vec(), value: 0 },
             None => options_none()
         }
     }

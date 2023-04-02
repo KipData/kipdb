@@ -1,6 +1,8 @@
+use bytes::Bytes;
 use crate::kernel::lsm::block::{BlockCache, Value};
 use crate::kernel::lsm::iterator::{DiskIter, Seek};
 use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
+use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -28,7 +30,7 @@ impl<'a> LevelIter<'a> {
         })
     }
 
-    fn sst_iter_seek(&mut self, seek: Seek, offset: usize) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    fn sst_iter_seek(&mut self, seek: Seek, offset: usize) -> Result<KeyValue> {
         self.offset = offset;
         if self.is_valid() {
             let ss_table = &self.ss_tables[offset];
@@ -39,7 +41,7 @@ impl<'a> LevelIter<'a> {
         } else { Err(KernelError::OutOfBounds) }
     }
 
-    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<KeyValue> {
         let i = self.ss_tables.len() - 1;
         // 对Level 0中的SSTable数据范围是可能重复的，因此需要遍历确认数据才能判断是否存在数据
         if self.level > 0 {
@@ -50,7 +52,7 @@ impl<'a> LevelIter<'a> {
 
             self.sst_iter_seek(seek, i - offset)
         } else {
-            let mut item = (vec![], None);
+            let mut item = (Bytes::new(), None);
             for (offset, _) in self.ss_tables.iter().rev().enumerate() {
                 item = self.sst_iter_seek(seek, i - offset)?;
                 if key == &item.0 { break }
@@ -61,7 +63,7 @@ impl<'a> LevelIter<'a> {
 }
 
 impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
-    type Item = (Vec<u8>, Option<Vec<u8>>);
+    type Item = KeyValue;
 
     fn next(&mut self) -> Result<Self::Item> {
         match self.sst_iter.next() {
@@ -114,6 +116,7 @@ impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
 mod tests {
     use std::collections::hash_map::RandomState;
     use bincode::Options;
+    use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory};
     use crate::kernel::lsm::lsm_kv::Config;
@@ -135,7 +138,7 @@ mod tests {
             FileExtension::SSTable
         )?;
 
-        let value = b"What you are you do not see, what you see is your shadow.";
+        let value = Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
         let mut vec_data = Vec::new();
 
         let times = 4000;
@@ -147,7 +150,7 @@ mod tests {
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
             vec_data.push(
-                (key, Some(value.to_vec()))
+                (Bytes::from(key), Some(value.clone()))
             );
         }
         let (slice_1, slice_2) = vec_data.split_at(2000);

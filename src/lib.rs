@@ -2,6 +2,7 @@
 #![feature(cursor_remaining)]
 #![feature(result_flattening)]
 #![feature(buf_read_has_data_left)]
+#![feature(slice_pattern)]
 #![deny(
 // The following are allowed by default lints according to
 // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
@@ -30,7 +31,6 @@ unreachable_pub,
 unsafe_op_in_unsafe_fn,
 // unstable_features,
 // unused_crate_dependencies, the false positive case blocks us
-unused_extern_crates,
 unused_import_braces,
 unused_lifetimes,
 unused_qualifications,
@@ -92,6 +92,8 @@ clippy::verbose_file_reads,
 clippy::panic, // allow debug_assert, panic in production code
 clippy::multiple_crate_versions, // caused by the dependency, can't be fixed
 )]
+extern crate core;
+
 pub mod kernel;
 pub mod error;
 pub mod config;

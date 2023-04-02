@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use itertools::Itertools;
 use async_trait::async_trait;
+use bytes::Bytes;
 use fslock::LockFile;
 use parking_lot::RwLock;
 use tracing::error;
@@ -235,7 +236,7 @@ impl KVStore for HashStore {
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let manifest = self.manifest.read();
 
         // 若index中获取到了该数据命令
@@ -245,7 +246,7 @@ impl KVStore for HashStore {
                     // 将命令进行转换
                     return if let CommandData::Set { value, .. } = cmd {
                         //返回匹配成功的数据
-                        Ok(Some(Vec::clone(&value)))
+                        Ok(Some(Bytes::from(value)))
                     } else {
                         //返回错误（错误的指令类型）
                         Err(KernelError::UnexpectedCommandType)

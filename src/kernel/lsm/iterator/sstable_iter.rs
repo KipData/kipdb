@@ -1,6 +1,7 @@
 use crate::kernel::lsm::block::{BlockCache, Index, Value};
 use crate::kernel::lsm::iterator::{DiskIter, Seek};
 use crate::kernel::lsm::iterator::block_iter::BlockIter;
+use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -36,7 +37,7 @@ impl<'a> SSTableIter<'a> {
         ))
     }
 
-    fn data_iter_seek(&mut self, seek: Seek, index: Index) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    fn data_iter_seek(&mut self, seek: Seek, index: Index) -> Result<KeyValue> {
         self.data_iter = Self::data_iter_init(self.ss_table, self.block_cache, index)?;
         self.data_iter.seek(seek).map(|(key, value)| (key, value.bytes))
     }
@@ -51,7 +52,7 @@ impl<'a> SSTableIter<'a> {
 }
 
 impl DiskIter<Vec<u8>, Vec<u8>> for SSTableIter<'_> {
-    type Item = (Vec<u8>, Option<Vec<u8>>);
+    type Item = KeyValue;
 
     fn next(&mut self) -> Result<Self::Item> {
         match self.data_iter.next() {
@@ -91,6 +92,7 @@ impl DiskIter<Vec<u8>, Vec<u8>> for SSTableIter<'_> {
 mod tests {
     use std::collections::hash_map::RandomState;
     use bincode::Options;
+    use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory};
     use crate::kernel::lsm::lsm_kv::Config;
@@ -112,7 +114,7 @@ mod tests {
             FileExtension::SSTable
         )?;
 
-        let value = b"What you are you do not see, what you see is your shadow.";
+        let value = Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
         let mut vec_data = Vec::new();
 
         let times = 2333;
@@ -124,7 +126,7 @@ mod tests {
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
             vec_data.push(
-                (key, Some(value.to_vec()))
+                (Bytes::from(key), Some(value.clone()))
             );
         }
 

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use bytes::Bytes;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -43,8 +44,8 @@ pub(crate) struct SSTableInner {
 /// 标明数据的范围以做到快速区域定位
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Scope {
-    start: Vec<u8>,
-    end: Vec<u8>
+    start: Bytes,
+    end: Bytes
 }
 
 impl Scope {
@@ -83,8 +84,8 @@ impl Scope {
 
     /// 判断key与Scope是否相交
     pub(crate) fn meet_with_key(&self, key: &[u8]) -> bool {
-        self.start.as_slice().le(key)
-            && self.end.as_slice().ge(key)
+        self.start.as_ref().le(key)
+            && self.end.as_ref().ge(key)
     }
 
     /// 由一组KeyValue组成一个scope
@@ -163,7 +164,7 @@ impl SSTable {
         &self,
         key: &[u8],
         block_cache: &BlockCache
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Bytes>> {
         let inner = &self.inner;
         let reader = inner.reader.as_ref();
         if inner.meta.filter.contains(key) {
@@ -332,6 +333,7 @@ mod tests {
 
     use std::collections::hash_map::RandomState;
     use bincode::Options;
+    use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::lsm_kv::Config;
@@ -345,7 +347,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {
-            let value = b"If you shed tears when you miss the sun, you also miss the stars.";
+            let value = Bytes::copy_from_slice(b"If you shed tears when you miss the sun, you also miss the stars.");
             let config = Config::new(temp_dir.into_path());
             let sst_factory = IoFactory::new(
                 config.dir_path.join(DEFAULT_SS_TABLE_PATH),
@@ -361,7 +363,7 @@ mod tests {
 
             for i in 0..times {
                 vec_data.push(
-                    (bincode::options().with_big_endian().serialize(&i)?, Some(value.to_vec()))
+                    (Bytes::from(bincode::options().with_big_endian().serialize(&i)?), Some(value.clone()))
                 );
             }
             let ss_table = SSTable::create_for_mem_table(
@@ -372,14 +374,14 @@ mod tests {
                 0
             )?;
             for i in 0..times {
-                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.to_vec()))
+                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
             }
             drop(ss_table);
             let ss_table = SSTable::load_from_file(
                 sst_factory.reader(1, IoType::MMap)?
             )?;
             for i in 0..times {
-                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.to_vec()))
+                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
             }
 
             Ok(())

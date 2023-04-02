@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use optimistic_lock_coupling::OptimisticLockCouplingReadGuard;
 use crate::kernel::Result;
@@ -12,7 +13,7 @@ pub struct Transaction<'a> {
     seq_id: i64,
     read_inner: OptimisticLockCouplingReadGuard<'a, TableInner>,
     version: Arc<Version>,
-    writer_buf: SkipMap<Vec<u8>, Option<Vec<u8>>>,
+    writer_buf: SkipMap<Bytes, Option<Bytes>>,
     wal: Arc<LogLoader>,
     config: &'a Config,
 }
@@ -37,7 +38,7 @@ impl<'a> Transaction<'a> {
     /// 通过Key获取对应的Value
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
-    pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         if let Some(value) = self.writer_buf.get(key)
             .and_then(|entry| entry.value().clone())
         {
@@ -56,12 +57,14 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn set(&mut self, key: &[u8], value: Vec<u8>) {
-        let _ignore = self.writer_buf.insert(key.to_vec(), Some(value));
+        let _ignore = self.writer_buf.insert(
+            Bytes::copy_from_slice(key), Some(Bytes::from(value))
+        );
     }
 
     pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
         if self.get(key).await?.is_some() {
-            let _ignore = self.writer_buf.insert(key.to_vec(), None);
+            let _ignore = self.writer_buf.insert(Bytes::copy_from_slice(key), None);
         } else { return Err(KernelError::KeyNotFound); }
 
         Ok(())
@@ -114,6 +117,7 @@ impl<'a> Transaction<'a> {
 /// TODO: 更多的Test Case
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
@@ -143,15 +147,15 @@ mod tests {
             for i in 0..times {
                 let vec_u8 = bincode::serialize(&i)?;
                 vec_kv.push((
-                    vec_u8.clone(),
-                    vec_u8.into_iter()
+                    Bytes::from(vec_u8.clone()),
+                    Bytes::from(vec_u8.into_iter()
                         .chain(value.to_vec())
-                        .collect_vec()
+                        .collect_vec())
                 ));
             }
 
             for i in 0..times {
-                transaction.set(&vec_kv[i].0, vec_kv[i].1.clone());
+                transaction.set(&vec_kv[i].0, vec_kv[i].1.to_vec());
             }
 
             transaction.remove(&vec_kv[times - 1].0).await?;

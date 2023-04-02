@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use tempfile::TempDir;
 use walkdir::WalkDir;
 use kip_db::kernel::hash_kv::HashStore;
@@ -35,8 +36,8 @@ fn get_stored_value_with_kv_store<T: KVStore>() -> Result<()> {
         // Open from disk again and check persistent data.
         drop(kv_store);
         let kv_store = T::open(temp_dir.path()).await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(value1));
-        assert_eq!(kv_store.get(&key2).await?, Some(value2));
+        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value1)));
+        assert_eq!(kv_store.get(&key2).await?, Some(Bytes::from(value2)));
 
         Ok(())
     })
@@ -64,17 +65,17 @@ fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
 
         kv_store.set(&key1, value1.clone()).await?;
         kv_store.flush().await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(value1.clone()));
+        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value1.clone())));
         kv_store.set(&key1, value2.clone()).await?;
         kv_store.flush().await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(value2.clone()));
+        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value2.clone())));
 
         drop(kv_store);
         let kv_store = T::open(temp_dir.path()).await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(value2.clone()));
+        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value2.clone())));
         kv_store.set(&key1, value3.clone()).await?;
         kv_store.flush().await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(value3.clone()));
+        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value3.clone())));
 
         Ok(())
     })
@@ -206,7 +207,7 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
             for key_id in 0..1000 {
                 let key = format!("key{}", key_id);
                 assert_eq!(kv_store.get(&encode_key(key.as_str())?).await?,
-                           Some(encode_key(format!("{}", iter).as_str())?));
+                           Some(Bytes::from(encode_key(format!("{}", iter).as_str())?)));
             }
             return Ok(());
         }

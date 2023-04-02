@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use sled::Db;
 use async_trait::async_trait;
+use bytes::Bytes;
 use crate::kernel::KVStore;
 use crate::KernelError;
 
@@ -40,11 +41,11 @@ impl KVStore for SledStore {
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> crate::kernel::Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> crate::kernel::Result<Option<Bytes>> {
         match self.data_base.get(key)? {
             None => { Ok(None) }
             Some(i_vec) => {
-                Ok(Some(i_vec.to_vec()))
+                Ok(Some(Bytes::from(i_vec.to_vec())))
             }
         }
     }

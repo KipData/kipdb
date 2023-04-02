@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::Local;
 use fslock::LockFile;
 use tokio::select;
@@ -127,11 +128,13 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data((key.to_vec(), Some(value))).await
+        self.append_cmd_data(
+            (Bytes::copy_from_slice(key), Some(Bytes::from(value)))
+        ).await
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         if let Some(value) = self.mem_table().find(key) {
             return Ok(Some(value));
         }
@@ -148,7 +151,7 @@ impl KVStore for LsmStore {
     #[inline]
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
-            Some(_) => self.append_cmd_data((key.to_vec(), None)).await,
+            Some(_) => self.append_cmd_data((Bytes::copy_from_slice(key), None)).await,
             None => Err(KernelError::KeyNotFound)
         }
     }
@@ -511,6 +514,7 @@ pub(crate) async fn wal_put(wal: &Arc<LogLoader>, data: KeyValue, is_sync: bool)
 mod tests {
     use std::thread::sleep;
     use std::time::{Duration, Instant};
+    use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, Gen, LsmStore, Sequence};
@@ -566,16 +570,16 @@ mod tests {
             for i in 0..times {
                 let vec_u8 = bincode::serialize(&i)?;
                 vec_kv.push((
-                    vec_u8.clone(),
-                    vec_u8.into_iter()
+                    Bytes::from(vec_u8.clone()),
+                    Bytes::from(vec_u8.into_iter()
                         .chain(value.to_vec())
-                        .collect_vec()
+                        .collect_vec())
                 ));
             }
 
             let start = Instant::now();
             for i in 0..times {
-                kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?
+                kv_store.set(&vec_kv[i].0, vec_kv[i].1.to_vec()).await?
             }
             println!("[set_for][Time: {:?}]", start.elapsed());
 

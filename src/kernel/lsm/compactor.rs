@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
+use bytes::Bytes;
 use futures::future;
 use itertools::Itertools;
 use tokio::sync::oneshot;
@@ -283,7 +284,7 @@ impl Compactor {
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
         // 获取Level l的唯一KeySet用于Level ll的迭代过滤数据
-        let filter_set_l: HashSet<&Vec<u8>> = sharding_l.iter()
+        let filter_set_l: HashSet<&Bytes> = sharding_l.iter()
             .flatten()
             .map(|key_value| &key_value.0)
             .collect();
@@ -309,7 +310,7 @@ impl Compactor {
     }
 
     async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
-        where F: Fn(&Vec<u8>) -> bool
+        where F: Fn(&Bytes) -> bool
     {
         let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());

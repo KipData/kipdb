@@ -1,4 +1,6 @@
+use core::slice::SlicePattern;
 use std::iter::Iterator;
+use bytes::Bytes;
 use itertools::Itertools;
 use crate::kernel::lsm::iterator::{Seek, DiskIter};
 use crate::kernel::lsm::block::{Block, BlockItem};
@@ -30,19 +32,19 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
         }
     }
 
-    fn item(&self) -> (Vec<u8>, T) {
+    fn item(&self) -> (Bytes, T) {
         let offset = self.offset - 1;
         let entry = self.block.get_entry(offset);
 
         (if offset % self.block.restart_interval() != 0 {
-            self.buf_shared_key.iter()
-                .chain(entry.key())
+            Bytes::from(self.buf_shared_key.iter()
+                .chain(entry.key().as_slice())
                 .copied()
-                .collect_vec()
-        } else { entry.key().to_vec() }, entry.item().clone())
+                .collect_vec())
+        } else { entry.key().clone() }, entry.item().clone())
     }
 
-    fn offset_move(&mut self, offset: usize) -> Result<(Vec<u8>, T)>{
+    fn offset_move(&mut self, offset: usize) -> Result<(Bytes, T)>{
         let block = self.block;
         let restart_interval = block.restart_interval();
 
@@ -64,7 +66,7 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
 impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
     where V: Sync + Send + BlockItem
 {
-    type Item = (Vec<u8>, V);
+    type Item = (Bytes, V);
 
     fn next(&mut self) -> Result<Self::Item> {
         if self.is_valid() || self.offset == 0 {
@@ -104,6 +106,7 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
 mod tests {
     use std::vec;
     use bincode::Options;
+    use bytes::Bytes;
     use crate::kernel::lsm::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
     use crate::kernel::lsm::iterator::block_iter::BlockIter;
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
@@ -112,40 +115,40 @@ mod tests {
     #[test]
     fn test_iterator() -> Result<()> {
         let data = vec![
-            (vec![b'1'], Value::from(None)),
-            (vec![b'2'], Value::from(Some(vec![b'0']))),
-            (vec![b'4'], Value::from(None)),
+            (Bytes::from(vec![b'1']), Value::from(None)),
+            (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'4']), Value::from(None)),
         ];
         let block = Block::new(data, DEFAULT_DATA_RESTART_INTERVAL);
         let mut iterator = BlockIter::new(&block);
 
         assert!(!iterator.is_valid());
 
-        assert_eq!(iterator.next()?, (vec![b'1'], Value::from(None)));
+        assert_eq!(iterator.next()?, (Bytes::from(vec![b'1']), Value::from(None)));
 
-        assert_eq!(iterator.next()?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+        assert_eq!(iterator.next()?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
 
-        assert_eq!(iterator.next()?, (vec![b'4'], Value::from(None)));
+        assert_eq!(iterator.next()?, (Bytes::from(vec![b'4']), Value::from(None)));
 
         assert!(iterator.next().is_err());
 
-        assert_eq!(iterator.prev()?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+        assert_eq!(iterator.prev()?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
 
-        assert_eq!(iterator.prev()?, (vec![b'1'], Value::from(None)));
+        assert_eq!(iterator.prev()?, (Bytes::from(vec![b'1']), Value::from(None)));
 
         assert!(iterator.prev().is_err());
 
-        assert_eq!(iterator.seek(Seek::First)?, (vec![b'1'], Value::from(None)));
+        assert_eq!(iterator.seek(Seek::First)?, (Bytes::from(vec![b'1']), Value::from(None)));
 
-        assert_eq!(iterator.seek(Seek::Last)?, (vec![b'4'], Value::from(None)));
+        assert_eq!(iterator.seek(Seek::Last)?, (Bytes::from(vec![b'4']), Value::from(None)));
 
-        assert_eq!(iterator.seek(Seek::Forward(&vec![b'2']))?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+        assert_eq!(iterator.seek(Seek::Forward(&vec![b'2']))?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
 
-        assert_eq!(iterator.seek(Seek::Backward(&vec![b'2']))?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+        assert_eq!(iterator.seek(Seek::Backward(&vec![b'2']))?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
 
-        assert_eq!(iterator.seek(Seek::Forward(&vec![b'3']))?, (vec![b'2'], Value::from(Some(vec![b'0']))));
+        assert_eq!(iterator.seek(Seek::Forward(&vec![b'3']))?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
 
-        assert_eq!(iterator.seek(Seek::Backward(&vec![b'3']))?, (vec![b'4'], Value::from(None)));
+        assert_eq!(iterator.seek(Seek::Backward(&vec![b'3']))?, (Bytes::from(vec![b'4']), Value::from(None)));
 
         Ok(())
     }
@@ -153,7 +156,7 @@ mod tests {
     #[test]
     fn test_iterator_1000() -> Result<()> {
         let mut vec_data = Vec::new();
-        let value = b"What you are you do not see, what you see is your shadow.";
+        let value = Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
 
         let times = 1000;
         // 默认使用大端序进行序列化，保证顺序正确性
@@ -163,7 +166,7 @@ mod tests {
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
             vec_data.push(
-                (key, Value::from(Some(value.to_vec())))
+                (Bytes::from(key), Value::from(Some(value.clone())))
             );
         }
         let block = Block::new(vec_data.clone(), DEFAULT_DATA_RESTART_INTERVAL);

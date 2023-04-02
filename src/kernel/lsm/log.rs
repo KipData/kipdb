@@ -138,6 +138,7 @@ impl LogLoader {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::FileExtension;
     use crate::kernel::lsm::log::LogLoader;
@@ -156,8 +157,8 @@ mod tests {
             FileExtension::Log
         )?;
 
-        let data_1 = (b"kip_key_1".to_vec(), Some(b"kip_value".to_vec()));
-        let data_2 = (b"kip_key_2".to_vec(), Some(b"kip_value".to_vec()));
+        let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
+        let data_2 = (Bytes::from_static(b"kip_key_2"), Some(Bytes::from_static(b"kip_value")));
 
         wal.log(data_1.clone())?;
         wal.log(data_2.clone())?;
@@ -189,8 +190,8 @@ mod tests {
             FileExtension::Log
         )?;
 
-        let data_1 = (b"kip_key_1".to_vec(), Some(b"kip_value".to_vec()));
-        let data_2 = (b"kip_key_2".to_vec(), Some(b"kip_value".to_vec()));
+        let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
+        let data_2 = (Bytes::from_static(b"kip_key_2"), Some(Bytes::from_static(b"kip_value")));
 
         wal_1.log(data_1.clone())?;
         wal_1.log(data_2.clone())?;
