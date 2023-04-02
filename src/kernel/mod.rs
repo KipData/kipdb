@@ -37,7 +37,7 @@ pub trait KVStore: Send + Sync + 'static + Sized {
     async fn flush(&self) -> Result<()>;
 
     /// 设置键值对
-    async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()>;
+    async fn set(&self, key: &[u8], value: Bytes) -> Result<()>;
 
     /// 通过键获取对应的值
     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>>;
@@ -259,7 +259,7 @@ impl CommandData {
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                kv_store.set(&key, value).await.map(|_| options_none())
+                kv_store.set(&key, Bytes::from(value)).await.map(|_| options_none())
             }
             CommandData::Remove { key } => {
                 kv_store.remove(&key).await.map(|_| options_none())

@@ -56,9 +56,9 @@ impl<'a> Transaction<'a> {
         Ok(None)
     }
 
-    pub fn set(&mut self, key: &[u8], value: Vec<u8>) {
+    pub fn set(&mut self, key: &[u8], value: Bytes) {
         let _ignore = self.writer_buf.insert(
-            Bytes::copy_from_slice(key), Some(Bytes::from(value))
+            Bytes::copy_from_slice(key), Some(value)
         );
     }
 
@@ -155,7 +155,7 @@ mod tests {
             }
 
             for i in 0..times {
-                transaction.set(&vec_kv[i].0, vec_kv[i].1.to_vec());
+                transaction.set(&vec_kv[i].0, vec_kv[i].1.clone());
             }
 
             transaction.remove(&vec_kv[times - 1].0).await?;

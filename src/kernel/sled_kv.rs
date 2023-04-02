@@ -35,8 +35,8 @@ impl KVStore for SledStore {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Vec<u8>) -> crate::kernel::Result<()> {
-        let _ignore = self.data_base.insert(key, value)?;
+    async fn set(&self, key: &[u8], value: Bytes) -> crate::kernel::Result<()> {
+        let _ignore = self.data_base.insert(key, value.to_vec())?;
         Ok(())
     }
 

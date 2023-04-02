@@ -229,7 +229,7 @@ mod tests {
 
             for i in 0..times / 1000 {
                 for j in 0..1000 {
-                    kv_store.set(&vec_kv[i * 1000 + j].0, vec_kv[i * 1000 + j].1.clone()).await?
+                    kv_store.set(&vec_kv[i * 1000 + j].0, Bytes::from(vec_kv[i * 1000 + j].1.clone())).await?
                 }
                 kv_store.flush().await?;
             }

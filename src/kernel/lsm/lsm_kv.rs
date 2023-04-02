@@ -127,9 +127,9 @@ impl KVStore for LsmStore {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
+    async fn set(&self, key: &[u8], value: Bytes) -> Result<()> {
         self.append_cmd_data(
-            (Bytes::copy_from_slice(key), Some(Bytes::from(value)))
+            (Bytes::copy_from_slice(key), Some(value))
         ).await
     }
 
@@ -579,7 +579,7 @@ mod tests {
 
             let start = Instant::now();
             for i in 0..times {
-                kv_store.set(&vec_kv[i].0, vec_kv[i].1.to_vec()).await?
+                kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?
             }
             println!("[set_for][Time: {:?}]", start.elapsed());
 
