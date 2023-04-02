@@ -1,6 +1,7 @@
 use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::sync::Arc;
+use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::KvsError::SSTableLostError;
+use crate::KernelError::SSTableLostError;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 
@@ -167,7 +168,7 @@ pub(crate) struct Version {
     /// 统计数据
     meta_data: VersionMeta,
     /// 稀疏区间数据Block缓存
-    block_cache: Arc<BlockCache>,
+    pub(crate) block_cache: Arc<BlockCache>,
     /// 清除信号发送器
     /// Drop时通知Cleaner进行删除
     clean_sender: Sender<CleanTag>
@@ -314,7 +315,7 @@ impl VersionStatus {
         let vec_data = vec_version_edit.iter()
             .filter_map(|edit| {
                 bincode::serialize(&edit).ok()
-                    .map(|key| (key, None))
+                    .map(|key| (Bytes::from(key), None))
             })
             .collect_vec();
 
@@ -596,6 +597,33 @@ impl Version {
         Some(vec)
     }
 
+    #[allow(dead_code)]
+    pub(crate) async fn get_ss_tables_for_level(&self, level: usize) -> Vec<SSTable> {
+        let ss_table_map = self.ss_tables_map.read().await;
+
+        self.level_slice[level].iter()
+            .cloned()
+            .filter_map(|gen| ss_table_map.get(&gen))
+            .collect_vec()
+    }
+
+    /// 获取所有ss_table
+    pub(crate) async fn get_all_ss_tables(&self) -> Vec<Vec<SSTable>> {
+        let ss_table_map = self.ss_tables_map.read().await;
+        let mut all_ss_tables = Vec::with_capacity(7);
+
+        for level in 0..7 {
+            all_ss_tables.push(
+                self.level_slice[level].iter()
+                    .cloned()
+                    .filter_map(|gen| ss_table_map.get(&gen))
+                    .collect_vec()
+            )
+        }
+
+        all_ss_tables
+    }
+
     /// 获取指定level中与scope冲突的
     pub(crate) async fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<SSTable> {
         let mut vec = Vec::new();
@@ -613,7 +641,7 @@ impl Version {
     }
 
     /// 使用Key从现有SSTables中获取对应的数据
-    pub(crate) async fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(crate) async fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let ss_table_map = self.ss_tables_map.read().await;
         let block_cache = &self.block_cache;
 
@@ -623,21 +651,22 @@ impl Version {
             .rev()
         {
             if let Some(ss_table) = ss_table_map.get(gen) {
-                if let Some(value) =
-                    Self::query_with_ss_table(key, block_cache, &ss_table)?
-                {
-                    return Ok(Some(value))
+                if ss_table.get_scope().meet_with_key(key) {
+                    if let Some(value) =
+                        Self::query_with_ss_table(key, block_cache, &ss_table)?
+                    {
+                        return Ok(Some(value))
+                    }
                 }
             }
         }
         // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的SSTable
-        let key_scope = Scope::from_key(key);
         for level in 1..7 {
             if let Some(ss_table) = Self::rfind_ss_table(
                 &self.level_slice,
                 &ss_table_map,
                 level,
-                |ss_table| ss_table.get_scope().meet(&key_scope)
+                |ss_table| ss_table.get_scope().meet_with_key(key)
             ).await {
                 if let Some(value) =
                     Self::query_with_ss_table(key, block_cache, &ss_table)?
@@ -654,7 +683,7 @@ impl Version {
         key: &[u8],
         block_cache: &BlockCache,
         ss_table: &SSTable
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Bytes>> {
         ss_table.query_with_key(key, block_cache)
     }
 
@@ -708,6 +737,7 @@ fn version_display(new_version: &Version, method: &str) {
 mod tests {
     use std::sync::Arc;
     use std::time::Duration;
+    use bytes::Bytes;
     use tempfile::TempDir;
     use tokio::time;
     use crate::kernel::io::{FileExtension, IoFactory};
@@ -746,7 +776,7 @@ mod tests {
                 &config,
                 1,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 
@@ -754,7 +784,7 @@ mod tests {
                 &config,
                 2,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 
@@ -838,7 +868,7 @@ mod tests {
                 &config,
                 1,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 
@@ -846,7 +876,7 @@ mod tests {
                 &config,
                 2,
                 &sst_factory,
-                vec![(b"test".to_vec(), None)],
+                vec![(Bytes::from_static(b"test"), None)],
                 0
             )?;
 

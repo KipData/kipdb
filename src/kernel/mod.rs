@@ -4,13 +4,14 @@ use std::path::Path;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
+use bytes::Bytes;
 use fslock::LockFile;
 use futures::future;
 use itertools::Itertools;
 use tokio::time;
 
 use crate::kernel::io::{FileExtension, IoReader, IoWriter};
-use crate::KvsError;
+use crate::KernelError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
 pub mod hash_kv;
@@ -19,7 +20,7 @@ pub mod lsm;
 pub mod io;
 pub mod utils;
 
-pub type Result<T> = std::result::Result<T, KvsError>;
+pub type Result<T> = std::result::Result<T, KernelError>;
 
 pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
 
@@ -36,10 +37,10 @@ pub trait KVStore: Send + Sync + 'static + Sized {
     async fn flush(&self) -> Result<()>;
 
     /// 设置键值对
-    async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()>;
+    async fn set(&self, key: &[u8], value: Bytes) -> Result<()>;
 
     /// 通过键获取对应的值
-    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>>;
 
     /// 通过键删除键值对
     async fn remove(&self, key: &[u8]) -> Result<()>;
@@ -258,7 +259,7 @@ impl CommandData {
     pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
-                kv_store.set(&key, value).await.map(|_| options_none())
+                kv_store.set(&key, Bytes::from(value)).await.map(|_| options_none())
             }
             CommandData::Remove { key } => {
                 kv_store.remove(&key).await.map(|_| options_none())
@@ -343,6 +344,16 @@ impl From<Option<Vec<u8>>> for CommandOption {
     }
 }
 
+impl From<Option<Bytes>> for CommandOption {
+    #[inline]
+    fn from(item: Option<Bytes>) -> Self {
+        match item {
+            Some(bytes) => CommandOption { r#type: 2, bytes: bytes.to_vec(), value: 0 },
+            None => options_none()
+        }
+    }
+}
+
 /// 现有日志文件序号排序
 fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64>> {
     let mut gen_list: Vec<i64> = fs::read_dir(file_path)?
@@ -371,7 +382,7 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
         if lock_file.try_lock()? {
             return Ok(lock_file)
         } else if backoff > 4 {
-            return Err(KvsError::ProcessExistsError);
+            return Err(KernelError::ProcessExistsError);
         } else {
             time::sleep(Duration::from_millis(backoff * 100)).await;
 

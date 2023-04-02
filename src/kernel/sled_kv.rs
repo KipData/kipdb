@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use sled::Db;
 use async_trait::async_trait;
+use bytes::Bytes;
 use crate::kernel::KVStore;
-use crate::KvsError;
+use crate::KernelError;
 
 #[derive(Debug)]
 pub struct SledStore {
@@ -34,17 +35,17 @@ impl KVStore for SledStore {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Vec<u8>) -> crate::kernel::Result<()> {
-        let _ignore = self.data_base.insert(key, value)?;
+    async fn set(&self, key: &[u8], value: Bytes) -> crate::kernel::Result<()> {
+        let _ignore = self.data_base.insert(key, value.to_vec())?;
         Ok(())
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> crate::kernel::Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> crate::kernel::Result<Option<Bytes>> {
         match self.data_base.get(key)? {
             None => { Ok(None) }
             Some(i_vec) => {
-                Ok(Some(i_vec.to_vec()))
+                Ok(Some(Bytes::from(i_vec.to_vec())))
             }
         }
     }
@@ -53,8 +54,8 @@ impl KVStore for SledStore {
     async fn remove(&self, key: &[u8]) -> crate::kernel::Result<()> {
         match self.data_base.remove(key) {
             Ok(Some(_)) => { Ok(()) }
-            Ok(None) => { Err(KvsError::KeyNotFound) }
-            Err(e) => { Err(KvsError::Sled(e)) }
+            Ok(None) => { Err(KernelError::KeyNotFound) }
+            Err(e) => { Err(KernelError::Sled(e)) }
         }
     }
 

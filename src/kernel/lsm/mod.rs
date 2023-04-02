@@ -18,6 +18,7 @@ mod log;
 mod mvcc;
 mod block;
 mod mem_table;
+mod iterator;
 
 /// Footer序列化长度定长
 /// 注意Footer序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致Footer在不同数据时，长度不一致
@@ -108,7 +109,7 @@ impl Footer {
     }
 }
 
-/// CommandData数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
+/// KeyValue数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
 /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
 /// TODO: Block对齐封装,替代此方法
 fn data_sharding(mut vec_data: Vec<KeyValue>, file_size: usize) -> MergeShardingVec {

@@ -3,13 +3,14 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use itertools::Itertools;
 use async_trait::async_trait;
+use bytes::Bytes;
 use fslock::LockFile;
 use parking_lot::RwLock;
 use tracing::error;
 
 use crate::kernel::{CommandData, CommandPackage, CommandPos, DEFAULT_LOCK_FILE, FileExtension, KVStore, lock_or_time_out, Result, sorted_gen_list};
 use crate::kernel::io::{IoFactory, IoReader, IoType, IoWriter};
-use crate::KvsError;
+use crate::KernelError;
 
 /// 默认压缩大小触发阈值
 pub(crate) const DEFAULT_COMPACTION_THRESHOLD: u64 = 1024 * 1024 * 64;
@@ -205,12 +206,12 @@ impl KVStore for HashStore {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
+    async fn set(&self, key: &[u8], value: Bytes) -> Result<()> {
         let mut manifest = self.manifest.write();
 
         //将数据包装为命令
         let gen = manifest.current_gen;
-        let cmd = CommandData::Set { key: key.to_vec(), value };
+        let cmd = CommandData::Set { key: key.to_vec(), value: value.to_vec() };
         // 获取写入器当前地址
         let io_handler = manifest.current_io_writer()?;
         let (pos, cmd_len) = CommandPackage::write(io_handler, &cmd)?;
@@ -235,7 +236,7 @@ impl KVStore for HashStore {
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let manifest = self.manifest.read();
 
         // 若index中获取到了该数据命令
@@ -245,10 +246,10 @@ impl KVStore for HashStore {
                     // 将命令进行转换
                     return if let CommandData::Set { value, .. } = cmd {
                         //返回匹配成功的数据
-                        Ok(Some(Vec::clone(&value)))
+                        Ok(Some(Bytes::from(value)))
                     } else {
                         //返回错误（错误的指令类型）
-                        Err(KvsError::UnexpectedCommandType)
+                        Err(KernelError::UnexpectedCommandType)
                     }
                 }
             }
@@ -269,7 +270,7 @@ impl KVStore for HashStore {
             let _ignore1 = manifest.remove_key_with_pos(key);
             Ok(())
         } else {
-            Err(KvsError::KeyNotFound)
+            Err(KernelError::KeyNotFound)
         }
     }
 
@@ -334,12 +335,12 @@ impl Manifest {
     fn current_io_writer(&mut self) -> Result<&mut dyn IoWriter> {
         self.io_index.get_mut(&self.current_gen)
             .map(|(writer, _ )| writer.as_mut())
-            .ok_or(KvsError::FileNotFound)
+            .ok_or(KernelError::FileNotFound)
     }
     fn current_io_reader(&self) -> Result<&dyn IoReader> {
         self.io_index.get(&self.current_gen)
             .map(|(_, reader)| reader.as_ref())
-            .ok_or(KvsError::FileNotFound)
+            .ok_or(KernelError::FileNotFound)
     }
     /// 通过Gen获取指定的IoReader
     fn get_reader(&self, gen: &i64) -> Option<&dyn IoReader> {

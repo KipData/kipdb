@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use bytes::Bytes;
 use chrono::Local;
 use itertools::Itertools;
 use tokio::net::{TcpListener, TcpStream};
@@ -166,7 +167,7 @@ impl Handler {
                     let KeyValue { key, value, r#type } = key_value_from_option(&client_option)?;
                     let res_option = match r#type {
                         1 => {
-                            self.kv_store.set(&key, value).await.map(|_| options_none())?
+                            self.kv_store.set(&key, Bytes::from(value)).await.map(|_| options_none())?
                         }
                         2 => {
                             self.kv_store.remove(&key).await.map(|_| options_none())?

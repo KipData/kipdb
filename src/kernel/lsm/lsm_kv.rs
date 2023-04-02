@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::Local;
 use fslock::LockFile;
 use tokio::select;
@@ -11,16 +12,17 @@ use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tracing::error;
-use crate::KvsError;
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::FileExtension;
 use crate::kernel::lsm::block;
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
+use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
+use crate::KernelError;
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_LEN: usize = 2333;
 
@@ -125,12 +127,14 @@ impl KVStore for LsmStore {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.append_cmd_data((key.to_vec(), Some(value))).await
+    async fn set(&self, key: &[u8], value: Bytes) -> Result<()> {
+        self.append_cmd_data(
+            (Bytes::copy_from_slice(key), Some(value))
+        ).await
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         if let Some(value) = self.mem_table().find(key) {
             return Ok(Some(value));
         }
@@ -147,8 +151,8 @@ impl KVStore for LsmStore {
     #[inline]
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
-            Some(_) => self.append_cmd_data((key.to_vec(), None)).await,
-            None => Err(KvsError::KeyNotFound)
+            Some(_) => self.append_cmd_data((Bytes::copy_from_slice(key), None)).await,
+            None => Err(KernelError::KeyNotFound)
         }
     }
 
@@ -284,6 +288,11 @@ impl LsmStore {
             }
             std::hint::spin_loop();
         }
+    }
+
+    #[inline]
+    pub async fn disk_iter(&self) -> Result<VersionIter> {
+        VersionIter::new(self.current_version().await).await
     }
 }
 
@@ -505,6 +514,7 @@ pub(crate) async fn wal_put(wal: &Arc<LogLoader>, data: KeyValue, is_sync: bool)
 mod tests {
     use std::thread::sleep;
     use std::time::{Duration, Instant};
+    use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, Gen, LsmStore, Sequence};
@@ -544,7 +554,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {
-            let times = 5000;
+            let times = 10000;
 
             let value = b"Stray birds of summer come to my window to sing and fly away.
             And yellow leaves of autumn, which have no songs, flutter and fall
@@ -560,10 +570,10 @@ mod tests {
             for i in 0..times {
                 let vec_u8 = bincode::serialize(&i)?;
                 vec_kv.push((
-                    vec_u8.clone(),
-                    vec_u8.into_iter()
+                    Bytes::from(vec_u8.clone()),
+                    Bytes::from(vec_u8.into_iter()
                         .chain(value.to_vec())
-                        .collect_vec()
+                        .collect_vec())
                 ));
             }
 

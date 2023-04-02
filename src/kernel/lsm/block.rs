@@ -1,14 +1,14 @@
 use std::cmp::min;
 use std::io::{Cursor, Read, Write};
 use std::mem;
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, Bytes};
 use itertools::Itertools;
 use lz4::Decoder;
 use varuint::{ReadVarint, WriteVarint};
-use crate::kernel::{CommandData, Result};
+use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::KvsError;
+use crate::KernelError;
 
 /// BlockCache类型 可同时缓存两种类型
 ///
@@ -27,7 +27,7 @@ pub(crate) const DEFAULT_INDEX_RESTART_INTERVAL: usize = 2;
 
 const CRC_SIZE: usize = 4;
 
-pub(crate) type KeyValue<T> = (Vec<u8>, T);
+pub(crate) type KeyValue<T> = (Bytes, T);
 
 pub(crate) enum BlockType {
     Data(Block<Value>),
@@ -38,15 +38,25 @@ pub(crate) enum BlockType {
 pub(crate) struct Entry<T> {
     unshared_len: usize,
     shared_len: usize,
-    pub(crate) key: Vec<u8>,
+    pub(crate) key: Bytes,
     pub(crate) item: T
+}
+
+impl<T> Entry<T> where T: BlockItem {
+    pub(crate) fn key(&self) -> &Bytes {
+        &self.key
+    }
+
+    pub(crate) fn item(&self) -> &T {
+        &self.item
+    }
 }
 
 impl<T> Entry<T> where T: BlockItem {
     pub(crate) fn new(
         shared_len: usize,
         unshared_len: usize,
-        key: Vec<u8>,
+        key: Bytes,
         item: T
     ) -> Self {
         Entry {
@@ -76,15 +86,15 @@ impl<T> Entry<T> where T: BlockItem {
             let unshared_len = ReadVarint::<u32>::read_varint(cursor)? as usize;
             let shared_len = ReadVarint::<u32>::read_varint(cursor)? as usize;
 
-            let mut key = vec![0u8; unshared_len];
-            let _ = cursor.read(&mut key)?;
+            let mut bytes = vec![0u8; unshared_len];
+            let _ = cursor.read(&mut bytes)?;
 
             let item = T::decode(cursor)?;
 
             vec_entry.push((index, Self {
                 unshared_len,
                 shared_len,
-                key,
+                key:  Bytes::from(bytes),
                 item,
             }));
             index += 1;
@@ -98,13 +108,13 @@ impl<T> Entry<T> where T: BlockItem {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct Value {
     value_len: usize,
-    pub(crate) bytes: Option<Vec<u8>>
+    pub(crate) bytes: Option<Bytes>
 }
 
-impl From<Option<Vec<u8>>> for Value {
-    fn from(bytes: Option<Vec<u8>>) -> Self {
+impl From<Option<Bytes>> for Value {
+    fn from(bytes: Option<Bytes>) -> Self {
         let value_len = bytes.as_ref()
-            .map_or(0, Vec::len);
+            .map_or(0, Bytes::len);
         Value {
             value_len,
             bytes,
@@ -148,7 +158,7 @@ impl BlockItem for Value {
             .then(|| {
                 let mut value = vec![0u8; value_len];
                 reader.read(&mut value).ok()
-                    .map(|_| value)
+                    .map(|_| Bytes::from(value))
             })
             .flatten();
 
@@ -270,24 +280,24 @@ impl BlockBuf {
     fn add(&mut self, key_value: KeyValue<Value>) {
         // 断言新插入的键值对的Key大于buf中最后的key
         if let Some(last_key) = self.last_key() {
-            assert!(key_value.0.cmp(last_key).is_gt());
+            assert!(last_key.cmp(&key_value.0).is_lt());
         }
         self.bytes_size += key_value_bytes_len(&key_value);
         self.vec_key_value.push(key_value);
     }
 
     /// 获取最后一个Key
-    fn last_key(&self) -> Option<&Vec<u8>> {
+    fn last_key(&self) -> Option<&Bytes> {
         self.vec_key_value
             .last()
-            .map(|key_value| key_value.0.as_ref())
+            .map(|key_value| &key_value.0)
     }
 
     /// 刷新且弹出其缓存的键值对与其中last_key
-    fn flush(&mut self) -> (Vec<KeyValue<Value>>, Option<Vec<u8>>) {
+    fn flush(&mut self) -> (Vec<KeyValue<Value>>, Option<Bytes>) {
         self.bytes_size = 0;
-        let last_key = self.last_key()
-            .cloned();
+        let last_key = self.last_key().cloned();
+
         (mem::take(&mut self.vec_key_value), last_key)
     }
 }
@@ -299,41 +309,14 @@ pub(crate) struct BlockBuilder {
     options: BlockOptions,
     len: usize,
     buf: BlockBuf,
-    vec_block: Vec<(Block<Value>, Vec<u8>)>
-}
-
-impl From<CommandData> for Option<KeyValue<Value>> {
-    #[inline]
-    fn from(value: CommandData) -> Self {
-        match value {
-            CommandData::Set { key, value } => {
-                Some((key,Value::from(Some(Vec::clone(&value)))))
-            },
-            CommandData::Remove { key } => {
-                Some((key, Value::from(None)))
-            },
-            CommandData::Get { .. } => None,
-        }
-    }
-}
-
-impl From<KeyValue<Value>> for CommandData {
-    #[inline]
-    fn from(key_value: KeyValue<Value>) -> Self {
-        let (key, value) = key_value;
-        if let Some(bytes) = value.bytes {
-            CommandData::set(key, bytes)
-        } else {
-            CommandData::remove(key)
-        }
-    }
+    vec_block: Vec<(Block<Value>, Bytes)>
 }
 
 /// 获取键值对得到其空间占用数
 fn key_value_bytes_len(key_value: &KeyValue<Value>) -> usize {
     let (key, value) = key_value;
     key.len() + value.bytes.as_ref()
-        .map_or(0, Vec::len)
+        .map_or(0, Bytes::len)
 }
 
 impl BlockBuilder {
@@ -413,13 +396,50 @@ impl BlockBuilder {
 
 impl Block<Value> {
     /// 通过Key查询对应Value
-    pub(crate) fn find(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn find(&self, key: &[u8]) -> Option<Bytes> {
         self.binary_search(key)
             .ok()
             .and_then(|index| {
-                self.vec_entry[index].1.item
-                    .bytes.clone()
+                self.vec_entry.get(index).map(|(_, entry)| entry.item.bytes.clone())
             })
+            .flatten()
+    }
+}
+
+impl<T> Block<T> {
+    #[allow(dead_code)]
+    pub(crate) fn entry_len(&self) -> usize {
+        self.vec_entry.len()
+    }
+
+    /// 获取该Entry对应的shared_key前缀
+    ///
+    /// 具体原理是通过被固定的restart_interval进行前缀压缩的Block，
+    /// 通过index获取前方最近的Restart，得到的Key通过shared_len进行截取以此得到shared_key
+    pub(crate) fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
+        &self.vec_entry[index - index % self.restart_interval]
+            .1.key[0..shared_len]
+    }
+
+    pub(crate) fn restart_interval(&self) -> usize {
+        self.restart_interval
+    }
+
+    /// 获取指定index的entry
+    pub(crate) fn get_entry(&self, index: usize) -> &Entry<T> {
+        &self.vec_entry[index].1
+    }
+
+    /// 获取指定index所属restart的shared_len
+    ///
+    /// 当index为restart_entry时也会获取其区域内的其他节点相同的shared_len
+    pub(crate) fn restart_shared_len(&self, index: usize) -> usize {
+        if index % self.restart_interval != 0 {
+            self.get_entry(index).shared_len
+        } else {
+            self.vec_entry.get(index + 1)
+                .map_or(0, |(_, entry)| entry.shared_len)
+        }
     }
 }
 
@@ -436,7 +456,7 @@ impl<T> Block<T> where T: BlockItem {
                 (index, Entry::new(
                     shared_len,
                     key.len() - shared_len,
-                    key[shared_len..].into(),
+                    Bytes::copy_from_slice(&key[shared_len..]),
                     item
                 ))
             })
@@ -445,33 +465,6 @@ impl<T> Block<T> where T: BlockItem {
             restart_interval,
             vec_entry,
         }
-    }
-
-    pub(crate) fn all_entry(self) -> Result<Vec<KeyValue<T>>> {
-        let restart_interval = self.restart_interval;
-        let vec_shared_key = self.vec_entry.iter()
-            .filter(|(i, _)| i % restart_interval == 0)
-            .map(|(i, Entry { shared_len, .. })| {
-                self.shared_key_prefix(*i, *shared_len).to_vec()
-            })
-            .collect_vec();
-        Ok(self.vec_entry.into_iter()
-            .map(|(i, Entry { key, item, .. })| {
-                let full_key = if i % restart_interval == 0 { key } else {
-                    vec_shared_key[i / restart_interval].iter()
-                        .cloned()
-                        .chain(key)
-                        .collect_vec()
-                };
-                (full_key, item)
-            })
-            .collect_vec())
-    }
-
-    pub(crate) fn all_value(self) -> Vec<T> {
-        self.vec_entry.into_iter()
-            .map(|(_, entry)| entry.item)
-            .collect_vec()
     }
 
     /// 查询相等或最近较大的Key
@@ -483,7 +476,7 @@ impl<T> Block<T> where T: BlockItem {
             .item.clone()
     }
 
-    fn binary_search(&self, key: &[u8]) -> core::result::Result<usize, usize> {
+    pub(crate) fn binary_search(&self, key: &[u8]) -> core::result::Result<usize, usize> {
         self.vec_entry
             .binary_search_by(|(index, entry)| {
                 if entry.shared_len > 0 {
@@ -496,15 +489,6 @@ impl<T> Block<T> where T: BlockItem {
                     key.cmp(&entry.key)
                 }.reverse()
             })
-    }
-
-    /// 获取该Entry对应的shared_key前缀
-    ///
-    /// 具体原理是通过被固定的restart_interval进行前缀压缩的Block，
-    /// 通过index获取前方最近的Restart，得到的Key通过shared_len进行截取以此得到shared_key
-    fn shared_key_prefix(&self, index: usize, shared_len: usize) -> &[u8] {
-        &self.vec_entry[index - index % self.restart_interval]
-            .1.key[0..shared_len]
     }
 
     /// 序列化后进行压缩
@@ -549,7 +533,7 @@ impl<T> Block<T> where T: BlockItem {
         if crc32fast::hash(&buf) == bincode::deserialize::<u32>(
             &buf[date_bytes_len..]
         )? {
-            return Err(KvsError::CrcMisMatch)
+            return Err(KernelError::CrcMisMatch)
         }
         buf.truncate(date_bytes_len);
 
@@ -641,6 +625,7 @@ fn longest_shared_len<T>(sharding: Vec<&KeyValue<T>>) -> usize {
 mod tests {
     use std::io::Cursor;
     use bincode::Options;
+    use bytes::Bytes;
     use itertools::Itertools;
     use crate::kernel::Result;
     use crate::kernel::lsm::block::{Block, BlockBuilder, BlockOptions, CompressType, Entry, Index, Value};
@@ -648,8 +633,12 @@ mod tests {
 
     #[test]
     fn test_entry_serialization() -> Result<()> {
-        let entry1 = Entry::new(0, 1,vec![b'1'], Value::from(Some(vec![b'1'])));
-        let entry2 = Entry::new(0, 1,vec![b'1'], Value::from(Some(vec![b'1'])));
+        let entry1 = Entry::new(
+            0, 1,Bytes::from(vec![b'1']), Value::from(Some(Bytes::from(vec![b'1'])))
+        );
+        let entry2 = Entry::new(
+            0, 1,Bytes::from(vec![b'1']), Value::from(Some(Bytes::from(vec![b'1'])))
+        );
 
         let bytes_vec_entry = entry1.encode()?
             .into_iter()
@@ -665,7 +654,7 @@ mod tests {
 
     #[test]
     fn test_block() -> Result<()> {
-        let value = b"Let life be beautiful like summer flowers";
+        let value = Bytes::from_static(b"Let life be beautiful like summer flowers");
         let mut vec_data = Vec::new();
 
         let times = 2333;
@@ -677,7 +666,7 @@ mod tests {
             key.append(
                 &mut bincode::options().with_big_endian().serialize(&i)?
             );
-            vec_data.push((key, Some(value.to_vec())));
+            vec_data.push((Bytes::from(key), Some(value.clone())));
         }
 
         for data in vec_data.iter().cloned() {
@@ -708,7 +697,7 @@ mod tests {
                 )?;
                 Ok(target_block)
             })?;
-            assert_eq!(data_block.find(key), Some(value.to_vec()))
+            assert_eq!(data_block.find(key), Some(value.clone()))
         }
 
         test_block_serialization_(block.clone(), CompressType::None, options.data_restart_interval)?;

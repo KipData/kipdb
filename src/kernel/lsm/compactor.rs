@@ -1,14 +1,19 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
+use bytes::Bytes;
 use futures::future;
 use itertools::Itertools;
 use tokio::sync::oneshot;
 use tracing::{error, info};
-use crate::KvsError;
+use crate::KernelError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::Result;
+use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
+use crate::kernel::lsm::iterator::DiskIter;
+use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
@@ -139,21 +144,13 @@ impl Compactor {
 
     /// Major压缩，负责将不同Level之间的数据向下层压缩转移
     /// 目前Major压缩的大体步骤是
-    ///
-    /// 1、获取当前Version，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
-    ///
-    /// 2、vec_ss_table_l的每个SSTable中的scope属性进行融合，并以此获取下一Level与该scope相交的SSTable，命名为vec_ss_table_l_1
-    ///
-    /// 3、获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
-    ///
-    /// 4、vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
-    ///
-    /// 6、并行将每个分片各自生成SSTable
-    ///
-    /// 7、生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
-    ///
-    /// 8、将变更的SSTable插入至vec_ver_edit以持久化
-    ///
+    /// 1. 获取当前Version，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
+    /// 2. vec_ss_table_l的每个SSTable中的scope属性进行融合，并以此获取下一Level与该scope相交的SSTable，命名为vec_ss_table_l_1
+    /// 3. 获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
+    /// 4. vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
+    /// 6. 并行将每个分片各自生成SSTable
+    /// 7. 生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
+    /// 8. 将变更的SSTable插入至vec_ver_edit以持久化
     /// Final: 将vec_ver_edit中的数据进行log_and_apply生成新的Version作为最新状态
     ///
     /// 经过压缩测试，Level 1的SSTable总是较多，根据原理推断：
@@ -162,7 +159,7 @@ impl Compactor {
     /// 因此大量数据压缩的情况下Level 1的SSTable数量会较多
     pub(crate) async fn major_compaction(&self, mut level: usize, mut vec_ver_edit: Vec<VersionEdit>) -> Result<()> {
         if level > 6 {
-            return Err(KvsError::LevelOver);
+            return Err(KernelError::LevelOver);
         }
 
         while level < 7 {
@@ -249,17 +246,16 @@ impl Compactor {
 
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
-            let vec_ss_table_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_ll) {
+            let vec_ss_table_l_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_ll) {
                 Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll).await,
                 Err(_) => vec_ss_table_l
             }.into_iter()
-                .chain(vec_ss_table_ll)
                 .unique_by(SSTable::get_gen)
                 .collect_vec();
 
             // 数据合并并切片
             let vec_merge_sharding =
-                Self::data_merge_and_sharding(&vec_ss_table_final, config).await?;
+                Self::data_merge_and_sharding(vec_ss_table_l_final, vec_ss_table_ll, &version.block_cache, config).await?;
 
             info!("[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]", start.elapsed());
 
@@ -270,26 +266,64 @@ impl Compactor {
     }
 
     /// 以SSTables的数据归并再排序后切片，获取以KeyValue的Key值由小到大的切片排序
-    /// 收集所有SSTable的get_all_data的future，并行执行并对数据进行去重以及排序
-    /// 真他妈完美
+    /// 1. 并行获取Level l(当前等级)的待合并SSTables_l的全量数据
+    /// 2. 基于SSTables_l获取唯一KeySet用于迭代过滤
+    /// 3. 并行对Level ll的SSTables_ll通过KeySet进行迭代同时过滤数据
+    /// 4. 组合SSTables_l和SSTables_ll的数据合并并进行唯一，排序处理
     async fn data_merge_and_sharding(
-        vec_ss_table: &[SSTable],
+        ss_tables_l: Vec<SSTable>,
+        ss_tables_ll: Vec<SSTable>,
+        block_cache: &BlockCache,
         config: &Config
     ) -> Result<MergeShardingVec> {
-        // 需要对SSTable进行排序，可能并发创建的SSTable可能确实名字会重复，但是目前SSTable的判断新鲜度的依据目前为Gen
-        // SSTable使用雪花算法进行生成，所以并行创建也不会导致名字重复(极小概率除外)
-        let map_futures = vec_ss_table.iter()
+        // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
+        let map_futures_l = ss_tables_l.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(SSTable::all);
-        let vec_cmd_data = future::try_join_all(map_futures)
-            .await?
+            .map(|ss_table| Self::ss_table_load_data(block_cache, &ss_table, |_| true));
+
+        let sharding_l = future::try_join_all(map_futures_l).await?;
+
+        // 获取Level l的唯一KeySet用于Level ll的迭代过滤数据
+        let filter_set_l: HashSet<&Bytes> = sharding_l.iter()
+            .flatten()
+            .map(|key_value| &key_value.0)
+            .collect();
+
+        // 通过KeySet过滤出Level l中需要补充的数据
+        // 并行: 因为即使l为0时，此时的ll(Level 1)仍然保证SSTable数据之间排列有序且不冲突，因此并行迭代不会导致数据冲突
+        // 过滤: 基于l进行数据过滤避免冗余的数据迭代导致占用大量内存占用
+        let sharding_ll = future::try_join_all(ss_tables_ll.iter()
+                .map(|ss_table| Self::ss_table_load_data(
+                    block_cache, ss_table, |key| !filter_set_l.contains(key))
+                )).await?;
+
+        // 使用sharding_ll来链接sharding_l以保持数据倒序的顺序是由新->旧
+        let vec_cmd_data = sharding_ll
             .into_iter()
+            .chain(sharding_l)
             .flatten()
             .rev()
             .unique_by(|(key, _)| key.clone())
             .sorted_unstable_by_key(|(key, _)| key.clone())
             .collect();
         Ok(data_sharding(vec_cmd_data, config.sst_file_size))
+    }
+
+    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
+        where F: Fn(&Bytes) -> bool
+    {
+        let mut iter = SSTableIter::new(ss_table, block_cache)?;
+        let mut vec_cmd = Vec::with_capacity(iter.len());
+        loop {
+            match iter.next() {
+                Ok(item) => {
+                    if fn_is_filter(&item.0) { vec_cmd.push(item) }
+                }
+                Err(KernelError::OutOfBounds) => break,
+                Err(e) => { return Err(e) }
+            }
+        }
+        Ok(vec_cmd)
     }
 
     pub(crate) fn config(&self) -> &Config {
