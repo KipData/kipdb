@@ -123,7 +123,7 @@ impl<'a> VersionIter<'a> {
         let mut item = (Bytes::new(), None);
         for level in 0..7 {
             item = self.iter_sync(level, seek)?;
-            if key == &item.0 { break }
+            if key == item.0 { break }
         }
 
         Ok(item)
@@ -180,6 +180,7 @@ impl DiskIter<Vec<u8>, Value> for VersionIter<'_> {
     }
 }
 
+#[allow(clippy::drop_copy)]
 impl Drop for VersionIter<'_> {
     fn drop(&mut self) {
         drop(self.all_ss_tables.as_ptr());

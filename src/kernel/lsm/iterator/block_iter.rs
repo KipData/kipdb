@@ -91,7 +91,7 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
             Seek::Last => self.entry_len - 1,
             Seek::Forward(key) => {
                 self.block.binary_search(key)
-                    .unwrap_or_else(|index| index.checked_sub(1).unwrap_or(0))
+                    .unwrap_or_else(|index| index.saturating_sub(1))
             }
             Seek::Backward(key) => {
                 self.block.binary_search(key)

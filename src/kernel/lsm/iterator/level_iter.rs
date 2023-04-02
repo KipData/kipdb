@@ -35,7 +35,7 @@ impl<'a> LevelIter<'a> {
         if self.is_valid() {
             let ss_table = &self.ss_tables[offset];
             if ss_table.get_gen() != self.sst_iter.get_gen() {
-                self.sst_iter = SSTableIter::new(ss_table, &self.block_cache)?;
+                self.sst_iter = SSTableIter::new(ss_table, self.block_cache)?;
             }
             self.sst_iter.seek(seek)
         } else { Err(KernelError::OutOfBounds) }
@@ -55,7 +55,7 @@ impl<'a> LevelIter<'a> {
             let mut item = (Bytes::new(), None);
             for (offset, _) in self.ss_tables.iter().rev().enumerate() {
                 item = self.sst_iter_seek(seek, i - offset)?;
-                if key == &item.0 { break }
+                if key == item.0 { break }
             }
             Ok(item)
         }

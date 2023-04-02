@@ -279,7 +279,7 @@ impl Compactor {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
         let map_futures_l = ss_tables_l.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(|ss_table| Self::ss_table_load_data(block_cache, &ss_table, |_| true));
+            .map(|ss_table| Self::ss_table_load_data(block_cache, ss_table, |_| true));
 
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
