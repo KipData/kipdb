@@ -59,12 +59,11 @@ impl Compactor {
     /// 多事务的commit脱离Compactor的耦合，
     /// 同时减少高并发事务或写入时的频繁Compaction，优先写入后统一压缩，
     /// 减少Level 0热数据的SSTable的冗余数据
-    #[allow(clippy::expect_used)]
     pub(crate) async fn check_then_compaction(
         &mut self,
         enable_caching: bool,
         option_tx: Option<oneshot::Sender<()>>
-    ) {
+    ) -> Result<()> {
         let exceeded_len = self.config().minor_threshold_with_len;
 
         if let Some(values) =
@@ -77,23 +76,18 @@ impl Compactor {
             }
         {
             if !values.is_empty() {
-                let gen = self.switch_wal()
-                    .expect("Log switch error!");
+                let gen = self.switch_wal()?;
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
-                if let Err(err) = self.minor_compaction(
-                    gen, values, enable_caching
-                ).await {
-                    error!("[Compactor][minor_compaction][error happen]: {:?}", err);
-                }
+                self.minor_compaction(gen, values, enable_caching).await?;
                 info!("[Compactor][Compaction Drop][Time: {:?}]", start.elapsed());
             }
         }
 
         // 压缩请求响应
-        let _ignore = option_tx.map(|tx| {
-                tx.send(()).expect("compactor response error!")
-            });
+        if let Some(tx) = option_tx { tx.send(()).map_err(|_| KernelError::ChannelClose)? }
+
+        Ok(())
     }
 
     /// 创建gen

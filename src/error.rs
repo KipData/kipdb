@@ -1,5 +1,6 @@
 use std::io;
 use failure::Fail;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::oneshot::error::RecvError;
 
 /// Error type for kvs
@@ -46,8 +47,10 @@ pub enum KernelError {
     UnexpectedCommandType,
     #[fail(display = "Process already exists")]
     ProcessExistsError,
-    #[fail(display = "数据索引越界")]
+    #[fail(display = "iterator index out of bounds")]
     OutOfBounds,
+    #[fail(display = "channel is closed")]
+    ChannelClose,
 }
 
 #[derive(Fail, Debug)]
@@ -81,6 +84,12 @@ pub enum CacheError {
     CacheSizeOverFlow,
     #[fail(display = "{}", _0)]
     KvStoreError(#[cause] KernelError),
+}
+
+impl<T> From<SendError<T>> for KernelError {
+    fn from(_: SendError<T>) -> Self {
+        KernelError::ChannelClose
+    }
 }
 
 impl From<io::Error> for ConnectionError {

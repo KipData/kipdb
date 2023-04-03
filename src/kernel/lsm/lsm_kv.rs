@@ -235,10 +235,12 @@ impl LsmStore {
                     option_task = task_rx.recv() => Some(option_task.unwrap_or(CompactTask::Drop)),
                     _ = sleep(Duration::from_millis(check_time)) => None,
                 };
-                if let Some(CompactTask::Flush(resp_tx, enable_caching)) = option_task {
-                    compactor.check_then_compaction(enable_caching, Some(resp_tx)).await;
+                if let Err(err) = if let Some(CompactTask::Flush(resp_tx, enable_caching)) = option_task {
+                    compactor.check_then_compaction(enable_caching, Some(resp_tx)).await
                 } else {
-                    compactor.check_then_compaction(true, None).await;
+                    compactor.check_then_compaction(true, None).await
+                } {
+                    error!("[Compactor][minor_compaction][error happen]: {:?}", err);
                 }
             }
         });
@@ -262,14 +264,12 @@ impl LsmStore {
         self.inner.ver_status.current().await
     }
 
-    #[allow(clippy::expect_used)]
     pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.compactor_tx.send(CompactTask::Flush(tx, !is_drop)).await
-            .expect("flush task send error!");
+        self.compactor_tx.send(CompactTask::Flush(tx, !is_drop)).await?;
 
         self.wal.flush()?;
-        rx.await.expect("flush task recv error!");
+        rx.await?;
 
         Ok(())
     }

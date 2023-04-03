@@ -159,7 +159,6 @@ impl SSTable {
     }
 
     /// 查询Key对应的Value
-    #[allow(clippy::expect_used)]
     pub(crate) fn query_with_key(
         &self,
         key: &[u8],

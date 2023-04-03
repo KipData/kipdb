@@ -429,7 +429,6 @@ impl Version {
     /// 也就是可能存在一次Version的冗余SSTable
     /// 可能是个确定，但是Minor Compactor比较起来更加频繁，也就是大多数情况不会冗余，因此我觉得影响较小
     /// 也可以算作是一种Major Compaction异常时的备份？
-    #[allow(clippy::expect_used)]
     async fn apply(&mut self, vec_version_edit: Vec<VersionEdit>, is_init: bool) -> Result<()> {
         let mut del_gens = vec![];
         let ss_tables_map = self.ss_tables_map.read().await;
@@ -503,7 +502,7 @@ impl Version {
 
         self.clean_sender.send(
             CleanTag::Add(self.version_num, del_gens)
-        ).await.expect("send error!");
+        ).await?;
 
         Ok(())
     }
