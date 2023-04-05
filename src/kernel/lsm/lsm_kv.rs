@@ -81,8 +81,6 @@ pub(crate) struct StoreInner {
 
 impl StoreInner {
     pub(crate) async fn new(config: Config) -> Result<(Self, Arc<LogLoader>)> {
-        Gen::init();
-
         let (wal, reload_data) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
@@ -211,6 +209,7 @@ impl LsmStore {
     /// 使用Config进行LsmStore初始化
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
+        Gen::init();
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;
         let lock_file = lock_or_time_out(
@@ -546,7 +545,7 @@ mod tests {
         let i_4 = Gen::create();
 
         assert!(i_3 > i_2);
-        assert!(i_4 > i_3);
+        assert!(i_4 > i_3 + 1);
     }
 
     #[test]

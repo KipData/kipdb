@@ -6,7 +6,7 @@ use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::io::IoReader;
 use crate::kernel::lsm::block::{Entry, Value};
-use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::mem_table::KeyValue;
 
 pub(crate) struct LogLoader {
@@ -54,7 +54,7 @@ impl LogLoader {
         );
         let last_gen = vec_gen.back()
             .cloned()
-            .unwrap_or(0);
+            .unwrap_or(Gen::create());
 
         let inner = Mutex::new(
             Inner {
