@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
             if let Some(value) = client.get(encode(&key)).await? {
                 info!("\"{}\"", decode(value));
             } else {
-                info!("(Nil)");
+                info!("");
             }
         }
         Command::BatchSet { batch } => {
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
                     CommandData::Get {
                         key: encode(&key)
                     }).collect_vec();
-            batch_run_and_print(&mut client, vec_batch_get, "Nil").await?;
+            batch_run_and_print(&mut client, vec_batch_get, "").await?;
         }
         Command::SizeOfDisk => {
             info!("{}", client.size_of_disk().await?);
