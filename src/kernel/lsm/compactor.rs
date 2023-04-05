@@ -31,7 +31,7 @@ pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
-    Flush(oneshot::Sender<()>, bool),
+    Flush(oneshot::Sender<()>),
     Drop
 }
 
@@ -61,7 +61,6 @@ impl Compactor {
     /// 减少Level 0热数据的SSTable的冗余数据
     pub(crate) async fn check_then_compaction(
         &mut self,
-        enable_caching: bool,
         option_tx: Option<oneshot::Sender<()>>
     ) -> Result<()> {
         let exceeded_len = self.config().minor_threshold_with_len;
@@ -79,7 +78,7 @@ impl Compactor {
                 let gen = self.switch_wal()?;
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
-                self.minor_compaction(gen, values, enable_caching).await?;
+                self.minor_compaction(gen, values).await?;
                 info!("[Compactor][Compaction Drop][Time: {:?}]", start.elapsed());
             }
         }
@@ -111,7 +110,6 @@ impl Compactor {
         &self,
         gen: i64,
         values: Vec<KeyValue>,
-        enable_caching: bool
     ) -> Result<()> {
         if !values.is_empty() {
             // 从内存表中将数据持久化为ss_table
@@ -123,7 +121,7 @@ impl Compactor {
                 LEVEL_0
             )?;
 
-            self.ver_status().insert_vec_ss_table(vec![ss_table], enable_caching).await?;
+            self.ver_status().insert_vec_ss_table(vec![ss_table]).await?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             if let Err(err) = self.major_compaction(
@@ -182,7 +180,7 @@ impl Compactor {
                     .map(SSTable::get_gen)
                     .collect_vec();
                 self.ver_status()
-                    .insert_vec_ss_table(vec_new_ss_table, true).await?;
+                    .insert_vec_ss_table(vec_new_ss_table).await?;
 
                 vec_ver_edit.push(VersionEdit::NewFile((vec_new_sst_gen, level + 1), index));
                 vec_ver_edit.push(VersionEdit::DeleteFile((del_gens_l, level)));

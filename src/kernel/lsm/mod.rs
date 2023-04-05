@@ -1,10 +1,12 @@
-use std::collections::HashMap;
-use std::collections::hash_map::{Iter, RandomState, Values};
+use std::collections::hash_map::RandomState;
+use std::sync::Arc;
 use growable_bloom_filter::GrowableBloom;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use crate::kernel::Result;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
-use crate::kernel::lsm::compactor::MergeShardingVec;
+use crate::kernel::lsm::compactor::{LEVEL_0, MergeShardingVec};
+use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
@@ -44,62 +46,68 @@ struct MetaBlock {
     data_restart_interval: usize,
 }
 
-pub(crate) struct SSTableMap {
-    inner: HashMap<i64, SSTable>,
-    cache: ShardingLruCache<i64, SSTable>
+pub(crate) struct SSTableLoader {
+    inner: ShardingLruCache<i64, SSTable>,
+    factory: Arc<IoFactory>,
+    config: Config,
+    wal: Arc<LogLoader>
 }
 
-impl SSTableMap {
-    pub(crate) fn new(config: Config) -> Result<Self> {
-        let cache = ShardingLruCache::new(
+impl SSTableLoader {
+    pub(crate) fn new(config: Config, factory: Arc<IoFactory>, wal: Arc<LogLoader>) -> Result<Self> {
+        let inner = ShardingLruCache::new(
             config.table_cache_size,
             16,
             RandomState::default()
         )?;
-        Ok(SSTableMap {
-            inner: HashMap::new(),
-            cache,
-        })
+        Ok(SSTableLoader { inner, factory, config: config.clone(), wal })
     }
 
     pub(crate) fn insert(&mut self, ss_table: SSTable) -> Option<SSTable> {
-        self.inner.insert(ss_table.get_gen(), ss_table)
+        self.inner.put(ss_table.get_gen(), ss_table)
     }
 
-    pub(crate) fn get(&self, gen: &i64) -> Option<SSTable> {
-        self.cache.get(gen)
-            .or_else(|| self.inner.get(gen))
+    pub(crate) fn get(&self, gen: i64) -> Option<SSTable> {
+        self.inner.get_or_insert(gen, |gen| {
+            let sst_factory = &self.factory;
+
+            let ss_table = match sst_factory.reader(*gen, IoType::Direct)
+                .map(SSTable::load_from_file)
+                .flatten()
+            {
+                Ok(ss_table) => ss_table,
+                Err(err) => {
+                    warn!(
+                        "[LSMStore][Load SSTable: {}][try to reload with wal][Error]: {:?}",
+                        gen, err
+                    );
+                    SSTable::create_for_mem_table(
+                        &self.config, *gen, sst_factory, self.wal.load(*gen)?, LEVEL_0
+                    )?
+                }
+            };
+
+            Ok(ss_table)
+        })
             .map(SSTable::clone)
-    }
-
-    /// 将指定gen通过MMapHandler进行读取以提高读取性能
-    /// 创建MMapHandler成本较高，因此使用单独api控制缓存
-    pub(crate) fn caching(&mut self, gen: i64, factory: &IoFactory) -> Result<Option<SSTable>> {
-        let reader = factory.reader(gen, IoType::MMap)?;
-        Ok(self.cache.put(gen, SSTable::load_from_file(reader)?))
+            .ok()
     }
 
     pub(crate) fn remove(&mut self, gen: &i64) -> Option<SSTable> {
-        let _ignore = self.cache.remove(gen);
         self.inner.remove(gen)
     }
 
-    pub(crate) fn values(&self) -> Values<i64, SSTable> {
-        self.inner.values()
-    }
-
-    pub(crate) fn iter(&self) -> Iter<i64, SSTable> {
-        self.inner.iter()
-    }
-
     #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(crate) fn is_emtpy(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    pub(crate) fn clean(&self, gen: i64) -> Result<()> {
+        self.factory.clean(gen)
     }
 }
 
 impl Footer {
-
     /// 从对应文件的IOHandler中将Footer读取出来
     fn read_to_file(reader: &dyn IoReader) -> Result<Self> {
         let start_pos = reader.file_size()? - TABLE_FOOTER_SIZE as u64;
@@ -144,8 +152,19 @@ fn data_sharding(mut vec_data: Vec<KeyValue>, file_size: usize) -> MergeSharding
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::{Footer, TABLE_FOOTER_SIZE};
+    use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
+    use bincode::Options;
+    use bytes::Bytes;
+    use tempfile::TempDir;
+    use crate::kernel::io::{FileExtension, IoFactory};
+    use crate::kernel::lsm::{Footer, SSTableLoader, TABLE_FOOTER_SIZE};
+    use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
+    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
+    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_footer() -> Result<()> {
@@ -161,6 +180,70 @@ mod tests {
 
         assert_eq!(bincode::serialize(&info)?.len(), TABLE_FOOTER_SIZE);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_ss_table_loader() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let value = Bytes::copy_from_slice(b"If you shed tears when you miss the sun, you also miss the stars.");
+        let config = Config::new(temp_dir.into_path());
+        let sst_factory = Arc::new(IoFactory::new(
+            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+            FileExtension::SSTable
+        )?);
+        let cache = ShardingLruCache::new(
+            config.table_cache_size,
+            16,
+            RandomState::default()
+        )?;
+        let mut vec_data = Vec::new();
+        let times = 2333;
+        let (wal, _) = LogLoader::reload(
+            config.clone(), DEFAULT_WAL_PATH, FileExtension::Log
+        )?;
+        let _ = wal.switch(1)?;
+
+        for i in 0..times {
+            let key_value = (Bytes::from(bincode::options().with_big_endian().serialize(&i)?), Some(value.clone()));
+
+            wal.log(key_value.clone())?;
+            vec_data.push(key_value);
+        }
+        wal.flush()?;
+        let ss_table = SSTable::create_for_mem_table(
+            &config,
+            1,
+            &sst_factory,
+            vec_data.clone(),
+            0
+        )?;
+        let mut loader = SSTableLoader::new(
+            config, sst_factory.clone(), Arc::new(wal)
+        )?;
+
+        assert!(loader.insert(ss_table).is_none());
+        assert!(loader.remove(&1).is_some());
+        assert!(loader.is_emtpy());
+
+        let ss_table_old_1 = loader.get(1).unwrap();
+
+        for i in 0..times {
+            assert_eq!(ss_table_old_1.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
+        }
+
+        // 模拟SSTable异常而使用Wal进行恢复的情况
+        assert!(loader.remove(&1).is_some());
+        assert!(loader.is_emtpy());
+        loader.clean(1).unwrap();
+        assert!(!sst_factory.has_gen(1).unwrap());
+
+        let ss_table_old_2 = loader.get(1).unwrap();
+
+        for i in 0..times {
+            assert_eq!(ss_table_old_2.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
+        }
         Ok(())
     }
 }

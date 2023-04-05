@@ -115,6 +115,7 @@ impl Scope {
 }
 
 impl SSTable {
+    #[allow(dead_code)]
     pub(crate) fn get_level(&self) -> usize {
         self.inner.footer.level as usize
     }
@@ -345,45 +346,43 @@ mod tests {
     fn test_sstable() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-        tokio_test::block_on(async move {
-            let value = Bytes::copy_from_slice(b"If you shed tears when you miss the sun, you also miss the stars.");
-            let config = Config::new(temp_dir.into_path());
-            let sst_factory = IoFactory::new(
-                config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-                FileExtension::SSTable
-            )?;
-            let cache = ShardingLruCache::new(
-                config.block_cache_size,
-                16,
-                RandomState::default()
-            )?;
-            let mut vec_data = Vec::new();
-            let times = 2333;
+        let value = Bytes::copy_from_slice(b"If you shed tears when you miss the sun, you also miss the stars.");
+        let config = Config::new(temp_dir.into_path());
+        let sst_factory = IoFactory::new(
+            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+            FileExtension::SSTable
+        )?;
+        let cache = ShardingLruCache::new(
+            config.block_cache_size,
+            16,
+            RandomState::default()
+        )?;
+        let mut vec_data = Vec::new();
+        let times = 2333;
 
-            for i in 0..times {
-                vec_data.push(
-                    (Bytes::from(bincode::options().with_big_endian().serialize(&i)?), Some(value.clone()))
-                );
-            }
-            let ss_table = SSTable::create_for_mem_table(
-                &config,
-                1,
-                &sst_factory,
-                vec_data.clone(),
-                0
-            )?;
-            for i in 0..times {
-                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
-            }
-            drop(ss_table);
-            let ss_table = SSTable::load_from_file(
-                sst_factory.reader(1, IoType::MMap)?
-            )?;
-            for i in 0..times {
-                assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
-            }
+        for i in 0..times {
+            vec_data.push(
+                (Bytes::from(bincode::options().with_big_endian().serialize(&i)?), Some(value.clone()))
+            );
+        }
+        let ss_table = SSTable::create_for_mem_table(
+            &config,
+            1,
+            &sst_factory,
+            vec_data.clone(),
+            0
+        )?;
+        for i in 0..times {
+            assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
+        }
+        drop(ss_table);
+        let ss_table = SSTable::load_from_file(
+            sst_factory.reader(1, IoType::MMap)?
+        )?;
+        for i in 0..times {
+            assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 }

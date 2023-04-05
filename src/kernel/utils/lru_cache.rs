@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::hash_map::RandomState;
+use std::collections::hash_map::{Iter, RandomState};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
@@ -142,18 +142,26 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
             })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn put(&self, key: K, value: V) -> Option<V> {
         self.shard(&key)
             .lock()
             .put(key, value)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn remove(&self, key: &K) -> Option<V> {
         self.shard(key)
             .lock()
             .remove(key)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(&self) -> bool {
+        for lru in &self.sharding_vec {
+            if !lru.lock().is_empty() {
+                return false
+            }
+        }
+        true
     }
 
     pub(crate) fn get_or_insert<F>(
@@ -177,9 +185,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     fn shard(&self, key: &K) -> Arc<Mutex<LruCache<K, V>>> {
         let mut hasher = self.hasher.build_hasher();
         key.hash(&mut hasher);
-        let hash_val = hasher.finish() as usize;
-        let cache_index = hash_val % self.sharding_size();
-        Arc::clone(&self.sharding_vec[cache_index])
+        Arc::clone(&self.sharding_vec[hasher.finish() as usize % self.sharding_size()])
     }
 }
 
@@ -255,7 +261,6 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn put(&mut self, key: K, value: V) -> Option<V> {
         let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
         let old_node = self.inner.remove(&KeyRef(node))
@@ -350,10 +355,28 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     pub(crate) fn len(&self) -> usize {
         self.inner.len()
     }
-
     #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn iter(&self) -> LruCacheIter<K, V> {
+        LruCacheIter {
+            inner: self.inner.iter(),
+        }
+    }
+}
+
+pub(crate) struct LruCacheIter<'a, K, V> {
+    inner: Iter<'a, KeyRef<K, V>, NodeReadPtr<K, V>>
+}
+
+impl<'a, K, V> Iterator for LruCacheIter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+            .map(|(_, node)| unsafe { (&node.as_ref().key, &node.as_ref().value) })
     }
 }
 
@@ -372,11 +395,13 @@ impl<K, V> Drop for LruCache<K, V> {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;
+    use std::collections::HashSet;
     use crate::kernel::utils::lru_cache::{LruCache, ShardingLruCache};
 
     #[test]
     fn test_lru_cache() {
         let mut lru = LruCache::new(3).unwrap();
+        assert!(lru.is_empty());
         assert_eq!(lru.put(1, 10), None);
         assert_eq!(lru.put(2, 20), None);
         assert_eq!(lru.put(3, 30), None);
@@ -395,16 +420,22 @@ mod tests {
         );
 
         assert_eq!(lru.len(), 3);
-        assert!(!lru.is_empty())
+        assert!(!lru.is_empty());
+
+        let mut set = HashSet::from([(&9, &9), (&2, &200), (&4, &40)]);
+
+        for item in lru.iter() {
+            assert!(set.remove(&item))
+        }
     }
 
     #[test]
     fn test_sharding_cache() {
         let lru = ShardingLruCache::new(4, 2, RandomState::default()).unwrap();
+        assert!(lru.is_empty());
         assert_eq!(lru.put(1, 10), None);
-
         assert_eq!(lru.get(&1), Some(&10));
-
+        assert!(!lru.is_empty());
         assert_eq!(
             lru.get_or_insert(
                 9,

@@ -7,10 +7,10 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
-use crate::kernel::{Result, sorted_gen_list};
-use crate::kernel::io::{FileExtension, IoFactory, IoType};
-use crate::kernel::lsm::SSTableMap;
+use tracing::{error, info};
+use crate::kernel::Result;
+use crate::kernel::io::{FileExtension, IoFactory};
+use crate::kernel::lsm::SSTableLoader;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
@@ -48,8 +48,7 @@ enum CleanTag {
 /// 整体的设计思路是由`Version::drop`进行删除驱动
 /// 考虑过在Compactor中进行文件删除，但这样会需要进行额外的阈值判断以触发压缩(Compactor的阈值判断是通过传入的KV进行累计)
 struct Cleaner {
-    ss_table_map: Arc<RwLock<SSTableMap>>,
-    sst_factory: Arc<IoFactory>,
+    ss_table_loader: Arc<RwLock<SSTableLoader>>,
     tag_rx: Receiver<CleanTag>,
     del_gens: Vec<(u64, Vec<i64>)>,
 
@@ -57,13 +56,11 @@ struct Cleaner {
 
 impl Cleaner {
     fn new(
-        ss_table_map: &Arc<RwLock<SSTableMap>>,
-        sst_factory: &Arc<IoFactory>,
+        ss_table_loader: &Arc<RwLock<SSTableLoader>>,
         tag_rx: Receiver<CleanTag>
     ) -> Self {
         Self {
-            ss_table_map: Arc::clone(ss_table_map),
-            sst_factory: Arc::clone(sst_factory),
+            ss_table_loader: Arc::clone(ss_table_loader),
             tag_rx,
             del_gens: vec![],
         }
@@ -82,12 +79,12 @@ impl Cleaner {
                 },
                 // 关闭时对此次运行中的暂存Version全部进行删除
                 None => {
-                    for (_, vec_gen) in &self.del_gens {
-                        for gen in vec_gen {
-                            if let Err(err) = self.sst_factory.clean(*gen) {
-                                error!("[Cleaner][drop][SSTables{}]: Remove Error!: {:?}", gen, err);
-                            };
-                        }
+                    let all_ver_num = self.del_gens.iter()
+                        .map(|(ver_num, _)| ver_num)
+                        .cloned()
+                        .collect_vec();
+                    for ver_num in all_ver_num {
+                        self.clean(ver_num).await
                     }
                     return
                 }
@@ -105,11 +102,11 @@ impl Cleaner {
         if let Some(index) = Self::find_index_with_ver_num(&self.del_gens, ver_num) {
             let (_, mut vec_gen) = self.del_gens.remove(index);
             if index == 0 {
-                let mut ss_table_map = self.ss_table_map.write().await;
+                let mut ss_table_loader = self.ss_table_loader.write().await;
                 // 当此Version处于第一位时，直接将其删除
                 for gen in vec_gen {
-                    let _ignore = ss_table_map.remove(&gen);
-                    if let Err(err) = self.sst_factory.clean(gen) {
+                    let _ignore = ss_table_loader.remove(&gen);
+                    if let Err(err) = ss_table_loader.clean(gen) {
                         error!("[Cleaner][clean][SSTables{}]: Remove Error!: {:?}", gen, err);
                     };
                 }
@@ -139,7 +136,7 @@ struct VersionInner {
 
 pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
-    ss_table_map: Arc<RwLock<SSTableMap>>,
+    ss_table_loader: Arc<RwLock<SSTableLoader>>,
     sst_factory: Arc<IoFactory>,
     /// TODO: 日志快照
     ver_log: LogLoader,
@@ -160,7 +157,7 @@ pub(crate) struct Version {
     version_num: u64,
     /// SSTable存储Map
     /// 全局共享
-    ss_tables_map: Arc<RwLock<SSTableMap>>,
+    ss_tables_map: Arc<RwLock<SSTableLoader>>,
     /// Level层级Vec
     /// 以索引0为level-0这样的递推，存储文件的gen值
     /// 每个Version各持有各自的Gen矩阵
@@ -181,7 +178,7 @@ impl VersionStatus {
 
     pub(crate) async fn load_with_path(
         config: Config,
-        wal: &LogLoader,
+        wal: Arc<LogLoader>,
     ) -> Result<Self> {
         let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
 
@@ -190,47 +187,22 @@ impl VersionStatus {
             16,
             RandomState::default()
         )?);
-
-        let mut ss_table_map = SSTableMap::new(config.clone())?;
-
         let sst_factory = Arc::new(
             IoFactory::new(
                 sst_path.clone(),
                 FileExtension::SSTable
             )?
         );
-        // 持久化数据恢复
-        // 倒叙遍历，从最新的数据开始恢复
-        for gen in sorted_gen_list(&sst_path, FileExtension::SSTable)?
-            .iter()
-            .copied()
-            .rev()
-        {
-            let reader = sst_factory.reader(gen, IoType::Direct)?;
 
-            let ss_table = match SSTable::load_from_file(reader) {
-                Ok(ss_table) => ss_table,
-                Err(err) => {
-                    warn!(
-                        "[LSMStore][Load SSTable: {}][try to reload with wal][Error]: {:?}",
-                        gen, err
-                    );
-                    SSTable::create_for_mem_table(
-                        &config, gen, &sst_factory, wal.load(gen)?, LEVEL_0
-                    )?
-                }
-            };
-            Self::ss_table_insert(&mut ss_table_map, &sst_factory, ss_table, true)?
-        }
-
-        let ss_table_map = Arc::new(RwLock::new(ss_table_map));
+        let ss_table_loader = Arc::new(RwLock::new(
+            SSTableLoader::new(config.clone(), sst_factory.clone(), wal)?
+        ));
 
         let (ver_log, vec_reload_edit) = LogLoader::reload(
             config.clone(),
             DEFAULT_VERSION_PATH,
             FileExtension::Manifest
         )?;
-
 
         let vec_log = vec_reload_edit
             .into_iter()
@@ -242,15 +214,14 @@ impl VersionStatus {
         let version = Arc::new(
             Version::load_from_log(
                 vec_log,
-                &ss_table_map,
+                &ss_table_loader,
                 &block_cache,
                 tag_sender.clone()
             ).await?
         );
 
         let mut cleaner = Cleaner::new(
-            &ss_table_map,
-            &sst_factory,
+            &ss_table_loader,
             tag_rev
         );
 
@@ -260,7 +231,7 @@ impl VersionStatus {
 
         Ok(Self {
             inner: RwLock::new(VersionInner { inner: version }),
-            ss_table_map,
+            ss_table_loader,
             sst_factory,
             ver_log,
             _cleaner_tx: tag_sender,
@@ -268,18 +239,11 @@ impl VersionStatus {
     }
 
     fn ss_table_insert(
-        ss_table_map: &mut SSTableMap,
-        sst_factory: &Arc<IoFactory>,
+        ss_table_loader: &mut SSTableLoader,
         ss_table: SSTable,
-        enable_cache: bool
-    ) -> Result<()> {
-        // 对Level 0的SSTable进行MMap映射
-        if ss_table.get_level() == LEVEL_0 && enable_cache {
-            let _ignore = ss_table_map.caching(ss_table.get_gen(), sst_factory)?;
-        }
+    ) -> Option<SSTable> {
         // 初始化成功时直接传入SSTable的索引中
-        let _ignore1 = ss_table_map.insert(ss_table);
-        Ok(())
+        ss_table_loader.insert(ss_table)
     }
 
     pub(crate) async fn current(&self) -> Arc<Version> {
@@ -288,15 +252,10 @@ impl VersionStatus {
         )
     }
 
-    pub(crate) async fn insert_vec_ss_table(&self, vec_ss_table: Vec<SSTable>, enable_cache: bool) -> Result<()> {
-        let mut ss_table_map = self.ss_table_map.write().await;
+    pub(crate) async fn insert_vec_ss_table(&self, vec_ss_table: Vec<SSTable>) -> Result<()> {
+        let mut ss_table_loader = self.ss_table_loader.write().await;
         for ss_table in vec_ss_table {
-            Self::ss_table_insert(
-                &mut ss_table_map,
-                &self.sst_factory,
-                ss_table,
-                enable_cache
-            )?;
+            let _ignore = Self::ss_table_insert(&mut ss_table_loader, ss_table);
         }
 
         Ok(())
@@ -347,14 +306,14 @@ impl Version {
     }
 
     /// 创建一个空的Version
-    fn empty(
-        ss_table_map: &Arc<RwLock<SSTableMap>>,
+    fn new(
+        ss_table_loader: &Arc<RwLock<SSTableLoader>>,
         block_cache: &Arc<BlockCache>,
         clean_sender: Sender<CleanTag>,
     ) -> Self {
         Self {
             version_num: 0,
-            ss_tables_map: Arc::clone(ss_table_map),
+            ss_tables_map: Arc::clone(ss_table_loader),
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
@@ -362,61 +321,20 @@ impl Version {
         }
     }
 
-    #[allow(dead_code)]
-    /// 通过现有数据创建Version
-    async fn new(
-        ss_table_map: &Arc<RwLock<SSTableMap>>,
-        block_cache: &Arc<BlockCache>,
-        clean_sender: Sender<CleanTag>,
-    ) -> Result<Self> {
-        let read_guard_map = ss_table_map.read().await;
-        let level_slice = Self::level_layered(
-            &read_guard_map
-        );
-
-        let mut size_of_disk = 0;
-
-        let mut len = 0;
-
-        for ss_table in read_guard_map.values() {
-            size_of_disk += ss_table.get_size_of_disk();
-            len += ss_table.len();
-        }
-
-        Ok(Self {
-            version_num: 0,
-            ss_tables_map: Arc::clone(ss_table_map),
-            level_slice,
-            meta_data: VersionMeta { size_of_disk, len },
-            block_cache: Arc::clone(block_cache),
-            clean_sender,
-        })
-    }
-
     /// 通过一组VersionEdit载入Version
     async fn load_from_log(
         vec_log: Vec<VersionEdit>,
-        ss_table_map: &Arc<RwLock<SSTableMap>>,
+        ss_table_loader: &Arc<RwLock<SSTableLoader>>,
         block_cache: &Arc<BlockCache>,
         sender: Sender<CleanTag>
     ) -> Result<Self>{
-        // 当无日志时,尝试通过现有ss_table_map进行Version恢复
-        let version = if vec_log.is_empty() {
-            Self::new(
-                ss_table_map,
-                block_cache,
-                sender,
-            ).await?
-        } else {
-            let mut version = Self::empty(
-                ss_table_map,
-                block_cache,
-                sender,
-            );
+        let mut version = Self::new(
+            ss_table_loader,
+            block_cache,
+            sender,
+        );
 
-            version.apply(vec_log, true).await?;
-            version
-        };
+        version.apply(vec_log, true).await?;
         version_display(&version, "load_from_log");
 
         Ok(version)
@@ -507,9 +425,9 @@ impl Version {
         Ok(())
     }
 
-    async fn apply_add(meta_data: &mut VersionMeta, ss_table_map: &SSTableMap, vec_gen: &[i64]) -> Result<()>  {
+    async fn apply_add(meta_data: &mut VersionMeta, ss_table_loader: &SSTableLoader, vec_gen: &[i64]) -> Result<()>  {
         meta_data.statistical_process(
-            ss_table_map,
+            ss_table_loader,
             vec_gen,
             |meta_data, ss_table| {
                 meta_data.size_of_disk += ss_table.get_size_of_disk();
@@ -519,9 +437,9 @@ impl Version {
         Ok(())
     }
 
-    async fn apply_del_on_running(meta_data: &mut VersionMeta, ss_table_map: &SSTableMap, vec_gen: &[i64]) -> Result<()> {
+    async fn apply_del_on_running(meta_data: &mut VersionMeta, ss_table_loader: &SSTableLoader, vec_gen: &[i64]) -> Result<()> {
         meta_data.statistical_process(
-            ss_table_map,
+            ss_table_loader,
             vec_gen,
             |meta_data, ss_table| {
                 meta_data.size_of_disk -= ss_table.get_size_of_disk();
@@ -529,22 +447,6 @@ impl Version {
             }
         ).await?;
         Ok(())
-    }
-
-    /// 使用ss_tables返回LevelVec
-    /// 由于ss_tables是有序的，level_vec的内容应当是从L0->LN，旧->新
-    fn level_layered(ss_tables: &SSTableMap) -> LevelSlice {
-        let mut level_slice =
-            Self::level_slice_new();
-
-        ss_tables.iter()
-            .sorted_by_key(|(gen, _)| *gen)
-            .for_each(|(gen, ss_table)| {
-                let level = ss_table.get_level();
-                level_slice[level].push(*gen);
-            });
-
-        level_slice
     }
 
     fn level_slice_new() -> [Vec<i64>; 7] {
@@ -560,14 +462,14 @@ impl Version {
 
     async fn rfind_ss_table<F>(
         level_slice: &LevelSlice,
-        ss_table_map: &SSTableMap,
+        ss_table_loader: &SSTableLoader,
         level: usize,
         fn_rfind: F
     ) -> Option<SSTable>
         where F: Fn(&SSTable) -> bool
     {
         for gen in level_slice[level].iter() {
-            if let Some(ss_table) = ss_table_map.get(gen) {
+            if let Some(ss_table) = ss_table_loader.get(*gen) {
                 if fn_rfind(&ss_table) {
                     return Some(ss_table);
                 }
@@ -579,7 +481,7 @@ impl Version {
 
     pub(crate) async fn get_first_vec_ss_table_with_size(&self, level: usize, size: usize) -> Option<Vec<SSTable>> {
         let mut vec = Vec::new();
-        let ss_table_map = self.ss_tables_map.read().await;
+        let ss_table_loader = self.ss_tables_map.read().await;
 
         if self.level_slice[level].is_empty() {
             return None
@@ -589,7 +491,7 @@ impl Version {
             .iter()
             .take(size)
         {
-            if let Some(ss_table) = ss_table_map.get(gen) {
+            if let Some(ss_table) = ss_table_loader.get(*gen) {
                 vec.push(ss_table);
             }
         }
@@ -598,24 +500,24 @@ impl Version {
 
     #[allow(dead_code)]
     pub(crate) async fn get_ss_tables_for_level(&self, level: usize) -> Vec<SSTable> {
-        let ss_table_map = self.ss_tables_map.read().await;
+        let ss_table_loader = self.ss_tables_map.read().await;
 
         self.level_slice[level].iter()
             .cloned()
-            .filter_map(|gen| ss_table_map.get(&gen))
+            .filter_map(|gen| ss_table_loader.get(gen))
             .collect_vec()
     }
 
     /// 获取所有ss_table
     pub(crate) async fn get_all_ss_tables(&self) -> Vec<Vec<SSTable>> {
-        let ss_table_map = self.ss_tables_map.read().await;
+        let ss_table_loader = self.ss_tables_map.read().await;
         let mut all_ss_tables = Vec::with_capacity(7);
 
         for level in 0..7 {
             all_ss_tables.push(
                 self.level_slice[level].iter()
                     .cloned()
-                    .filter_map(|gen| ss_table_map.get(&gen))
+                    .filter_map(|gen| ss_table_loader.get(gen))
                     .collect_vec()
             )
         }
@@ -626,11 +528,11 @@ impl Version {
     /// 获取指定level中与scope冲突的
     pub(crate) async fn get_meet_scope_ss_tables(&self, level: usize, scope: &Scope) -> Vec<SSTable> {
         let mut vec = Vec::new();
-        let ss_table_map = self.ss_tables_map.read().await;
+        let ss_table_loader = self.ss_tables_map.read().await;
 
         for gen in self.level_slice[level].iter()
         {
-            if let Some(ss_table) = ss_table_map.get(gen) {
+            if let Some(ss_table) = ss_table_loader.get(*gen) {
                 if ss_table.get_scope().meet(scope) {
                     vec.push(ss_table);
                 }
@@ -641,7 +543,7 @@ impl Version {
 
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) async fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let ss_table_map = self.ss_tables_map.read().await;
+        let ss_table_loader = self.ss_tables_map.read().await;
         let block_cache = &self.block_cache;
 
         // Level 0的SSTable是无序且SSTable间的数据是可能重复的,因此需要遍历
@@ -649,7 +551,7 @@ impl Version {
             .iter()
             .rev()
         {
-            if let Some(ss_table) = ss_table_map.get(gen) {
+            if let Some(ss_table) = ss_table_loader.get(*gen) {
                 if ss_table.get_scope().meet_with_key(key) {
                     if let Some(value) =
                         Self::query_with_ss_table(key, block_cache, &ss_table)?
@@ -663,7 +565,7 @@ impl Version {
         for level in 1..7 {
             if let Some(ss_table) = Self::rfind_ss_table(
                 &self.level_slice,
-                &ss_table_map,
+                &ss_table_loader,
                 level,
                 |ss_table| ss_table.get_scope().meet_with_key(key)
             ).await {
@@ -697,14 +599,14 @@ impl VersionMeta {
     // MetaData对SSTable统计数据处理
     async fn statistical_process<F>(
         &mut self,
-        ss_table_map: &SSTableMap,
+        ss_table_loader: &SSTableLoader,
         vec_gen: &[i64],
         fn_process: F
     ) -> Result<()>
         where F: Fn(&mut VersionMeta, &SSTable)
     {
         for gen in vec_gen.iter() {
-            let ss_table = ss_table_map.get(gen)
+            let ss_table = ss_table_loader.get(*gen)
                 .ok_or_else(|| SSTableLostError)?;
             fn_process(self, &ss_table);
         }
@@ -763,7 +665,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), &wal).await?;
+                VersionStatus::load_with_path(config.clone(), Arc::new(wal)).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -787,8 +689,8 @@ mod tests {
                 0
             )?;
 
-            ver_status.insert_vec_ss_table(vec![ss_table_1], false).await?;
-            ver_status.insert_vec_ss_table(vec![ss_table_2], false).await?;
+            ver_status.insert_vec_ss_table(vec![ss_table_1]).await?;
+            ver_status.insert_vec_ss_table(vec![ss_table_2]).await?;
 
             let vec_edit_1 = vec![
                 VersionEdit::NewFile((vec![1], 0),0),
@@ -852,10 +754,12 @@ mod tests {
                 FileExtension::Log
             )?;
 
+            let wal = Arc::new(wal);
+
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status_1 =
-                VersionStatus::load_with_path(config.clone(), &wal).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -885,8 +789,8 @@ mod tests {
                 VersionEdit::DeleteFile((vec![2], 0)),
             ];
 
-            ver_status_1.insert_vec_ss_table(vec![ss_table_1], false).await?;
-            ver_status_1.insert_vec_ss_table(vec![ss_table_2], false).await?;
+            ver_status_1.insert_vec_ss_table(vec![ss_table_1]).await?;
+            ver_status_1.insert_vec_ss_table(vec![ss_table_2]).await?;
             ver_status_1.log_and_apply(vec_edit).await?;
 
             let version_1 = Version::clone(ver_status_1.current().await.as_ref());
@@ -894,7 +798,7 @@ mod tests {
             drop(ver_status_1);
 
             let ver_status_2 =
-                VersionStatus::load_with_path(config, &wal).await?;
+                VersionStatus::load_with_path(config, wal.clone()).await?;
             let version_2 = ver_status_2.current().await;
 
             assert_eq!(version_1.level_slice, version_2.level_slice);

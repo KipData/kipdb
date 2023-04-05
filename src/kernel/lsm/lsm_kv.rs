@@ -38,7 +38,7 @@ pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
 pub(crate) const DEFAULT_BLOCK_CACHE_SIZE: usize = 3200;
 
-pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 112;
+pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 1024;
 
 pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
@@ -80,7 +80,7 @@ pub(crate) struct StoreInner {
 }
 
 impl StoreInner {
-    pub(crate) async fn new(config: Config) -> Result<(Self, LogLoader)> {
+    pub(crate) async fn new(config: Config) -> Result<(Self, Arc<LogLoader>)> {
         Gen::init();
 
         let (wal, reload_data) = LogLoader::reload(
@@ -88,6 +88,7 @@ impl StoreInner {
             DEFAULT_WAL_PATH,
             FileExtension::Log
         )?;
+        let wal = Arc::new(wal);
         // Q: 为什么INIT_SEQ作为Seq id?
         // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
         // 因此不会影响Version的读取顺序
@@ -97,7 +98,7 @@ impl StoreInner {
         );
 
         // 初始化wal日志
-        let ver_status = VersionStatus::load_with_path(config.clone().clone(), &wal).await?;
+        let ver_status = VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
 
         let mem_table = MemTable::new(mem_map);
 
@@ -123,7 +124,7 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn flush(&self) -> Result<()> {
-        self.flush_(false).await
+        self.flush_().await
     }
 
     #[inline]
@@ -219,7 +220,6 @@ impl LsmStore {
         let (inner, wal) = StoreInner::new(config.clone()).await?;
 
         let inner = Arc::new(inner);
-        let wal = Arc::new(wal);
 
         let mut compactor = Compactor::new(
             Arc::clone(&inner),
@@ -235,10 +235,10 @@ impl LsmStore {
                     option_task = task_rx.recv() => Some(option_task.unwrap_or(CompactTask::Drop)),
                     _ = sleep(Duration::from_millis(check_time)) => None,
                 };
-                if let Err(err) = if let Some(CompactTask::Flush(resp_tx, enable_caching)) = option_task {
-                    compactor.check_then_compaction(enable_caching, Some(resp_tx)).await
+                if let Err(err) = if let Some(CompactTask::Flush(resp_tx)) = option_task {
+                    compactor.check_then_compaction(Some(resp_tx)).await
                 } else {
-                    compactor.check_then_compaction(true, None).await
+                    compactor.check_then_compaction(None).await
                 } {
                     error!("[Compactor][minor_compaction][error happen]: {:?}", err);
                 }
@@ -264,9 +264,9 @@ impl LsmStore {
         self.inner.ver_status.current().await
     }
 
-    pub(crate) async fn flush_(&self, is_drop: bool) -> Result<()> {
+    pub(crate) async fn flush_(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.compactor_tx.send(CompactTask::Flush(tx, !is_drop)).await?;
+        self.compactor_tx.send(CompactTask::Flush(tx)).await?;
 
         self.wal.flush()?;
         rx.await?;
