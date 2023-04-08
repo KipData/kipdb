@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::RwLock;
 use tracing::{error, info};
 use crate::kernel::Result;
-use crate::kernel::io::{FileExtension, IoFactory};
+use crate::kernel::io::{FileExtension, IoFactory, IoType};
 use crate::kernel::lsm::SSTableLoader;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
@@ -201,7 +201,8 @@ impl VersionStatus {
         let (ver_log, vec_reload_edit) = LogLoader::reload(
             config.clone(),
             DEFAULT_VERSION_PATH,
-            FileExtension::Manifest
+            FileExtension::Manifest,
+            IoType::Direct
         )?;
 
         let vec_log = vec_reload_edit
@@ -641,7 +642,7 @@ mod tests {
     use bytes::Bytes;
     use tempfile::TempDir;
     use tokio::time;
-    use crate::kernel::io::{FileExtension, IoFactory};
+    use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
     use crate::kernel::lsm::ss_table::SSTable;
@@ -659,7 +660,8 @@ mod tests {
             let (wal, _) = LogLoader::reload(
                 config.clone(),
                 DEFAULT_WAL_PATH,
-                FileExtension::Log
+                FileExtension::Log,
+                IoType::Direct
             )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
@@ -751,7 +753,8 @@ mod tests {
             let (wal, _) = LogLoader::reload(
                 config.clone(),
                 DEFAULT_WAL_PATH,
-                FileExtension::Log
+                FileExtension::Log,
+                IoType::Direct
             )?;
 
             let wal = Arc::new(wal);

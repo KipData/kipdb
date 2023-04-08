@@ -25,12 +25,14 @@ impl LogLoader {
     pub(crate) fn reload(
         config: Config,
         path_name: &str,
-        extension: FileExtension
+        extension: FileExtension,
+        log_type: IoType
     ) -> Result<(Self, Vec<KeyValue>)> {
         let (loader, last_gen) = Self::reload_(
             config,
             path_name,
-            extension
+            extension,
+            log_type
         )?;
         let reload_data = loader.load(last_gen)?;
 
@@ -40,7 +42,8 @@ impl LogLoader {
     fn reload_(
         config: Config,
         path_name: &str,
-        extension: FileExtension
+        extension: FileExtension,
+        log_type: IoType
     ) -> Result<(Self, i64)> {
         let wal_path = config.path().join(path_name);
 
@@ -59,7 +62,7 @@ impl LogLoader {
         let inner = Mutex::new(
             Inner {
                 current_gen: last_gen,
-                writer: factory.writer(last_gen, config.wal_io_type)?,
+                writer: factory.writer(last_gen, log_type)?,
                 vec_gen,
             }
         );
@@ -141,7 +144,7 @@ impl LogLoader {
 mod tests {
     use bytes::Bytes;
     use tempfile::TempDir;
-    use crate::kernel::io::FileExtension;
+    use crate::kernel::io::{FileExtension, IoType};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::Result;
     use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH, Gen};
@@ -155,7 +158,8 @@ mod tests {
         let (wal, _) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
-            FileExtension::Log
+            FileExtension::Log,
+            IoType::Buf
         )?;
 
         let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
@@ -171,7 +175,8 @@ mod tests {
         let (wal, _) = LogLoader::reload(
             config,
             DEFAULT_WAL_PATH,
-            FileExtension::Log
+            FileExtension::Log,
+            IoType::Buf
         )?;
 
         assert_eq!(wal.load(gen)?, vec![data_1, data_2]);
@@ -188,7 +193,8 @@ mod tests {
         let (wal_1, _) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
-            FileExtension::Log
+            FileExtension::Log,
+            IoType::Buf
         )?;
 
         let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
@@ -203,7 +209,8 @@ mod tests {
         let (_, reload_data) = LogLoader::reload(
             config,
             DEFAULT_WAL_PATH,
-            FileExtension::Log
+            FileExtension::Log,
+            IoType::Buf
         )?;
 
         assert_eq!(reload_data, vec![data_1, data_2]);

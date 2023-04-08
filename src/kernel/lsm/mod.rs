@@ -157,7 +157,7 @@ mod tests {
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
-    use crate::kernel::io::{FileExtension, IoFactory};
+    use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::{Footer, SSTableLoader, TABLE_FOOTER_SIZE};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
@@ -201,7 +201,7 @@ mod tests {
         let mut vec_data = Vec::new();
         let times = 2333;
         let (wal, _) = LogLoader::reload(
-            config.clone(), DEFAULT_WAL_PATH, FileExtension::Log
+            config.clone(), DEFAULT_WAL_PATH, FileExtension::Log, IoType::Buf
         )?;
         let _ = wal.switch(1)?;
 

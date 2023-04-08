@@ -86,7 +86,8 @@ impl StoreInner {
         let (wal, reload_data) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
-            FileExtension::Log
+            FileExtension::Log,
+            config.wal_io_type
         )?;
         let wal = Arc::new(wal);
         // Q: 为什么INIT_SEQ作为Seq id?
