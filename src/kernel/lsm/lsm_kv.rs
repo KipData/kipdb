@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tracing::error;
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
-use crate::kernel::io::FileExtension;
+use crate::kernel::io::{FileExtension, IoType};
 use crate::kernel::lsm::block;
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::iterator::version_iter::VersionIter;
@@ -45,6 +45,8 @@ pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 100;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
+
+pub(crate) const DEFAULT_WAL_IO_TYPE: IoType = IoType::Buf;
 
 static SEQ_COUNT: AtomicI64 = AtomicI64::new(1);
 
@@ -189,9 +191,7 @@ impl LsmStore {
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         // Wal与MemTable双写
         if self.is_enable_wal() {
-            wal_put(
-                &self.wal, data.clone(), !self.is_async_wal()
-            ).await;
+            self.wal.log(data.clone())?;
         }
 
         self.mem_table().insert_data(data)?;
@@ -200,10 +200,6 @@ impl LsmStore {
 
     fn is_enable_wal(&self) -> bool {
         self.config().wal_enable
-    }
-
-    fn is_async_wal(&self) -> bool {
-        self.config().wal_async_put_enable
     }
 
     /// 使用Config进行LsmStore初始化
@@ -239,7 +235,7 @@ impl LsmStore {
                 } else {
                     compactor.check_then_compaction(None).await
                 } {
-                    error!("[Compactor][minor_compaction][error happen]: {:?}", err);
+                    error!("[Compactor][compaction][error happen]: {:?}", err);
                 }
             }
         });
@@ -325,9 +321,10 @@ pub struct Config {
     /// 在开启状态时，会在SSTable文件读取失败时生效，避免数据丢失
     /// 不过在设备IO容易成为瓶颈，或使用多节点冗余写入时，建议关闭以提高写入性能
     pub(crate) wal_enable: bool,
-    /// wal写入时开启异步写入
-    /// 可以提高写入响应速度，但可能会导致wal日志在某种情况下并落盘慢于LSM内核而导致该条wal日志无效
-    pub(crate) wal_async_put_enable: bool,
+    /// WAL写入类型
+    /// 直写: Direct
+    /// 异步: Buf、Mmap
+    pub(crate) wal_io_type: IoType,
     /// Compactor循环检测时间
     /// 单位为毫秒
     pub(crate) compactor_check_time: u64,
@@ -354,7 +351,7 @@ impl Config {
             block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
             table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
             wal_enable: true,
-            wal_async_put_enable: true,
+            wal_io_type: DEFAULT_WAL_IO_TYPE,
             compactor_check_time: DEFAULT_COMPACTOR_CHECK_TIME,
             block_size: block::DEFAULT_BLOCK_SIZE,
             data_restart_interval: block::DEFAULT_DATA_RESTART_INTERVAL,
@@ -457,8 +454,8 @@ impl Config {
     }
 
     #[inline]
-    pub fn wal_async_put_enable(mut self, wal_async_put_enable: bool) -> Self {
-        self.wal_async_put_enable = wal_async_put_enable;
+    pub fn wal_io_type(mut self, wal_io_type: IoType) -> Self {
+        self.wal_io_type = wal_io_type;
         self
     }
 }
@@ -491,24 +488,6 @@ impl Gen {
     }
 }
 
-/// 日志记录，可选以Task类似的异步写数据或同步
-pub(crate) async fn wal_put(wal: &Arc<LogLoader>, data: KeyValue, is_sync: bool) {
-    if is_sync {
-        wal_put_(wal, data);
-    } else {
-        let wal = Arc::clone(wal);
-        let _ignore = tokio::spawn(async move {
-            wal_put_(&wal, data);
-        });
-    }
-
-    fn wal_put_(wal: &Arc<LogLoader>, data: KeyValue) {
-        if let Err(err) = wal.log(data) {
-            error!("[LsmStore][wal_put][error happen]: {:?}", err);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::thread::sleep;
@@ -536,11 +515,11 @@ mod tests {
 
         assert!(i_1 < i_2);
 
+        sleep(Duration::from_millis(1));
         Gen::init();
         let i_3 = Gen::create();
 
-        sleep(Duration::from_secs(1));
-
+        sleep(Duration::from_millis(1));
         Gen::init();
         let i_4 = Gen::create();
 

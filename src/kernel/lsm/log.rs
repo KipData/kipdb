@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use itertools::Itertools;
 use parking_lot::Mutex;
 use crate::kernel::{Result, sorted_gen_list};
@@ -59,7 +59,7 @@ impl LogLoader {
         let inner = Mutex::new(
             Inner {
                 current_gen: last_gen,
-                writer: factory.writer(last_gen, IoType::Direct)?,
+                writer: factory.writer(last_gen, config.wal_io_type)?,
                 vec_gen,
             }
         );
@@ -90,8 +90,9 @@ impl LogLoader {
             .flatten()
             .collect_vec();
 
-        let _ = self.inner.lock()
-            .writer.io_write(bytes)?;
+        let mut guard = self.inner.lock();
+        let _ = guard.writer.io_write(bytes)?;
+        guard.writer.flush()?;
         Ok(())
     }
 

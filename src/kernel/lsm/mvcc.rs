@@ -3,7 +3,7 @@ use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use optimistic_lock_coupling::OptimisticLockCouplingReadGuard;
 use crate::kernel::Result;
-use crate::kernel::lsm::lsm_kv::{Config, Sequence, wal_put};
+use crate::kernel::lsm::lsm_kv::{Config, Sequence};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::version::Version;
@@ -70,22 +70,22 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    async fn wal_log(&mut self) {
+    async fn wal_log(&mut self) -> Result<()> {
         // Wal与MemTable双写
         if self.config.wal_enable {
             for entry in self.writer_buf.iter() {
                 let key = entry.key().clone();
                 let value = entry.value().clone();
 
-                wal_put(
-                    &self.wal, (key, value), !self.config.wal_async_put_enable
-                ).await;
+                self.wal.log((key, value))?;
             }
         }
+
+        Ok(())
     }
 
     pub async fn commit(mut self) -> Result<()> {
-        self.wal_log().await;
+        self.wal_log().await?;
 
         let Transaction {
             read_inner,

@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures::future;
 use itertools::Itertools;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::info;
 use crate::KernelError;
 use crate::kernel::io::IoFactory;
 use crate::kernel::Result;
@@ -124,12 +124,10 @@ impl Compactor {
             self.ver_status().insert_vec_ss_table(vec![ss_table]).await?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
-            if let Err(err) = self.major_compaction(
+            self.major_compaction(
                 LEVEL_0,
                 vec![VersionEdit::NewFile((vec![gen], 0), 0)]
-            ).await {
-                error!("[LSMStore][major_compaction][error happen]: {:?}", err);
-            }
+            ).await?;
         }
         Ok(())
     }
