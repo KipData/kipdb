@@ -11,7 +11,7 @@ use tokio::select;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
-use tracing::error;
+use tracing::{error, info};
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::{FileExtension, IoType};
 use crate::kernel::lsm::block;
@@ -206,6 +206,20 @@ impl LsmStore {
     /// 使用Config进行LsmStore初始化
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
+        info!("
+█████   ████  ███            ██████████   ███████████
+▒▒███   ███▒  ▒▒▒            ▒▒███▒▒▒▒███ ▒▒███▒▒▒▒▒███
+ ▒███  ███    ████  ████████  ▒███   ▒▒███ ▒███    ▒███
+ ▒███████    ▒▒███ ▒▒███▒▒███ ▒███    ▒███ ▒██████████
+ ▒███▒▒███    ▒███  ▒███ ▒███ ▒███    ▒███ ▒███▒▒▒▒▒███
+ ▒███ ▒▒███   ▒███  ▒███ ▒███ ▒███    ███  ▒███    ▒███
+ █████ ▒▒████ █████ ▒███████  ██████████   ███████████
+▒▒▒▒▒   ▒▒▒▒ ▒▒▒▒▒  ▒███▒▒▒  ▒▒▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒▒▒▒▒▒
+                    ▒███
+                    █████
+                   ▒▒▒▒▒
+Version: 0.1.0-beta.0
+");
         Gen::init();
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;
