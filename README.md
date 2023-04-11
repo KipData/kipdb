@@ -26,7 +26,38 @@
 - 极小的内存占用(待机/大量冷数据)
 - 并发安全，读读、读写并行
 
+ **组件原理Wiki** : https://github.com/KKould/KipDB/wiki
+
 ## 快速上手 🤞
+#### 组件引入
+``` toml
+kip_db = "0.1.0-beta.0"
+```
+### 代码编译
+#### 基本编译
+``` shell
+# 代码编译
+cargo build
+
+# 代码编译(正式环境)
+cargo build --release
+
+# 单元测试
+cargo test
+
+# 性能基准测试
+cargo bench
+```
+
+#### Docker镜像编译
+``` shell
+# 编译镜像
+docker build -t kould/kip-db:v1 .
+
+# 运行镜像
+docker run kould/kip-db:v1
+```
+
 ### 直接调用
 ```rust
 /// 指定文件夹以开启一个KvStore
@@ -53,6 +84,15 @@ transaction.remove(&vec![b'k']).await?;
 let key_2 = transaction.get(&vec![b'k']).await?;
 // 提交事务
 transaction.commit().await?;
+
+// 创建持久化数据迭代器
+let mut disk_iter = kip_db.disk_iter().await?;
+// 获取上一个元素
+let data0 = iterator.prev()?;
+// 获取下一个元素
+let data1 = iterator.next()?;
+// 移动至第一个元素
+let data2 = iterator.seek(Seek::First)?;
 
 // 强制数据刷入硬盘
 kip_db.flush().await?;
@@ -175,10 +215,14 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
   - 实现前缀压缩并使用varint编码以及LZ4减小空间占用 ✅
   - 基于前缀进行二分查询 ✅
 - Cache
-  - TableCache: SSTable Level 0缓存 ✅
-    - 读取频繁,因此使用Mmap进行只读映射
+  - TableCache: SSTableLoader懒加载 ✅
   - BlockCache: 稀疏索引数据块缓存 ✅
   - 类LevelDB的并行LruCache: ShardingLruCache ✅
+-  Iterator 迭代器
+   - BlockIterator ✅
+   - SSTableIterator ✅
+   - LevelIterator ✅
+   - VersionIterator ✅
 - WAL 防灾日志
   - 落盘时异常后重启数据回复 ✅
   - 读取数据不存在时尝试读取 ✅
