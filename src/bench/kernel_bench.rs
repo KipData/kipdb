@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use bytes::Bytes;
 use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
 use kip_db::kernel::{KVStore, hash_kv::HashStore};
@@ -22,7 +23,7 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
     let store = rt.block_on(async {
         let store = T::open(temp_dir.path()).await.unwrap();
         // 用于get exist测试获取数据
-        store.set(&key1, value1.clone()).await.unwrap();
+        store.set(&key1, Bytes::copy_from_slice(value1.as_slice())).await.unwrap();
         store
     });
 
@@ -51,7 +52,7 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
     c.bench_function(&store_name_with_test::<T>("set value"), |b|
         b.to_async(&rt).iter(|| {
             async {
-                store.set(&seq_buf_set.fetch_add(1, Ordering::SeqCst).to_be_bytes(), value.clone()).await
+                store.set(&seq_buf_set.fetch_add(1, Ordering::SeqCst).to_be_bytes(), Bytes::copy_from_slice(value.as_slice())).await
                     .unwrap();
             }
         }));

@@ -14,7 +14,6 @@ use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::DiskIter;
 use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
-use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
@@ -31,8 +30,7 @@ pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
-    Flush(oneshot::Sender<()>),
-    Drop
+    Flush(Option<oneshot::Sender<()>>)
 }
 
 /// 压缩器
@@ -40,13 +38,12 @@ pub(crate) enum CompactTask {
 /// 负责Minor和Major压缩
 pub(crate) struct Compactor {
     store_inner: Arc<StoreInner>,
-    wal: Arc<LogLoader>
 }
 
 impl Compactor {
 
-    pub(crate) fn new(store_inner: Arc<StoreInner>, wal: Arc<LogLoader>) -> Self {
-        Compactor { store_inner, wal }
+    pub(crate) fn new(store_inner: Arc<StoreInner>) -> Self {
+        Compactor { store_inner }
     }
 
     fn sst_factory(&self) -> &IoFactory {
@@ -63,17 +60,7 @@ impl Compactor {
         &mut self,
         option_tx: Option<oneshot::Sender<()>>
     ) -> Result<()> {
-        let exceeded_len = self.config().minor_threshold_with_len;
-
-        if let Some(values) =
-            // 当存在tx时则说明为阻塞压缩，因此不能使用try
-            // 并且不会判断阈值强制压缩
-            if option_tx.is_some() {
-                self.mem_table().swap()
-            } else {
-                self.mem_table().try_exceeded_then_swap(exceeded_len)
-            }
-        {
+        if let Some(values) = self.mem_table().swap() {
             if !values.is_empty() {
                 let gen = self.switch_wal()?;
                 let start = Instant::now();
@@ -97,7 +84,7 @@ impl Compactor {
         let next_gen = Gen::create();
 
         Ok(if self.config().wal_enable {
-            self.wal.switch(next_gen)?
+            self.store_inner.wal.switch(next_gen)?
         } else {
             next_gen
         })

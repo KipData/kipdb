@@ -2,19 +2,17 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
 use fslock::LockFile;
-use tokio::select;
-use tokio::sync::mpsc::{channel, Sender};
+use skiplist::SkipMap;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::oneshot;
-use tokio::time::sleep;
 use tracing::{error, info};
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::{FileExtension, IoType};
-use crate::kernel::lsm::block;
+use crate::kernel::lsm::{block, is_exceeded_then_minor};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::lsm::log::LogLoader;
@@ -56,18 +54,11 @@ static GEN_BUF: AtomicI64 = AtomicI64::new(0);
 /// Leveled Compaction压缩算法
 pub struct LsmStore {
     inner: Arc<StoreInner>,
-    /// WAL载入器
-    ///
-    /// 用于异常停机时MemTable的恢复
-    /// 同时当Level 0的SSTable异常时，可以尝试恢复
-    /// `Config.wal_threshold`用于控制WalLoader的的SSTable数据日志个数
-    /// 超出个数阈值时会清空最旧的一半日志
-    pub(crate) wal: Arc<LogLoader>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
     lock_file: LockFile,
     /// Compactor 通信器
-    compactor_tx: Sender<CompactTask>
+    compactor_tx: UnboundedSender<CompactTask>
 }
 
 pub(crate) struct StoreInner {
@@ -79,10 +70,17 @@ pub(crate) struct StoreInner {
     pub(crate) ver_status: VersionStatus,
     /// LSM全局参数配置
     pub(crate) config: Config,
+    /// WAL载入器
+    ///
+    /// 用于异常停机时MemTable的恢复
+    /// 同时当Level 0的SSTable异常时，可以尝试恢复
+    /// `Config.wal_threshold`用于控制WalLoader的的SSTable数据日志个数
+    /// 超出个数阈值时会清空最旧的一半日志
+    pub(crate) wal: Arc<LogLoader>,
 }
 
 impl StoreInner {
-    pub(crate) async fn new(config: Config) -> Result<(Self, Arc<LogLoader>)> {
+    pub(crate) async fn new(config: Config) -> Result<Self> {
         let (wal, reload_data) = LogLoader::reload(
             config.clone(),
             DEFAULT_WAL_PATH,
@@ -103,11 +101,12 @@ impl StoreInner {
 
         let mem_table = MemTable::new(mem_map);
 
-        Ok((StoreInner {
+        Ok(StoreInner {
             mem_table,
             ver_status,
             config,
-        }, wal))
+            wal,
+        })
     }
 }
 
@@ -125,7 +124,14 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn flush(&self) -> Result<()> {
-        self.flush_().await
+        let (tx, rx) = oneshot::channel();
+
+        self.compactor_tx.send(CompactTask::Flush(Some(tx)))?;
+        self.wal().flush()?;
+
+        rx.await.map_err(|_| KernelError::ChannelClose)?;
+
+        Ok(())
     }
 
     #[inline]
@@ -192,10 +198,15 @@ impl LsmStore {
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         // Wal与MemTable双写
         if self.is_enable_wal() {
-            self.wal.log(data.clone())?;
+            self.wal().log(data.clone())?;
         }
 
-        self.mem_table().insert_data(data)?;
+        is_exceeded_then_minor(
+            self.mem_table().insert_data(data)?,
+            &self.compactor_tx,
+            self.config()
+        )?;
+
         Ok(())
     }
 
@@ -227,35 +238,25 @@ Version: 0.1.0-beta.0
             &config.path().join(DEFAULT_LOCK_FILE)
         ).await?;
 
-        let (inner, wal) = StoreInner::new(config.clone()).await?;
-
-        let inner = Arc::new(inner);
+        let inner = Arc::new(StoreInner::new(config.clone()).await?);
 
         let mut compactor = Compactor::new(
             Arc::clone(&inner),
-            Arc::clone(&wal),
         );
 
-        let check_time = config.compactor_check_time;
-        let (task_tx, mut task_rx) = channel(20);
+        let (task_tx, mut task_rx) = unbounded_channel();
 
         let _ignore = tokio::spawn(async move {
             loop {
-                let option_task: Option<CompactTask> = select! {
-                    option_task = task_rx.recv() => Some(option_task.unwrap_or(CompactTask::Drop)),
-                    _ = sleep(Duration::from_millis(check_time)) => None,
-                };
-                if let Err(err) = if let Some(CompactTask::Flush(resp_tx)) = option_task {
-                    compactor.check_then_compaction(Some(resp_tx)).await
-                } else {
-                    compactor.check_then_compaction(None).await
-                } {
-                    error!("[Compactor][compaction][error happen]: {:?}", err);
-                }
+                if let Some(CompactTask::Flush(option_tx)) = task_rx.recv().await {
+                    if let Err(err) = compactor.check_then_compaction(option_tx).await {
+                        error!("[Compactor][compaction][error happen]: {:?}", err);
+                    }
+                } else { break }
             }
         });
 
-        Ok(LsmStore { inner, wal, lock_file, compactor_tx: task_tx })
+        Ok(LsmStore { inner, lock_file, compactor_tx: task_tx })
     }
 
     pub(crate) fn config(&self) -> &Config {
@@ -263,7 +264,7 @@ Version: 0.1.0-beta.0
     }
 
     pub(crate) fn wal(&self) -> &Arc<LogLoader> {
-        &self.wal
+        &self.inner.wal
     }
 
     fn mem_table(&self) -> &MemTable {
@@ -274,30 +275,19 @@ Version: 0.1.0-beta.0
         self.inner.ver_status.current().await
     }
 
-    pub(crate) async fn flush_(&self) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.compactor_tx.send(CompactTask::Flush(tx)).await?;
-
-        self.wal.flush()?;
-        rx.await?;
-
-        Ok(())
-    }
-
     /// 创建事务
     #[inline]
-    pub async fn new_transaction(&self) -> Result<Transaction> {
-        loop {
-            if let Ok(inner) = self.mem_table().inner.read() {
-                return Transaction::new(
-                    self.config(),
-                    self.current_version().await,
-                    inner,
-                    self.wal()
-                );
-            }
-            std::hint::spin_loop();
-        }
+    pub async fn new_transaction(&self) -> Transaction {
+        let _ = self.mem_table().tx_count
+            .fetch_add(1, Ordering::Release);
+
+        return Transaction {
+            store_inner: Arc::clone(&self.inner),
+            seq_id: Sequence::create(),
+            version: self.current_version().await,
+            writer_buf: SkipMap::new(),
+            compactor_tx: self.compactor_tx.clone(),
+        };
     }
 
     #[inline]

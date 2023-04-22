@@ -2,15 +2,17 @@ use std::collections::hash_map::RandomState;
 use std::sync::Arc;
 use growable_bloom_filter::GrowableBloom;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::warn;
 use crate::kernel::Result;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
-use crate::kernel::lsm::compactor::{LEVEL_0, MergeShardingVec};
+use crate::kernel::lsm::compactor::{CompactTask, LEVEL_0, MergeShardingVec};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
+use crate::KernelError;
 
 mod ss_table;
 pub mod lsm_kv;
@@ -148,6 +150,19 @@ fn data_sharding(mut vec_data: Vec<KeyValue>, file_size: usize) -> MergeSharding
     // 过滤掉没有数据的切片
     vec_sharding.retain(|(_, vec)| !vec.is_empty());
     vec_sharding
+}
+
+fn is_exceeded_then_minor(
+    data_len: usize,
+    tx: &UnboundedSender<CompactTask>,
+    config: &Config
+) -> Result<()> {
+    if data_len >= config.minor_threshold_with_len {
+        tx.send(CompactTask::Flush(None))
+            .map_err(|_| KernelError::ChannelClose)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
