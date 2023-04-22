@@ -1,51 +1,38 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use bytes::Bytes;
-use crossbeam_skiplist::SkipMap;
-use optimistic_lock_coupling::OptimisticLockCouplingReadGuard;
-use crate::kernel::Result;
-use crate::kernel::lsm::lsm_kv::{Config, Sequence};
+use itertools::Itertools;
+use skiplist::SkipMap;
+use tokio::sync::mpsc::UnboundedSender;
+use crate::kernel::lsm::compactor::CompactTask;
+use crate::kernel::lsm::is_exceeded_then_minor;
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemTable, TableInner};
+use crate::kernel::Result;
+use crate::kernel::lsm::lsm_kv::{Config, Sequence, StoreInner};
+use crate::kernel::lsm::mem_table::MemTable;
 use crate::kernel::lsm::version::Version;
 use crate::KernelError;
 
-pub struct Transaction<'a> {
-    seq_id: i64,
-    read_inner: OptimisticLockCouplingReadGuard<'a, TableInner>,
-    version: Arc<Version>,
-    writer_buf: SkipMap<Bytes, Option<Bytes>>,
-    wal: Arc<LogLoader>,
-    config: &'a Config,
+pub struct Transaction {
+    pub(crate) store_inner: Arc<StoreInner>,
+    pub(crate) compactor_tx: UnboundedSender<CompactTask>,
+
+    pub(crate) version: Arc<Version>,
+    pub(crate) writer_buf: SkipMap<Bytes, Option<Bytes>>,
+    pub(crate) seq_id: i64,
 }
 
-impl<'a> Transaction<'a> {
-    pub(crate) fn new(
-        config: &'a Config,
-        version: Arc<Version>,
-        read_inner: OptimisticLockCouplingReadGuard<'a, TableInner>,
-        wal: &Arc<LogLoader>
-    ) -> Result<Transaction<'a>> {
-        Ok(Self {
-            seq_id: Sequence::create(),
-            read_inner,
-            version,
-            writer_buf: SkipMap::new(),
-            wal: Arc::clone(wal),
-            config,
-        })
-    }
+impl Transaction {
 
     /// 通过Key获取对应的Value
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        if let Some(value) = self.writer_buf.get(key)
-            .and_then(|entry| entry.value().clone())
-        {
+        if let Some(value) = self.writer_buf.get(key).and_then(Option::clone) {
             return Ok(Some(value));
         }
 
-        if let Some(value) = MemTable::find_with_inner(key, self.seq_id, &self.read_inner) {
+        if let Some(value) = self.mem_table().find_with_sequence_id(key, self.seq_id) {
             return Ok(Some(value));
         }
 
@@ -63,55 +50,47 @@ impl<'a> Transaction<'a> {
     }
 
     pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
-        if self.get(key).await?.is_some() {
-            let _ignore = self.writer_buf.insert(Bytes::copy_from_slice(key), None);
-        } else { return Err(KernelError::KeyNotFound); }
+        let _ = self.get(key).await?
+            .ok_or(KernelError::KeyNotFound)?;
+
+        let _ignore = self.writer_buf
+            .insert(Bytes::copy_from_slice(key), None);
 
         Ok(())
     }
 
-    async fn wal_log(&mut self) -> Result<()> {
+    pub async fn commit(self) -> Result<()> {
+        let batch_data = self.writer_buf.iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect_vec();
+
         // Wal与MemTable双写
-        if self.config.wal_enable {
-            for entry in self.writer_buf.iter() {
-                let key = entry.key().clone();
-                let value = entry.value().clone();
-
-                self.wal.log((key, value))?;
-            }
+        if self.config().wal_enable {
+            self.wal().log_batch(batch_data.clone())?;
         }
 
-        Ok(())
-    }
+        let mem_table = self.mem_table();
+        let data_len = mem_table.insert_batch_data(batch_data, Sequence::create())?;
 
-    pub async fn commit(mut self) -> Result<()> {
-        self.wal_log().await?;
+        let _ = mem_table.tx_count
+            .fetch_sub(1, Ordering::Release);
 
-        let Transaction {
-            read_inner,
-            writer_buf,
-            ..
-        } = self;
-
-        Self::insert_batch_data(
-            &read_inner,
-            writer_buf.into_iter().collect(),
-        )?;
+        is_exceeded_then_minor(data_len, &self.compactor_tx, self.config())?;
 
         Ok(())
     }
 
-    fn insert_batch_data(inner: &TableInner, vec_data: Vec<KeyValue>) -> Result<()> {
-        // 将seq_id作为低位
-        let seq_id = Sequence::create();
-
-        for (key, value) in vec_data {
-            let _ignore = inner.mem_table.insert(InternalKey::new_with_seq(key, seq_id), value);
-        }
-
-        Ok(())
+    fn mem_table(&self) -> &MemTable {
+        &self.store_inner.mem_table
     }
 
+    fn wal(&self) -> &LogLoader {
+        &self.store_inner.wal
+    }
+
+    fn config(&self) -> &Config {
+        &self.store_inner.config
+    }
 }
 
 /// TODO: 更多的Test Case
@@ -140,7 +119,7 @@ mod tests {
                 .major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;
 
-            let mut transaction = kv_store.new_transaction().await?;
+            let mut transaction = kv_store.new_transaction().await;
 
             let mut vec_kv = Vec::new();
 

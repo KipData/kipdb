@@ -87,6 +87,7 @@ pub enum CacheError {
 }
 
 impl<T> From<SendError<T>> for KernelError {
+    #[inline]
     fn from(_: SendError<T>) -> Self {
         KernelError::ChannelClose
     }

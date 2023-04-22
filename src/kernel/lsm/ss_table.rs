@@ -105,8 +105,7 @@ impl Scope {
     }
 
     /// 由一组SSTable融合成一个scope
-    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[SSTable]) -> Result<Self>
-    {
+    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[SSTable]) -> Result<Self> {
         let vec_scope = vec_ss_table.iter()
             .map(|ss_table| ss_table.get_scope())
             .collect_vec();
@@ -141,7 +140,6 @@ impl SSTable {
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
     pub(crate) fn load_from_file(reader: Box<dyn IoReader>) -> Result<Self>{
         let gen = reader.get_gen();
-
         let footer = Footer::read_to_file(reader.as_ref())?;
         let Footer { size_of_disk, meta_offset, meta_len ,.. } = &footer;
         info!(
@@ -191,9 +189,10 @@ impl SSTable {
                 Ok(Self::get_data_block_(inner, inner.reader.as_ref(), index)?)
             }
         ).map(|block_type| {
-            if let BlockType::Data(data_block) = block_type {
-                Some(data_block)
-            } else { None }
+            match block_type {
+                BlockType::Data(data_block) => Some(data_block),
+                _ => None
+            }
         })?)
     }
 
@@ -211,9 +210,10 @@ impl SSTable {
             (self.get_gen(), None),
             |_| Ok(Self::get_index_block_(inner, inner.reader.as_ref())?)
         ).map(|block_type| {
-            if let BlockType::Index(data_block) = block_type {
-                Some(data_block)
-            } else { None }
+            match block_type {
+                BlockType::Index(data_block) => Some(data_block),
+                _ => None
+            }
         })?.ok_or(KernelError::DataEmpty)
     }
 
@@ -250,13 +250,8 @@ impl SSTable {
 
     /// 获取指定SSTable索引位置
     pub(crate) fn find_index_with_level(option_first: Option<i64>, version: &Version, level: usize) -> usize {
-        match option_first {
-            None => 0,
-            Some(gen) => {
-                version.get_index(level, gen)
-                    .unwrap_or(0)
-            }
-        }
+        option_first.and_then(|gen| version.get_index(level, gen))
+            .unwrap_or(0)
     }
 
     /// 通过内存表构建持久化并构建SSTable

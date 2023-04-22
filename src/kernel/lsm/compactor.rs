@@ -14,7 +14,6 @@ use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::DiskIter;
 use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
-use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
@@ -31,8 +30,7 @@ pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
-    Flush(oneshot::Sender<()>),
-    Drop
+    Flush(Option<oneshot::Sender<()>>)
 }
 
 /// 压缩器
@@ -40,13 +38,12 @@ pub(crate) enum CompactTask {
 /// 负责Minor和Major压缩
 pub(crate) struct Compactor {
     store_inner: Arc<StoreInner>,
-    wal: Arc<LogLoader>
 }
 
 impl Compactor {
 
-    pub(crate) fn new(store_inner: Arc<StoreInner>, wal: Arc<LogLoader>) -> Self {
-        Compactor { store_inner, wal }
+    pub(crate) fn new(store_inner: Arc<StoreInner>) -> Self {
+        Compactor { store_inner }
     }
 
     fn sst_factory(&self) -> &IoFactory {
@@ -63,17 +60,7 @@ impl Compactor {
         &mut self,
         option_tx: Option<oneshot::Sender<()>>
     ) -> Result<()> {
-        let exceeded_len = self.config().minor_threshold_with_len;
-
-        if let Some(values) =
-            // 当存在tx时则说明为阻塞压缩，因此不能使用try
-            // 并且不会判断阈值强制压缩
-            if option_tx.is_some() {
-                self.mem_table().swap()
-            } else {
-                self.mem_table().try_exceeded_then_swap(exceeded_len)
-            }
-        {
+        if let Some(values) = self.mem_table().swap() {
             if !values.is_empty() {
                 let gen = self.switch_wal()?;
                 let start = Instant::now();
@@ -97,7 +84,7 @@ impl Compactor {
         let next_gen = Gen::create();
 
         Ok(if self.config().wal_enable {
-            self.wal.switch(next_gen)?
+            self.store_inner.wal.switch(next_gen)?
         } else {
             next_gen
         })
@@ -106,11 +93,7 @@ impl Compactor {
     /// 持久化immutable_table为SSTable
     ///
     /// 请注意：vec_values必须是依照key值有序的
-    pub(crate) async fn minor_compaction(
-        &self,
-        gen: i64,
-        values: Vec<KeyValue>,
-    ) -> Result<()> {
+    pub(crate) async fn minor_compaction(&self, gen: i64, values: Vec<KeyValue>) -> Result<()> {
         if !values.is_empty() {
             // 从内存表中将数据持久化为ss_table
             let ss_table = SSTable::create_for_mem_table(
@@ -178,10 +161,11 @@ impl Compactor {
                     .collect_vec();
                 self.ver_status()
                     .insert_vec_ss_table(vec_new_ss_table).await?;
-
-                vec_ver_edit.push(VersionEdit::NewFile((vec_new_sst_gen, level + 1), index));
-                vec_ver_edit.push(VersionEdit::DeleteFile((del_gens_l, level)));
-                vec_ver_edit.push(VersionEdit::DeleteFile((del_gens_ll, level)));
+                vec_ver_edit.append(&mut vec![
+                    VersionEdit::NewFile((vec_new_sst_gen, level + 1), index),
+                    VersionEdit::DeleteFile((del_gens_l, level)),
+                    VersionEdit::DeleteFile((del_gens_ll, level))
+                ]);
                 info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
                 level += 1;
             } else { break }
@@ -198,10 +182,7 @@ impl Compactor {
         let major_select_file_size = config.major_select_file_size;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !version.is_threshold_exceeded_major(config, level)
-        {
-            return Ok(None);
-        }
+        if level > 5 || !version.is_threshold_exceeded_major(config, level) { return Ok(None); }
 
         // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
@@ -209,15 +190,11 @@ impl Compactor {
             .get_first_vec_ss_table_with_size(level, major_select_file_size).await
         {
             let start = Instant::now();
-
             let scope_l = Scope::fusion_from_vec_ss_table(&vec_ss_table_l)?;
-
             // 获取下一级中有重复键值范围的SSTable
-            let vec_ss_table_ll =
-                version.get_meet_scope_ss_tables(level + 1, &scope_l).await;
-
+            let ss_tables_ll = version.get_meet_scope_ss_tables(level + 1, &scope_l).await;
             let index = SSTable::find_index_with_level(
-                vec_ss_table_ll.first().map(SSTable::get_gen),
+                ss_tables_ll.first().map(SSTable::get_gen),
                 &version,
                 level + 1
             );
@@ -231,11 +208,11 @@ impl Compactor {
 
             // 收集需要清除的SSTable
             let del_gen_l = SSTable::collect_gen(&vec_ss_table_l)?;
-            let del_gen_ll = SSTable::collect_gen(&vec_ss_table_ll)?;
+            let del_gen_ll = SSTable::collect_gen(&ss_tables_ll)?;
 
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
-            let vec_ss_table_l_final = match Scope::fusion_from_vec_ss_table(&vec_ss_table_ll) {
+            let ss_tables_l_final = match Scope::fusion_from_vec_ss_table(&ss_tables_ll) {
                 Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll).await,
                 Err(_) => vec_ss_table_l
             }.into_iter()
@@ -245,13 +222,16 @@ impl Compactor {
             // 数据合并并切片
             let vec_merge_sharding =
                 Self::data_merge_and_sharding(
-                    vec_ss_table_l_final,
-                    vec_ss_table_ll,
+                    ss_tables_l_final,
+                    ss_tables_ll,
                     &version.block_cache,
                     config.sst_file_size
                 ).await?;
 
-            info!("[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]", start.elapsed());
+            info!(
+                "[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]",
+                start.elapsed()
+            );
 
             Ok(Some((index, (del_gen_l, del_gen_ll), vec_merge_sharding)))
         } else {
