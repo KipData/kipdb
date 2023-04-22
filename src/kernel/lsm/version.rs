@@ -195,7 +195,7 @@ impl VersionStatus {
         );
 
         let ss_table_loader = Arc::new(RwLock::new(
-            SSTableLoader::new(config.clone(), sst_factory.clone(), wal)?
+            SSTableLoader::new(config.clone(), Arc::clone(&sst_factory), wal)?
         ));
 
         let (ver_log, vec_reload_edit) = LogLoader::reload(

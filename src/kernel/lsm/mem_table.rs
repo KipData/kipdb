@@ -34,9 +34,8 @@ impl PartialOrd<Self> for InternalKey {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.key.partial_cmp(&other.key)
             .and_then(|ord| match ord {
-                Ordering::Less => Some(Ordering::Less),
                 Ordering::Equal => self.seq_id.partial_cmp(&other.seq_id),
-                Ordering::Greater => Some(Ordering::Greater),
+                ordering => Some(ordering)
             })
     }
 }
@@ -166,8 +165,10 @@ impl MemTable {
             })
     }
 
-    fn find_with_inner(key: &[u8], seq_id: i64, inner: &TableInner) -> Option<Bytes> {
+    /// 查询时附带seq_id进行历史数据查询
+    pub(crate) fn find_with_sequence_id(&self, key: &[u8], seq_id: i64) -> Option<Bytes> {
         let internal_key = InternalKey::new_with_seq(Bytes::copy_from_slice(key), seq_id);
+        let inner = self.inner.lock();
 
         if let Some(value) = MemTable::find_(&internal_key, &inner._mem) {
             Some(value)
@@ -176,11 +177,6 @@ impl MemTable {
         } else {
             None
         }
-    }
-
-    /// 查询时附带seq_id进行历史数据查询
-    pub(crate) fn find_with_sequence_id(&self, key: &[u8], seq_id: i64) -> Option<Bytes> {
-        Self::find_with_inner(key, seq_id, &self.inner.lock())
     }
 
     fn find_(internal_key: &InternalKey, mem_map: &MemMap) -> Option<Bytes> {

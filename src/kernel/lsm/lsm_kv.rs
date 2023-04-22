@@ -40,8 +40,6 @@ pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 1024;
 
 pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
-pub(crate) const DEFAULT_COMPACTOR_CHECK_TIME: u64 = 100;
-
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
 pub(crate) const DEFAULT_WAL_IO_TYPE: IoType = IoType::Buf;
@@ -97,7 +95,7 @@ impl StoreInner {
         );
 
         // 初始化wal日志
-        let ver_status = VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+        let ver_status = VersionStatus::load_with_path(config.clone(), Arc::clone(&wal)).await?;
 
         let mem_table = MemTable::new(mem_map);
 
@@ -247,12 +245,10 @@ Version: 0.1.0-beta.0
         let (task_tx, mut task_rx) = unbounded_channel();
 
         let _ignore = tokio::spawn(async move {
-            loop {
-                if let Some(CompactTask::Flush(option_tx)) = task_rx.recv().await {
-                    if let Err(err) = compactor.check_then_compaction(option_tx).await {
-                        error!("[Compactor][compaction][error happen]: {:?}", err);
-                    }
-                } else { break }
+            while let Some(CompactTask::Flush(option_tx)) = task_rx.recv().await {
+                if let Err(err) = compactor.check_then_compaction(option_tx).await {
+                    error!("[Compactor][compaction][error happen]: {:?}", err);
+                }
             }
         });
 
@@ -283,10 +279,11 @@ Version: 0.1.0-beta.0
 
         return Transaction {
             store_inner: Arc::clone(&self.inner),
-            seq_id: Sequence::create(),
             version: self.current_version().await,
-            writer_buf: SkipMap::new(),
             compactor_tx: self.compactor_tx.clone(),
+
+            seq_id: Sequence::create(),
+            writer_buf: SkipMap::new(),
         };
     }
 
@@ -330,9 +327,6 @@ pub struct Config {
     /// 直写: Direct
     /// 异步: Buf、Mmap
     pub(crate) wal_io_type: IoType,
-    /// Compactor循环检测时间
-    /// 单位为毫秒
-    pub(crate) compactor_check_time: u64,
     /// 每个Block之间的大小, 单位为B
     pub(crate) block_size: usize,
     /// DataBloc的前缀压缩Restart间隔
@@ -357,7 +351,6 @@ impl Config {
             table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
             wal_enable: true,
             wal_io_type: DEFAULT_WAL_IO_TYPE,
-            compactor_check_time: DEFAULT_COMPACTOR_CHECK_TIME,
             block_size: block::DEFAULT_BLOCK_SIZE,
             data_restart_interval: block::DEFAULT_DATA_RESTART_INTERVAL,
             index_restart_interval: block::DEFAULT_INDEX_RESTART_INTERVAL,
@@ -443,12 +436,6 @@ impl Config {
     #[inline]
     pub fn table_cache_size(mut self, cache_size: usize) -> Self {
         self.table_cache_size = cache_size;
-        self
-    }
-
-    #[inline]
-    pub fn compactor_check_time(mut self, compactor_check_time: u64) -> Self {
-        self.compactor_check_time = compactor_check_time;
         self
     }
 

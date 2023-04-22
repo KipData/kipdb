@@ -62,7 +62,7 @@ impl SSTableLoader {
             16,
             RandomState::default()
         )?;
-        Ok(SSTableLoader { inner, factory, config: config.clone(), wal })
+        Ok(SSTableLoader { inner, factory, config, wal })
     }
 
     pub(crate) fn insert(&mut self, ss_table: SSTable) -> Option<SSTable> {
@@ -74,8 +74,7 @@ impl SSTableLoader {
             let sst_factory = &self.factory;
 
             let ss_table = match sst_factory.reader(*gen, IoType::Direct)
-                .map(SSTable::load_from_file)
-                .flatten()
+                .and_then(SSTable::load_from_file)
             {
                 Ok(ss_table) => ss_table,
                 Err(err) => {
