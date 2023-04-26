@@ -113,12 +113,6 @@ impl Iterator for LevelIter<'_> {
     }
 }
 
-impl DoubleEndedIterator for LevelIter<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        DiskIter::prev_err(self).ok()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;

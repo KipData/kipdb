@@ -109,12 +109,6 @@ impl<V: Sync + Send + BlockItem> Iterator for BlockIter<'_, V> {
     }
 }
 
-impl<V: Sync + Send + BlockItem> DoubleEndedIterator for BlockIter<'_, V> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        DiskIter::prev_err(self).ok()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::vec;

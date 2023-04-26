@@ -96,12 +96,6 @@ impl Iterator for SSTableIter<'_> {
     }
 }
 
-impl DoubleEndedIterator for SSTableIter<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        DiskIter::prev_err(self).ok()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;

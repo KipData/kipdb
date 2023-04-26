@@ -127,18 +127,6 @@ impl Iterator for VersionIter<'_> {
     }
 }
 
-impl DoubleEndedIterator for VersionIter<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        match self.level_iter.next_err() {
-            Ok(item) => Some(item),
-            Err(KernelError::OutOfBounds) => {
-                self.iter_sync(self.offset - 1, Seek::First).ok()
-            },
-            Err(_) => None
-        }
-    }
-}
-
 #[allow(clippy::drop_copy)]
 impl Drop for VersionIter<'_> {
     fn drop(&mut self) {
@@ -197,10 +185,6 @@ mod tests {
 
             for i in (0..times).rev() {
                 assert_eq!(iterator.next(), Some(kv_trans(vec_kv[i].clone())));
-            }
-
-            for i in 1..times {
-                assert_eq!(iterator.next_back(), Some(kv_trans(vec_kv[i].clone())));
             }
 
             Ok(())
