@@ -48,7 +48,7 @@ impl<'a> LevelIter<'a> {
         }
         let offset = self.ss_tables
             .binary_search_by(|ss_table| ss_table.get_scope().start.as_ref().cmp(key))
-            .unwrap_or_else(|index| index.checked_sub(1).unwrap_or(0));
+            .unwrap_or_else(|index| index.saturating_sub(1));
 
         self.sst_iter_seek(seek, offset)
     }
