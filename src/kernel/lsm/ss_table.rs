@@ -44,8 +44,8 @@ pub(crate) struct SSTableInner {
 /// 标明数据的范围以做到快速区域定位
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Scope {
-    start: Bytes,
-    end: Bytes
+    pub(crate) start: Bytes,
+    pub(crate) end: Bytes
 }
 
 impl Scope {

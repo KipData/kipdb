@@ -461,6 +461,7 @@ impl Version {
             .map(|(index, _)| index)
     }
 
+    /// FIXME: 使用范围索引相关的使每层SSTable不需要遍历所有SSTable
     async fn rfind_ss_table<F>(
         level_slice: &LevelSlice,
         ss_table_loader: &SSTableLoader,

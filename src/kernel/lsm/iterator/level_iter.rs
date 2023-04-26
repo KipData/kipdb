@@ -46,14 +46,11 @@ impl<'a> LevelIter<'a> {
         if self.level == 0 {
             return Err(KernelError::NotSupport(LEVEL_0_SEEK_MESSAGE));
         }
+        let offset = self.ss_tables
+            .binary_search_by(|ss_table| ss_table.get_scope().start.as_ref().cmp(key))
+            .unwrap_or_else(|index| index.checked_sub(1).unwrap_or(0));
 
-        let i = self.ss_tables.len() - 1;
-        let (offset, _) = self.ss_tables.iter().rev()
-            .enumerate()
-            .rfind(|(_, ss_table)| ss_table.get_scope().meet_with_key(key))
-            .ok_or(KernelError::DataEmpty)?;
-
-        self.sst_iter_seek(seek, i - offset)
+        self.sst_iter_seek(seek, offset)
     }
 }
 
