@@ -19,7 +19,7 @@ impl<'a> SSTableIter<'a> {
             ss_table.get_index_block(block_cache)?
         );
         let data_iter = Self::data_iter_init(
-            ss_table, block_cache, index_iter.next()?.1
+            ss_table, block_cache, index_iter.next_err()?.1
         )?;
 
         Ok(Self {
@@ -54,22 +54,22 @@ impl<'a> SSTableIter<'a> {
 impl DiskIter<Vec<u8>, Vec<u8>> for SSTableIter<'_> {
     type Item = KeyValue;
 
-    fn next(&mut self) -> Result<Self::Item> {
-        match self.data_iter.next() {
+    fn next_err(&mut self) -> Result<Self::Item> {
+        match DiskIter::next_err(&mut self.data_iter) {
             Ok((key, value)) => Ok((key, value.bytes)),
             Err(KernelError::OutOfBounds) => {
-                let index = self.index_iter.next()?.1;
+                let index = DiskIter::next_err(&mut self.index_iter)?.1;
                 self.data_iter_seek(Seek::First, index)
             }
             Err(e) => Err(e)
         }
     }
 
-    fn prev(&mut self) -> Result<Self::Item> {
-        match self.data_iter.prev() {
+    fn prev_err(&mut self) -> Result<Self::Item> {
+        match self.data_iter.prev_err() {
             Ok((key, value)) => Ok((key, value.bytes)),
             Err(KernelError::OutOfBounds) => {
-                let index = self.index_iter.prev()?.1;
+                let index = self.index_iter.prev_err()?.1;
                 self.data_iter_seek(Seek::Last, index)
             }
             Err(e) => Err(e)
@@ -85,6 +85,20 @@ impl DiskIter<Vec<u8>, Vec<u8>> for SSTableIter<'_> {
             if let Some(key) = seek.get_key() { Seek::Backward(key) } else { seek }
         )?.1;
         self.data_iter_seek(seek, index)
+    }
+}
+
+impl Iterator for SSTableIter<'_> {
+    type Item = KeyValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        DiskIter::next_err(self).ok()
+    }
+}
+
+impl DoubleEndedIterator for SSTableIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        DiskIter::prev_err(self).ok()
     }
 }
 
@@ -146,11 +160,11 @@ mod tests {
         let mut iterator = SSTableIter::new(&ss_table, &cache)?;
 
         for i in 0..times {
-            assert_eq!(iterator.next()?, vec_data[i]);
+            assert_eq!(DiskIter::next_err(&mut iterator)?, vec_data[i]);
         }
 
         for i in (0..times - 1).rev() {
-            assert_eq!(iterator.prev()?, vec_data[i]);
+            assert_eq!(DiskIter::prev_err(&mut iterator)?, vec_data[i]);
         }
 
         assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?, vec_data[114]);

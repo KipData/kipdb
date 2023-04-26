@@ -276,14 +276,14 @@ impl LsmStore {
         let _ = self.mem_table().tx_count
             .fetch_add(1, Ordering::Release);
 
-        return Transaction {
+        Transaction {
             store_inner: Arc::clone(&self.inner),
             version: self.current_version().await,
             compactor_tx: self.compactor_tx.clone(),
 
             seq_id: Sequence::create(),
             writer_buf: SkipMap::new(),
-        };
+        }
     }
 
     #[inline]
@@ -506,11 +506,11 @@ mod tests {
 
         assert!(i_1 < i_2);
 
-        sleep(Duration::from_millis(1));
+        sleep(Duration::from_millis(10));
         Gen::init();
         let i_3 = Gen::create();
 
-        sleep(Duration::from_millis(1));
+        sleep(Duration::from_millis(10));
         Gen::init();
         let i_4 = Gen::create();
 

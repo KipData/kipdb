@@ -55,7 +55,7 @@ impl KVStore for SledStore {
         match self.data_base.remove(key) {
             Ok(Some(_)) => { Ok(()) }
             Ok(None) => { Err(KernelError::KeyNotFound) }
-            Err(e) => { Err(KernelError::Sled(e)) }
+            Err(e) => { Err(KernelError::SledErr(e)) }
         }
     }
 

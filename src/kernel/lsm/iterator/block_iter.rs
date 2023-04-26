@@ -69,13 +69,13 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
 {
     type Item = (Bytes, V);
 
-    fn next(&mut self) -> Result<Self::Item> {
+    fn next_err(&mut self) -> Result<Self::Item> {
         if self.is_valid() || self.offset == 0 {
             self.offset_move(self.offset + 1)
         } else { Err(KernelError::OutOfBounds) }
     }
 
-    fn prev(&mut self) -> Result<Self::Item> {
+    fn prev_err(&mut self) -> Result<Self::Item> {
         if self.is_valid() || self.offset == self.entry_len {
             self.offset_move(self.offset - 1)
         } else { Err(KernelError::OutOfBounds) }
@@ -101,6 +101,20 @@ impl<V> DiskIter<Vec<u8>, V> for BlockIter<'_, V>
     }
 }
 
+impl<V: Sync + Send + BlockItem> Iterator for BlockIter<'_, V> {
+    type Item = (Bytes, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        DiskIter::next_err(self).ok()
+    }
+}
+
+impl<V: Sync + Send + BlockItem> DoubleEndedIterator for BlockIter<'_, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        DiskIter::prev_err(self).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::vec;
@@ -123,19 +137,19 @@ mod tests {
 
         assert!(!iterator.is_valid());
 
-        assert_eq!(iterator.next()?, (Bytes::from(vec![b'1']), Value::from(None)));
+        assert_eq!(iterator.next_err()?, (Bytes::from(vec![b'1']), Value::from(None)));
 
-        assert_eq!(iterator.next()?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
+        assert_eq!(iterator.next_err()?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
 
-        assert_eq!(iterator.next()?, (Bytes::from(vec![b'4']), Value::from(None)));
+        assert_eq!(iterator.next_err()?, (Bytes::from(vec![b'4']), Value::from(None)));
 
-        assert!(iterator.next().is_err());
+        assert!(iterator.next_err().is_err());
 
-        assert_eq!(iterator.prev()?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
+        assert_eq!(iterator.prev_err()?, (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))));
 
-        assert_eq!(iterator.prev()?, (Bytes::from(vec![b'1']), Value::from(None)));
+        assert_eq!(iterator.prev_err()?, (Bytes::from(vec![b'1']), Value::from(None)));
 
-        assert!(iterator.prev().is_err());
+        assert!(iterator.prev_err().is_err());
 
         assert_eq!(iterator.seek(Seek::First)?, (Bytes::from(vec![b'1']), Value::from(None)));
 
@@ -172,11 +186,11 @@ mod tests {
         let mut iterator = BlockIter::new(&block);
 
         for i in 0..times {
-            assert_eq!(iterator.next()?, vec_data[i]);
+            assert_eq!(iterator.next_err()?, vec_data[i]);
         }
 
         for i in (0..times - 1).rev() {
-            assert_eq!(iterator.prev()?, vec_data[i]);
+            assert_eq!(iterator.prev_err()?, vec_data[i]);
         }
 
         Ok(())

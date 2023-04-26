@@ -17,7 +17,7 @@ use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::KernelError::SSTableLostError;
+use crate::KernelError::SSTableLost;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 
@@ -608,7 +608,7 @@ impl VersionMeta {
     {
         for gen in vec_gen.iter() {
             let ss_table = ss_table_loader.get(*gen)
-                .ok_or_else(|| SSTableLostError)?;
+                .ok_or_else(|| SSTableLost)?;
             fn_process(self, &ss_table);
         }
 

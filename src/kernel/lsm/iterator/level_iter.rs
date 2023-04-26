@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use crate::kernel::lsm::block::{BlockCache, Value};
 use crate::kernel::lsm::iterator::{DiskIter, Seek};
 use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
@@ -6,6 +5,8 @@ use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 use crate::KernelError;
+
+const LEVEL_0_SEEK_MESSAGE: &str = "level 0 cannot seek";
 
 pub(crate) struct LevelIter<'a> {
     ss_tables: &'a Vec<SSTable>,
@@ -42,31 +43,25 @@ impl<'a> LevelIter<'a> {
     }
 
     fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<KeyValue> {
-        let i = self.ss_tables.len() - 1;
-        // 对Level 0中的SSTable数据范围是可能重复的，因此需要遍历确认数据才能判断是否存在数据
-        if self.level > 0 {
-            let (offset, _) = self.ss_tables.iter().rev()
-                .enumerate()
-                .rfind(|(_, ss_table)| ss_table.get_scope().meet_with_key(key))
-                .ok_or(KernelError::DataEmpty)?;
-
-            self.sst_iter_seek(seek, i - offset)
-        } else {
-            let mut item = (Bytes::new(), None);
-            for (offset, _) in self.ss_tables.iter().rev().enumerate() {
-                item = self.sst_iter_seek(seek, i - offset)?;
-                if key == item.0 { break }
-            }
-            Ok(item)
+        if self.level == 0 {
+            return Err(KernelError::NotSupport(LEVEL_0_SEEK_MESSAGE));
         }
+
+        let i = self.ss_tables.len() - 1;
+        let (offset, _) = self.ss_tables.iter().rev()
+            .enumerate()
+            .rfind(|(_, ss_table)| ss_table.get_scope().meet_with_key(key))
+            .ok_or(KernelError::DataEmpty)?;
+
+        self.sst_iter_seek(seek, i - offset)
     }
 }
 
 impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
     type Item = KeyValue;
 
-    fn next(&mut self) -> Result<Self::Item> {
-        match self.sst_iter.next() {
+    fn next_err(&mut self) -> Result<Self::Item> {
+        match DiskIter::next_err(&mut self.sst_iter) {
             Ok(item) => Ok(item),
             Err(KernelError::OutOfBounds) => {
                 self.sst_iter_seek(Seek::First, self.offset + 1)
@@ -75,8 +70,8 @@ impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
         }
     }
 
-    fn prev(&mut self) -> Result<Self::Item> {
-        match self.sst_iter.prev() {
+    fn prev_err(&mut self) -> Result<Self::Item> {
+        match self.sst_iter.prev_err() {
             Ok(item) => Ok(item),
             Err(KernelError::OutOfBounds) => {
                 if self.offset > 0 {
@@ -93,6 +88,8 @@ impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
         self.offset < self.ss_tables.len()
     }
 
+    /// Tips: Level 0的LevelIter不支持Seek
+    /// 因为Level 0中的SSTable并非有序排列，其中数据范围是可能交错的
     fn seek(&mut self, seek: Seek) -> Result<Self::Item> {
         match seek {
             Seek::First => {
@@ -111,6 +108,19 @@ impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
     }
 }
 
+impl Iterator for LevelIter<'_> {
+    type Item = KeyValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        DiskIter::next_err(self).ok()
+    }
+}
+
+impl DoubleEndedIterator for LevelIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        DiskIter::prev_err(self).ok()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -160,14 +170,14 @@ mod tests {
             1,
             &sst_factory,
             slice_1.to_vec(),
-            0
+            1
         )?;
         let ss_table_2 = SSTable::create_for_mem_table(
             &config,
             2,
             &sst_factory,
             slice_2.to_vec(),
-            0
+            1
         )?;
         let cache = ShardingLruCache::new(
             config.block_cache_size,
@@ -177,13 +187,13 @@ mod tests {
         // 注意，SSTables的新旧顺序为旧->新
         let ss_tables = vec![ss_table_1, ss_table_2];
 
-        let mut iterator = LevelIter::new(&ss_tables, 0, &cache)?;
+        let mut iterator = LevelIter::new(&ss_tables, 1, &cache)?;
         for i in 0..times {
-            assert_eq!(iterator.next()?, vec_data[i]);
+            assert_eq!(DiskIter::next_err(&mut iterator)?, vec_data[i]);
         }
 
         for i in (0..times - 1).rev() {
-            assert_eq!(iterator.prev()?, vec_data[i]);
+            assert_eq!(DiskIter::prev_err(&mut iterator)?, vec_data[i]);
         }
 
         assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?, vec_data[114]);
@@ -197,6 +207,10 @@ mod tests {
         assert_eq!(iterator.seek(Seek::First)?, vec_data[0]);
 
         assert_eq!(iterator.seek(Seek::Last)?, vec_data[3999]);
+
+        let mut iterator_level_0 = LevelIter::new(&ss_tables, 0, &cache)?;
+
+        assert!(iterator_level_0.seek(Seek::Forward(&vec_data[3333].0)).is_err());
 
         Ok(())
     }

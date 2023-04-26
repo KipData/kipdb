@@ -21,7 +21,7 @@ impl Encoder<CommandOption> for NetCommandCodec {
         let mut buf = vec![];
         item
             .encode(&mut buf)
-            .map_err(|_| ConnectionError::EncodeError)?;
+            .map_err(|_| ConnectionError::EncodeErr)?;
         dst.extend(buf);
         Ok(())
     }
@@ -36,7 +36,7 @@ impl Decoder for NetCommandCodec {
             None
         } else {
             Some(CommandOption::decode(src.split())
-                .map_err(|_| ConnectionError::DecodeError)?)
+                .map_err(|_| ConnectionError::DecodeErr)?)
         })
     }
 }

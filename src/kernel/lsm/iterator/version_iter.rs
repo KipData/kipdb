@@ -1,8 +1,6 @@
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use bytes::Bytes;
-use crate::kernel::lsm::block::Value;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::iterator::{DiskIter, Seek};
 use crate::kernel::lsm::iterator::level_iter::LevelIter;
@@ -43,14 +41,12 @@ impl<T> DerefMut for InnerPtr<T> {
 
 /// Version键值对迭代器
 ///
-/// Tips: VersionIter与其他迭代器有一个不同点：VersionIter从最新/最大的键值向最后迭代
-/// 因为Level0的数据是可能冲突的，因此由最后/新的SSTable开始向前/旧的SSTable进行遍历
+/// Tips: VersionIter与其他迭代器有一个不同点：VersionIter不支持DiskIter
+/// 因为VersionIter中各个层级直接的数据是范围重复的，这导致无法实现Seek以支持良好的range查询
 pub struct VersionIter<'a> {
     // 该死的生命周期
     all_ss_tables: InnerPtr<Vec<Vec<SSTable>>>,
     version: InnerPtr<Arc<Version>>,
-    // 用于SeekLast
-    level_upper: usize,
 
     init_buf: Option<KeyValue>,
     offset: usize,
@@ -78,104 +74,67 @@ impl<'a> VersionIter<'a> {
         };
         let init_buf = level_iter.seek(Seek::Last).ok();
 
-        // 找到最大Level值
-        let mut level_upper = 7;
-        unsafe {
-            for level_ss_tables in all_ss_tables.as_ref().iter().rev() {
-                if level_ss_tables.is_empty() { level_upper -= 1 } else { break }
-            }
-        };
-        if level_upper == 0 {
-            return Err(KernelError::DataEmpty)
-        }
-
         Ok(Self {
             all_ss_tables,
             offset: 0,
             level_iter,
             version,
-            level_upper,
             init_buf,
         })
-    }
-
-    fn iter_sync(&mut self, offset: usize, seek: Seek) -> Result<KeyValue> {
-        let is_level_eq = self.offset != offset;
-        self.offset = offset;
-
-        if self.is_valid() {
-            if is_level_eq {
-                unsafe {
-                    self.level_iter = LevelIter::new(
-                        &self.all_ss_tables.as_ref()[offset],
-                        offset,
-                        &self.version.0.as_ref().block_cache
-                    )?;
-                }
-            }
-            self.level_iter.seek(seek)
-        } else {
-            Err(KernelError::OutOfBounds)
-        }
-    }
-
-    fn seek_ward(&mut self, key: &[u8], seek: Seek) -> Result<KeyValue> {
-        let mut item = (Bytes::new(), None);
-        for level in 0..7 {
-            item = self.iter_sync(level, seek)?;
-            if key == item.0 { break }
-        }
-
-        Ok(item)
-    }
-}
-
-impl DiskIter<Vec<u8>, Value> for VersionIter<'_> {
-    type Item = KeyValue;
-
-    fn next(&mut self) -> Result<Self::Item> {
-        // 弹出初始化seek时的第一位数据
-        if let Some(item) = self.init_buf.take() {
-            return Ok(item);
-        }
-
-        match self.level_iter.prev() {
-            Ok(item) => Ok(item),
-            Err(KernelError::OutOfBounds) => {
-                self.iter_sync(self.offset + 1, Seek::Last)
-            },
-            Err(e) => Err(e)
-        }
-    }
-
-    fn prev(&mut self) -> Result<Self::Item> {
-        match self.level_iter.next() {
-            Ok(item) => Ok(item),
-            Err(KernelError::OutOfBounds) => {
-                self.iter_sync(self.offset - 1, Seek::First)
-            },
-            Err(e) => Err(e)
-        }
     }
 
     fn is_valid(&self) -> bool {
         self.offset < 7
     }
 
-    fn seek(&mut self, seek: Seek) -> Result<Self::Item> {
-        match seek {
-            Seek::First => {
-                self.iter_sync(0, Seek::Last)
+    fn iter_sync(&mut self, offset: usize, seek: Seek) -> Result<KeyValue> {
+        let is_level_eq = self.offset != offset;
+        self.offset = offset;
+
+        if !self.is_valid() {
+            return Err(KernelError::OutOfBounds);
+        }
+
+        if is_level_eq {
+            unsafe {
+                self.level_iter = LevelIter::new(
+                    &self.all_ss_tables.as_ref()[offset],
+                    offset,
+                    &self.version.0.as_ref().block_cache
+                )?;
             }
-            Seek::Last => {
-                self.iter_sync(self.level_upper - 1, Seek::First)
-            }
-            Seek::Forward(key) => {
-                self.seek_ward(key, seek)
-            }
-            Seek::Backward(key) => {
-                self.seek_ward(key, seek)
-            }
+        }
+        self.level_iter.seek(seek)
+    }
+}
+
+impl Iterator for VersionIter<'_> {
+    type Item = KeyValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // 弹出初始化seek时的第一位数据
+        if let Some(item) = self.init_buf.take() {
+            return Some(item);
+        }
+
+        match self.level_iter.prev_err() {
+            Ok(item) => Some(item),
+            Err(KernelError::OutOfBounds) => {
+                self.iter_sync(self.offset + 1, Seek::Last).ok()
+            },
+            Err(_) => None
+        }
+    }
+}
+
+impl DoubleEndedIterator for VersionIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self.level_iter.next_err() {
+            Ok(item) => Some(item),
+            Err(KernelError::OutOfBounds) => {
+                self.iter_sync(self.offset - 1, Seek::First).ok()
+            },
+            Err(_) => None
         }
     }
 }
@@ -196,7 +155,6 @@ mod tests {
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
     use crate::kernel::{KVStore, Result};
-    use crate::kernel::lsm::iterator::{DiskIter, Seek};
     use crate::kernel::lsm::mem_table::KeyValue;
 
     #[test]
@@ -238,24 +196,12 @@ mod tests {
             let mut iterator = kv_store.disk_iter().await?;
 
             for i in (0..times).rev() {
-                assert_eq!(iterator.next()?, kv_trans(vec_kv[i].clone()));
+                assert_eq!(iterator.next(), Some(kv_trans(vec_kv[i].clone())));
             }
 
             for i in 1..times {
-                assert_eq!(iterator.prev()?, kv_trans(vec_kv[i].clone()));
+                assert_eq!(iterator.next_back(), Some(kv_trans(vec_kv[i].clone())));
             }
-
-            assert_eq!(iterator.seek(Seek::Backward(&vec_kv[114].0))?,  kv_trans(vec_kv[114].clone()));
-
-            assert_eq!(iterator.seek(Seek::Forward(&vec_kv[1024].0))?,  kv_trans(vec_kv[1024].clone()));
-
-            assert_eq!(iterator.seek(Seek::Forward(&vec_kv[2333].0))?,  kv_trans(vec_kv[2333].clone()));
-
-            assert_eq!(iterator.seek(Seek::Backward(&vec_kv[2048].0))?,  kv_trans(vec_kv[2048].clone()));
-
-            assert_eq!(iterator.seek(Seek::First)?,  kv_trans(vec_kv[4999].clone()));
-
-            assert_eq!(iterator.seek(Seek::Last)?,  kv_trans(vec_kv[0].clone()));
 
             Ok(())
         })

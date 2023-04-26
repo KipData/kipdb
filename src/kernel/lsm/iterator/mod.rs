@@ -33,9 +33,9 @@ impl<'s> Seek<'s> {
 pub(crate) trait DiskIter<K, V>: Send + Sync {
     type Item;
 
-    fn next(&mut self) -> Result<Self::Item>;
+    fn next_err(&mut self) -> Result<Self::Item>;
 
-    fn prev(&mut self) -> Result<Self::Item>;
+    fn prev_err(&mut self) -> Result<Self::Item>;
 
     fn is_valid(&self) -> bool;
 

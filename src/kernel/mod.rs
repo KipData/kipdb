@@ -382,7 +382,7 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
         if lock_file.try_lock()? {
             return Ok(lock_file)
         } else if backoff > 4 {
-            return Err(KernelError::ProcessExistsError);
+            return Err(KernelError::ProcessExists);
         } else {
             time::sleep(Duration::from_millis(backoff * 100)).await;
 

@@ -97,7 +97,7 @@ impl Client {
                 })
                 .collect())
         } else {
-            Err(ConnectionError::KvStoreError(KernelError::NotMatchCmd))
+            Err(ConnectionError::StoreErr(KernelError::NotMatchCmd))
         }
     }
 
@@ -129,7 +129,7 @@ impl Client {
         if result_option.r#type == type_num {
             Ok(result_option.value)
         } else {
-            Err(ConnectionError::KvStoreError(KernelError::NotMatchCmd))
+            Err(ConnectionError::StoreErr(KernelError::NotMatchCmd))
         }
     }
 

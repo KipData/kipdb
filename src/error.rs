@@ -28,7 +28,7 @@ pub enum KernelError {
     #[fail(display = "CRC code does not match")]
     CrcMisMatch,
     #[fail(display = "{}", _0)]
-    Sled(#[cause] sled::Error),
+    SledErr(#[cause] sled::Error),
     #[fail(display = "Cache size overflow")]
     CacheSizeOverFlow,
     #[fail(display = "Cache sharding and size overflow")]
@@ -38,19 +38,21 @@ pub enum KernelError {
     /// 正常情况wal在内存中存在索引则表示硬盘中存在有对应的数据
     /// 而错误则是内存存在索引却在硬盘中不存在这个数据
     #[fail(display = "WAL log load error")]
-    WalLoadError,
+    WalLoad,
     #[fail(display = "Could not found the SSTable")]
-    SSTableLostError,
+    SSTableLost,
     /// Unexpected command type error.
     /// It indicated a corrupted log or a program bug.
     #[fail(display = "Unexpected command type")]
     UnexpectedCommandType,
     #[fail(display = "Process already exists")]
-    ProcessExistsError,
+    ProcessExists,
     #[fail(display = "iterator index out of bounds")]
     OutOfBounds,
     #[fail(display = "channel is closed")]
     ChannelClose,
+    #[fail(display = "{}", _0)]
+    NotSupport(&'static str)
 }
 
 #[derive(Fail, Debug)]
@@ -65,13 +67,13 @@ pub enum ConnectionError {
     #[fail(display = "wrong instruction")]
     WrongInstruction,
     #[fail(display = "encode error")]
-    EncodeError,
+    EncodeErr,
     #[fail(display = "decode error")]
-    DecodeError,
+    DecodeErr,
     #[fail(display = "server flush error")]
     FlushError,
     #[fail(display = "{}", _0)]
-    KvStoreError(#[cause] KernelError),
+    StoreErr(#[cause] KernelError),
 }
 
 #[derive(Fail, Debug)]
@@ -83,7 +85,7 @@ pub enum CacheError {
     #[fail(display = "Cache size overflow")]
     CacheSizeOverFlow,
     #[fail(display = "{}", _0)]
-    KvStoreError(#[cause] KernelError),
+    StoreErr(#[cause] KernelError),
 }
 
 impl<T> From<SendError<T>> for KernelError {
@@ -124,14 +126,14 @@ impl From<Box<bincode::ErrorKind>> for KernelError {
 impl From<sled::Error> for KernelError {
     #[inline]
     fn from(err: sled::Error) -> Self {
-        KernelError::Sled(err)
+        KernelError::SledErr(err)
     }
 }
 
 impl From<KernelError> for ConnectionError {
     #[inline]
     fn from(err: KernelError) -> Self {
-        ConnectionError::KvStoreError(err)
+        ConnectionError::StoreErr(err)
     }
 }
 
@@ -139,7 +141,7 @@ impl From<CacheError> for KernelError {
     #[inline]
     fn from(value: CacheError) -> Self {
         match value {
-            CacheError::KvStoreError(kv_error) => kv_error,
+            CacheError::StoreErr(kv_error) => kv_error,
             CacheError::CacheSizeOverFlow => KernelError::CacheSizeOverFlow,
             CacheError::ShardingNotAlign => KernelError::CacheShardingNotAlign,
         }
@@ -149,6 +151,6 @@ impl From<CacheError> for KernelError {
 impl From<KernelError> for CacheError {
     #[inline]
     fn from(value: KernelError) -> Self {
-        CacheError::KvStoreError(value)
+        CacheError::StoreErr(value)
     }
 }

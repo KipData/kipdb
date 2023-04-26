@@ -289,7 +289,7 @@ impl Compactor {
         let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
         loop {
-            match iter.next() {
+            match iter.next_err() {
                 Ok(item) => {
                     if fn_is_filter(&item.0) { vec_cmd.push(item) }
                 }
