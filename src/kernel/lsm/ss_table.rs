@@ -25,6 +25,8 @@ impl Clone for SSTable {
     }
 }
 
+unsafe impl Send for SSTable {}
+
 /// SSTable
 ///
 /// SSTable仅加载MetaBlock与Footer，避免大量冷数据时冗余的SSTable加载的空间占用
@@ -45,32 +47,40 @@ pub(crate) struct SSTableInner {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Scope {
     pub(crate) start: Bytes,
-    pub(crate) end: Bytes
+    pub(crate) end: Bytes,
+    gen: i64,
 }
 
 impl Scope {
 
+    pub(crate) fn get_gen(&self) -> i64 {
+        self.gen
+    }
+
     /// 由KeyValue组成的Key构成scope
-    pub(crate) fn from_data(first: &KeyValue, last: &KeyValue) -> Self {
+    pub(crate) fn from_data(gen: i64, first: &KeyValue, last: &KeyValue) -> Self {
         Scope {
             start: first.0.clone(),
-            end: last.0.clone()
+            end: last.0.clone(),
+            gen,
         }
     }
 
     /// 将多个scope重组融合成一个scope
-    pub(crate) fn fusion(vec_scope :Vec<&Scope>) -> Result<Self> {
-        if !vec_scope.is_empty() {
-            let start = vec_scope.iter()
+    pub(crate) fn fusion(scopes: &[Scope]) -> Result<Self> {
+        if !scopes.is_empty() {
+            let start = scopes.iter()
                 .map(|scope| &scope.start)
-                .min().ok_or(KernelError::DataEmpty)?
+                .min()
+                .ok_or(KernelError::DataEmpty)?
                 .clone();
-            let end = vec_scope.iter()
+            let end = scopes.iter()
                 .map(|scope| &scope.end)
-                .max().ok_or(KernelError::DataEmpty)?
+                .max()
+                .ok_or(KernelError::DataEmpty)?
                 .clone();
 
-            Ok(Scope { start, end })
+            Ok(Scope { start, end, gen: 0 })
         } else {
             Err(KernelError::DataEmpty)
         }
@@ -90,26 +100,18 @@ impl Scope {
 
     /// 由一组KeyValue组成一个scope
     #[allow(clippy::pattern_type_mismatch)]
-    pub(crate) fn from_vec_data(vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
+    pub(crate) fn from_vec_data(gen: i64, vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => {
-                Ok(Self::from_data(first, last))
+                Ok(Self::from_data(gen, first, last))
             },
             [one] => {
-                Ok(Self::from_data(one, one))
+                Ok(Self::from_data(gen, one, one))
             },
             _ => {
                 Err(KernelError::DataEmpty)
             },
         }
-    }
-
-    /// 由一组SSTable融合成一个scope
-    pub(crate) fn fusion_from_vec_ss_table(vec_ss_table :&[SSTable]) -> Result<Self> {
-        let vec_scope = vec_ss_table.iter()
-            .map(|ss_table| ss_table.get_scope())
-            .collect_vec();
-        Self::fusion(vec_scope)
     }
 }
 
@@ -121,10 +123,6 @@ impl SSTable {
 
     pub(crate) fn get_gen(&self) -> i64 {
         self.inner.gen
-    }
-
-    pub(crate) fn get_scope(&self) -> &Scope {
-        &self.inner.meta.scope
     }
 
     pub(crate) fn get_size_of_disk(&self) -> u64 {
@@ -262,9 +260,9 @@ impl SSTable {
         io_factory: &IoFactory,
         vec_mem_data: Vec<KeyValue>,
         level: usize
-    ) -> Result<SSTable>{
+    ) -> Result<(SSTable, Scope)>{
         // 获取数据的Key涵盖范围
-        let scope = Scope::from_vec_data(&vec_mem_data)?;
+        let scope = Scope::from_vec_data(gen, &vec_mem_data)?;
         let len = vec_mem_data.len();
         let data_restart_interval = config.data_restart_interval;
         let index_restart_interval = config.index_restart_interval;
@@ -282,7 +280,6 @@ impl SSTable {
             builder.add((key, Value::from(value)));
         }
         let meta = MetaBlock {
-            scope,
             filter,
             len,
             index_restart_interval,
@@ -309,7 +306,8 @@ impl SSTable {
         )?;
         writer.io_flush()?;
         info!("[SsTable: {}][create_form_index][MetaBlock]: {:?}", gen, meta);
-        Ok(SSTable {
+
+        Ok((SSTable {
             inner: Arc::new(
                 SSTableInner {
                     footer,
@@ -318,7 +316,7 @@ impl SSTable {
                     meta,
                 }
             )
-        })
+        }, scope))
 
     }
 }
@@ -360,7 +358,7 @@ mod tests {
                 (Bytes::from(bincode::options().with_big_endian().serialize(&i)?), Some(value.clone()))
             );
         }
-        let ss_table = SSTable::create_for_mem_table(
+        let (ss_table, _) = SSTable::create_for_mem_table(
             &config,
             1,
             &sst_factory,

@@ -22,6 +22,20 @@ use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
 use crate::KernelError;
 
+pub(crate) const BANNER: &'static str = "
+█████   ████  ███            ██████████   ███████████
+▒▒███   ███▒  ▒▒▒            ▒▒███▒▒▒▒███ ▒▒███▒▒▒▒▒███
+ ▒███  ███    ████  ████████  ▒███   ▒▒███ ▒███    ▒███
+ ▒███████    ▒▒███ ▒▒███▒▒███ ▒███    ▒███ ▒██████████
+ ▒███▒▒███    ▒███  ▒███ ▒███ ▒███    ▒███ ▒███▒▒▒▒▒███
+ ▒███ ▒▒███   ▒███  ▒███ ▒███ ▒███    ███  ▒███    ▒███
+ █████ ▒▒████ █████ ▒███████  ██████████   ███████████
+▒▒▒▒▒   ▒▒▒▒ ▒▒▒▒▒  ▒███▒▒▒  ▒▒▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒▒▒▒▒▒
+                    ▒███
+                    █████
+                   ▒▒▒▒▒
+Version: 0.1.0-beta.1";
+
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_LEN: usize = 2333;
 
 pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
@@ -215,19 +229,7 @@ impl LsmStore {
     /// 使用Config进行LsmStore初始化
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
-        info!("
-            █████   ████  ███            ██████████   ███████████
-            ▒▒███   ███▒  ▒▒▒            ▒▒███▒▒▒▒███ ▒▒███▒▒▒▒▒███
-             ▒███  ███    ████  ████████  ▒███   ▒▒███ ▒███    ▒███
-             ▒███████    ▒▒███ ▒▒███▒▒███ ▒███    ▒███ ▒██████████
-             ▒███▒▒███    ▒███  ▒███ ▒███ ▒███    ▒███ ▒███▒▒▒▒▒███
-             ▒███ ▒▒███   ▒███  ▒███ ▒███ ▒███    ███  ▒███    ▒███
-             █████ ▒▒████ █████ ▒███████  ██████████   ███████████
-            ▒▒▒▒▒   ▒▒▒▒ ▒▒▒▒▒  ▒███▒▒▒  ▒▒▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒▒▒▒▒▒
-                                ▒███
-                                █████
-                               ▒▒▒▒▒
-            Version: 0.1.0-beta.0");
+        info!(BANNER);
         Gen::init();
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;
@@ -513,6 +515,11 @@ mod tests {
         sleep(Duration::from_millis(10));
         Gen::init();
         let i_4 = Gen::create();
+
+        println!("{i_1}");
+        println!("{i_2}");
+        println!("{i_3}");
+        println!("{i_4}");
 
         assert!(i_3 > i_2);
         assert!(i_4 > i_3 + 1);

@@ -10,7 +10,7 @@ use crate::kernel::lsm::compactor::{CompactTask, LEVEL_0, MergeShardingVec};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
-use crate::kernel::lsm::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KernelError;
 
@@ -41,7 +41,6 @@ struct Footer {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MetaBlock {
-    scope: Scope,
     filter: GrowableBloom,
     len: usize,
     index_restart_interval: usize,
@@ -79,12 +78,17 @@ impl SSTableLoader {
                 Ok(ss_table) => ss_table,
                 Err(err) => {
                     warn!(
-                        "[LSMStore][Load SSTable: {}][try to reload with wal][Error]: {:?}",
+                        "[LSMStore][Load SSTable: {}][try to reload with wal]: {:?}",
                         gen, err
                     );
+                    let reload_data = self.wal.load(*gen)?;
                     SSTable::create_for_mem_table(
-                        &self.config, *gen, sst_factory, self.wal.load(*gen)?, LEVEL_0
-                    )?
+                        &self.config,
+                        *gen,
+                        sst_factory,
+                        reload_data,
+                        LEVEL_0
+                    )?.0
                 }
             };
 
@@ -226,7 +230,7 @@ mod tests {
             vec_data.push(key_value);
         }
         wal.flush()?;
-        let ss_table = SSTable::create_for_mem_table(
+        let (ss_table, _) = SSTable::create_for_mem_table(
             &config,
             1,
             &sst_factory,

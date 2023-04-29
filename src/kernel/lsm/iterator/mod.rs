@@ -1,8 +1,11 @@
 pub(crate) mod block_iter;
-pub(crate) mod sstable_iter;
+pub(crate) mod ss_table_iter;
 pub(crate) mod level_iter;
 pub(crate) mod version_iter;
 
+use std::ops::{Deref, DerefMut};
+use std::ptr::NonNull;
+use async_trait::async_trait;
 use crate::kernel::Result;
 
 #[derive(Clone, Copy)]
@@ -30,14 +33,42 @@ impl<'s> Seek<'s> {
 }
 
 /// 硬盘迭代器
+#[async_trait]
 pub(crate) trait DiskIter<K, V>: Send + Sync {
     type Item;
 
-    fn next_err(&mut self) -> Result<Self::Item>;
+    async fn next_err(&mut self) -> Result<Self::Item>;
 
-    fn prev_err(&mut self) -> Result<Self::Item>;
+    async fn prev_err(&mut self) -> Result<Self::Item>;
 
     fn is_valid(&self) -> bool;
 
-    fn seek(&mut self, seek: Seek) -> Result<Self::Item>;
+    async fn seek(&mut self, seek: Seek<'_>) -> Result<Self::Item>;
+}
+
+pub(crate) struct InnerPtr<T>(NonNull<T>);
+
+unsafe impl<T: Send> Send for InnerPtr<T> { }
+unsafe impl<T: Sync> Sync for InnerPtr<T> { }
+
+impl<T> Clone for InnerPtr<T> {
+    fn clone(&self) -> Self {
+        InnerPtr(self.0)
+    }
+}
+
+impl<T> Copy for InnerPtr<T> { }
+
+impl<T> Deref for InnerPtr<T> {
+    type Target = NonNull<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for InnerPtr<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }

@@ -13,7 +13,7 @@ use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::DiskIter;
-use crate::kernel::lsm::iterator::sstable_iter::SSTableIter;
+use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
@@ -96,7 +96,7 @@ impl Compactor {
     pub(crate) async fn minor_compaction(&self, gen: i64, values: Vec<KeyValue>) -> Result<()> {
         if !values.is_empty() {
             // 从内存表中将数据持久化为ss_table
-            let ss_table = SSTable::create_for_mem_table(
+            let (ss_table, scope) = SSTable::create_for_mem_table(
                 self.config(),
                 gen,
                 self.sst_factory(),
@@ -109,7 +109,7 @@ impl Compactor {
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
                 LEVEL_0,
-                vec![VersionEdit::NewFile((vec![gen], 0), 0)]
+                vec![VersionEdit::NewFile((vec![scope], 0), 0)]
             ).await?;
         }
         Ok(())
@@ -154,15 +154,15 @@ impl Compactor {
                             )
                         }
                     });
-                let vec_new_ss_table: Vec<SSTable> = future::try_join_all(ss_table_futures).await?;
+                let (vec_new_ss_table, vec_new_scope): (Vec<SSTable>, Vec<Scope>) =
+                    (future::try_join_all(ss_table_futures).await?: Vec<(SSTable, Scope)>)
+                    .into_iter()
+                    .unzip();
 
-                let vec_new_sst_gen = vec_new_ss_table.iter()
-                    .map(SSTable::get_gen)
-                    .collect_vec();
                 self.ver_status()
                     .insert_vec_ss_table(vec_new_ss_table).await?;
                 vec_ver_edit.append(&mut vec![
-                    VersionEdit::NewFile((vec_new_sst_gen, level + 1), index),
+                    VersionEdit::NewFile((vec_new_scope, level + 1), index),
                     VersionEdit::DeleteFile((del_gens_l, level)),
                     VersionEdit::DeleteFile((del_gens_ll, level))
                 ]);
@@ -180,41 +180,42 @@ impl Compactor {
         let version = self.ver_status().current().await;
         let config = self.config();
         let major_select_file_size = config.major_select_file_size;
+        let next_level = level + 1;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
         if level > 5 || !version.is_threshold_exceeded_major(config, level) { return Ok(None); }
 
         // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
-        if let Some(mut vec_ss_table_l) = version
-            .get_first_vec_ss_table_with_size(level, major_select_file_size).await
+        if let Some((mut ss_tables_l, scopes_l)) =
+            version.first_ss_tables(level, major_select_file_size).await
         {
             let start = Instant::now();
-            let scope_l = Scope::fusion_from_vec_ss_table(&vec_ss_table_l)?;
+            let scope_l = Scope::fusion(&scopes_l)?;
             // 获取下一级中有重复键值范围的SSTable
-            let ss_tables_ll = version.get_meet_scope_ss_tables(level + 1, &scope_l).await;
+            let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l).await;
             let index = SSTable::find_index_with_level(
                 ss_tables_ll.first().map(SSTable::get_gen),
                 &version,
-                level + 1
+                next_level
             );
 
             // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
             if level == LEVEL_0 {
-                vec_ss_table_l.append(
+                ss_tables_l.append(
                     &mut version.get_meet_scope_ss_tables(level, &scope_l).await
                 )
             }
 
             // 收集需要清除的SSTable
-            let del_gen_l = SSTable::collect_gen(&vec_ss_table_l)?;
+            let del_gen_l = SSTable::collect_gen(&ss_tables_l)?;
             let del_gen_ll = SSTable::collect_gen(&ss_tables_ll)?;
 
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
-            let ss_tables_l_final = match Scope::fusion_from_vec_ss_table(&ss_tables_ll) {
+            let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
                 Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll).await,
-                Err(_) => vec_ss_table_l
+                Err(_) => ss_tables_l
             }.into_iter()
                 .unique_by(SSTable::get_gen)
                 .collect_vec();
@@ -286,13 +287,11 @@ impl Compactor {
     async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
         where F: Fn(&Bytes) -> bool
     {
-        let mut iter = SSTableIter::new(ss_table, block_cache)?;
+        let mut iter = SSTableIter::new(ss_table, block_cache).await?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
         loop {
-            match iter.next_err() {
-                Ok(item) => {
-                    if fn_is_filter(&item.0) { vec_cmd.push(item) }
-                }
+            match iter.next_err().await {
+                Ok(item) => { if fn_is_filter(&item.0) { vec_cmd.push(item) } }
                 Err(KernelError::OutOfBounds) => break,
                 Err(e) => { return Err(e) }
             }
@@ -340,7 +339,7 @@ mod tests {
             16,
             RandomState::default()
         )?;
-        let ss_table_1 = SSTable::create_for_mem_table(
+        let (ss_table_1, _) = SSTable::create_for_mem_table(
             &config,
             1,
             &sst_factory,
@@ -351,7 +350,7 @@ mod tests {
             ],
             0
         )?;
-        let ss_table_2 = SSTable::create_for_mem_table(
+        let (ss_table_2, _) = SSTable::create_for_mem_table(
             &config,
             2,
             &sst_factory,
@@ -361,7 +360,7 @@ mod tests {
             ],
             0
         )?;
-        let ss_table_3 = SSTable::create_for_mem_table(
+        let (ss_table_3, _) = SSTable::create_for_mem_table(
             &config,
             3,
             &sst_factory,
@@ -371,7 +370,7 @@ mod tests {
             ],
             1
         )?;
-        let ss_table_4 = SSTable::create_for_mem_table(
+        let (ss_table_4, _) = SSTable::create_for_mem_table(
             &config,
             4,
             &sst_factory,

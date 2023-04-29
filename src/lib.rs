@@ -1,3 +1,4 @@
+#![feature(type_ascription)]
 #![feature(fs_try_exists)]
 #![feature(cursor_remaining)]
 #![feature(result_flattening)]
