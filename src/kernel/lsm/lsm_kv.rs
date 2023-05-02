@@ -229,7 +229,7 @@ impl LsmStore {
     /// 使用Config进行LsmStore初始化
     #[inline]
     pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
-        info!(BANNER);
+        info!("{}", BANNER);
         Gen::init();
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;

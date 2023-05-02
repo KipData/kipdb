@@ -102,7 +102,7 @@ impl Cleaner {
                 for gen in vec_gen {
                     let _ignore = ss_table_loader.remove(&gen);
                     if let Err(err) = ss_table_loader.clean(gen) {
-                        error!("[Cleaner][clean][SSTables{}]: Remove Error!: {:?}", gen, err);
+                        error!("[Cleaner][clean][SSTable: {}]: Remove Error!: {:?}", gen, err);
                     };
                 }
             } else {
@@ -572,7 +572,7 @@ impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
         if self.clean_sender.send(CleanTag::Clean(self.version_num)).is_err() {
-            error!("[Cleaner][clean][SSTables{}]: Channel Close!", self.version_num);
+            error!("[Cleaner][clean][SSTable: {}]: Channel Close!", self.version_num);
         }
     }
 }
@@ -580,7 +580,7 @@ impl Drop for Version {
 /// 使用特定格式进行display
 fn version_display(new_version: &Version, method: &str) {
     info!(
-            "[Version][{}]: version_num: {}, len: {}, size_of_disk: {}",
+            "[Version: {}]: version_num: {}, len: {}, size_of_disk: {}",
             method,
             new_version.version_num,
             new_version.get_len(),
