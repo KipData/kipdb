@@ -370,7 +370,7 @@ mod tests {
         }
         drop(ss_table);
         let ss_table = SSTable::load_from_file(
-            sst_factory.reader(1, IoType::MMap)?
+            sst_factory.reader(1, IoType::Direct)?
         )?;
         for i in 0..times {
             assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))

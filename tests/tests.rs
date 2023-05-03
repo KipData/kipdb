@@ -225,20 +225,20 @@ fn test_io() -> Result<()> {
     let factory = IoFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
 
     io_type_test(&factory, IoType::Buf)?;
-    io_type_test(&factory, IoType::MMap)?;
     io_type_test(&factory, IoType::Direct)?;
+    io_type_test(&factory, IoType::Mem)?;
 
     Ok(())
 }
 
 fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     let mut writer = factory.writer(1, io_type)?;
-    let reader = factory.reader(1, io_type)?;
     let data_write1 = vec![b'1', b'2', b'3'];
     let data_write2 = vec![b'4', b'5', b'6'];
     let (pos_1, len_1) = writer.io_write(data_write1)?;
     let (pos_2, len_2) = writer.io_write(data_write2)?;
     writer.io_flush()?;
+    let reader = factory.reader(1, io_type)?;
     let data_read = reader.read_with_pos(0, 6)?;
 
     assert_eq!(vec![b'1', b'2', b'3', b'4', b'5', b'6'], data_read);
@@ -248,6 +248,9 @@ fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     assert_eq!(len_2, 3);
 
     assert_eq!(reader.file_size()?, 6);
+    assert!(factory.exists(1)?);
+    factory.clean(1)?;
+    assert!(!factory.exists(1)?);
 
     Ok(())
 }

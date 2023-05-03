@@ -671,25 +671,25 @@ mod tests {
             // 用于去除version2的引用计数
             ver_status.log_and_apply(vec_edit_3).await?;
 
-            assert!(sst_factory.has_gen(1)?);
-            assert!(sst_factory.has_gen(2)?);
+            assert!(sst_factory.exists(1)?);
+            assert!(sst_factory.exists(2)?);
 
             drop(version_2);
 
-            assert!(sst_factory.has_gen(1)?);
-            assert!(sst_factory.has_gen(2)?);
+            assert!(sst_factory.exists(1)?);
+            assert!(sst_factory.exists(2)?);
 
             drop(version_1);
             time::sleep(Duration::from_secs(1)).await;
 
-            assert!(!sst_factory.has_gen(1)?);
-            assert!(sst_factory.has_gen(2)?);
+            assert!(!sst_factory.exists(1)?);
+            assert!(sst_factory.exists(2)?);
 
             drop(ver_status);
             time::sleep(Duration::from_secs(1)).await;
 
-            assert!(!sst_factory.has_gen(1)?);
-            assert!(!sst_factory.has_gen(2)?);
+            assert!(!sst_factory.exists(1)?);
+            assert!(!sst_factory.exists(2)?);
 
             Ok(())
         })

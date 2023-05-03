@@ -6,9 +6,9 @@ use kip_db::DEFAULT_PORT;
 use kip_db::kernel::CommandData;
 use kip_db::net::{Result, client::Client};
 
-const DONE: &'static str = "Done!";
+const DONE: &str = "Done!";
 
-const UNKNOWN_COMMAND: &'static str = "Unknown Command!";
+const UNKNOWN_COMMAND: &str = "Unknown Command!";
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -110,7 +110,7 @@ async fn batch_set(client: &mut Client, batch: Vec<String>) -> Result<String> {
                 value: encode(value)
             }
         }).collect_vec();
-    Ok(batch_run(client, vec_batch_set, DONE).await?)
+    batch_run(client, vec_batch_set, DONE).await
 }
 
 async fn batch_run(
@@ -126,7 +126,7 @@ async fn batch_run(
         })
         .collect_vec();
 
-    Ok(format!("{:?}", vec_string))
+    Ok(format!("{vec_string:?}", ))
 }
 
 fn encode(value: &String) -> Vec<u8>{

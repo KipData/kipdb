@@ -255,7 +255,7 @@ mod tests {
         assert!(loader.remove(&1).is_some());
         assert!(loader.is_emtpy());
         loader.clean(1).unwrap();
-        assert!(!sst_factory.has_gen(1).unwrap());
+        assert!(!sst_factory.exists(1).unwrap());
 
         let ss_table_old_2 = loader.get(1).unwrap();
 

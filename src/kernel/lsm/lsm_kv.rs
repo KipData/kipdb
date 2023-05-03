@@ -22,7 +22,7 @@ use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
 use crate::KernelError;
 
-pub(crate) const BANNER: &'static str = "
+pub(crate) const BANNER: &str = "
 █████   ████  ███            ██████████   ███████████
 ▒▒███   ███▒  ▒▒▒            ▒▒███▒▒▒▒███ ▒▒███▒▒▒▒▒███
  ▒███  ███    ████  ████████  ▒███   ▒▒███ ▒███    ▒███

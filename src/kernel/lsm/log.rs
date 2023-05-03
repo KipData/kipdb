@@ -133,7 +133,7 @@ impl LogLoader {
     /// 通过Gen载入数据进行读取
     pub(crate) fn load(&self, gen: i64) -> Result<Vec<KeyValue>> {
         Ok(Entry::<Value>::decode_with_cursor(&mut Cursor::new(
-            IoReader::bytes(self.factory.reader(gen, IoType::MMap)?.as_ref())?
+            IoReader::bytes(self.factory.reader(gen, IoType::Direct)?.as_ref())?
         ))?.into_iter()
             .map(|(_, Entry{ key, item, .. })| (key, item.bytes))
             .collect_vec())
