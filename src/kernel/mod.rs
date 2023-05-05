@@ -2,6 +2,7 @@ use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
+use std::io::SeekFrom;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -111,24 +112,29 @@ impl CommandPackage {
     /// 写入一个Command
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
     pub(crate) fn write(writer: &mut dyn IoWriter, cmd: &CommandData) -> Result<(u64, usize)> {
-        let (start, len) = writer.io_write(
-            ByteUtils::tag_with_head(bincode::serialize(cmd)?)
-        )?;
+        let start = writer.current_pos()?;
+        let len =  writer.write(&mut ByteUtils::tag_with_head(bincode::serialize(cmd)?))?;
         Ok((start + 4, len - 4))
     }
 
     /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
-    pub(crate) fn from_pos_unpack(reader: &dyn IoReader, start: u64, len: usize) -> Result<Option<CommandData>> {
-        let cmd_u8 = reader.read_with_pos(start, len)?;
-        Ok(bincode::deserialize(cmd_u8.as_slice()).ok())
+    pub(crate) fn from_pos_unpack(reader: &mut dyn IoReader, start: u64, len: usize) -> Result<Option<CommandData>> {
+        let mut buf = vec![0; len];
+
+        let _ = reader.seek(SeekFrom::Start(start))?;
+        reader.read_exact(&mut buf)?;
+
+        Ok(bincode::deserialize(&buf).ok())
     }
 
     /// 获取reader之中所有的CommandPackage
-    pub(crate) fn from_read_to_vec(reader: &dyn IoReader) -> Result<Vec<CommandPackage>> {
-        Self::from_bytes_to_vec(
-            reader.bytes()?
-                .as_slice()
-        )
+    pub(crate) fn from_read_to_vec(reader: &mut dyn IoReader) -> Result<Vec<CommandPackage>> {
+        let mut buf = Vec::new();
+
+        let _ = reader.seek(SeekFrom::Start(0));
+        let _ = reader.read_to_end(&mut buf)?;
+
+        Self::from_bytes_to_vec(&buf)
     }
 
     /// 获取bytes之中所有的CommandPackage

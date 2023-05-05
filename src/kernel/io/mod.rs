@@ -1,15 +1,13 @@
 pub(crate) mod buf;
-pub(crate) mod mmap;
 pub(crate) mod direct;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
 use crate::kernel::io::direct::{DirectIoReader, DirectIoWriter};
-use crate::kernel::io::mmap::{MMapIoReader, MMapIoWriter};
 use crate::kernel::Result;
 
 
@@ -45,7 +43,6 @@ pub struct IoFactory {
 #[derive(PartialEq, Copy, Clone, Debug)]
 pub enum IoType {
     Buf,
-    MMap,
     Direct,
 }
 
@@ -58,7 +55,6 @@ impl IoFactory {
 
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoReader::new(dir_path, gen, extension)?),
-            IoType::MMap => Box::new(MMapIoReader::new(dir_path, gen, extension)?),
             IoType::Direct => Box::new(DirectIoReader::new(dir_path, gen, extension)?)
         })
     }
@@ -71,7 +67,6 @@ impl IoFactory {
 
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoWriter::new(dir_path, gen, extension)?),
-            IoType::MMap => Box::new(MMapIoWriter::new(dir_path, gen, extension)?),
             IoType::Direct => Box::new(DirectIoWriter::new(dir_path, gen, extension)?)
         })
     }
@@ -114,7 +109,7 @@ impl IoFactory {
     }
 }
 
-pub trait IoReader: Send + Sync + 'static + Read {
+pub trait IoReader: Send + Sync + 'static + Read + Seek {
 
     fn get_gen(&self) -> i64;
 
@@ -126,20 +121,9 @@ pub trait IoReader: Send + Sync + 'static + Read {
         Ok(fs::metadata(path_buf)?.len())
     }
 
-    fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>>;
-
     fn get_type(&self) -> IoType;
-
-    #[inline]
-    fn bytes(&self) -> Result<Vec<u8>> {
-        let len = self.file_size()?;
-        self.read_with_pos(0, len as usize)
-    }
 }
 
 pub trait IoWriter: Send + Sync + 'static + Write {
-
-    fn io_write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)>;
-
-    fn io_flush(&mut self) -> Result<()>;
+    fn current_pos(&mut self) -> Result<u64>;
 }

@@ -1,4 +1,5 @@
 use std::collections::hash_map::RandomState;
+use std::io::SeekFrom;
 use std::sync::Arc;
 use growable_bloom_filter::GrowableBloom;
 use serde::{Deserialize, Serialize};
@@ -114,11 +115,13 @@ impl SSTableLoader {
 
 impl Footer {
     /// 从对应文件的IOHandler中将Footer读取出来
-    fn read_to_file(reader: &dyn IoReader) -> Result<Self> {
-        let start_pos = reader.file_size()? - TABLE_FOOTER_SIZE as u64;
-        Ok(bincode::deserialize(
-            &reader.read_with_pos(start_pos, TABLE_FOOTER_SIZE)?
-        )?)
+    fn read_to_file(reader: &mut dyn IoReader) -> Result<Self> {
+        let mut buf = [0; TABLE_FOOTER_SIZE];
+
+        let _ = reader.seek(SeekFrom::End( -(TABLE_FOOTER_SIZE as i64)))?;
+        let _ = reader.read(&mut buf)?;
+
+        Ok(bincode::deserialize(&buf)?)
     }
 }
 

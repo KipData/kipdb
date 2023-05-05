@@ -2,7 +2,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use parking_lot::Mutex;
 use crate::kernel::io::{FileExtension, IoReader, IoType, IoWriter};
 use crate::kernel::Result;
 
@@ -10,7 +9,7 @@ use crate::kernel::Result;
 pub(crate) struct DirectIoReader {
     gen: i64,
     dir_path: Arc<PathBuf>,
-    fs: Mutex<File>,
+    fs: File,
     extension: Arc<FileExtension>,
 }
 
@@ -22,7 +21,7 @@ pub(crate) struct DirectIoWriter {
 impl DirectIoReader {
     pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
-        let fs = Mutex::new(File::open(path)?);
+        let fs = File::open(path)?;
 
         Ok(DirectIoReader {
             gen,
@@ -48,7 +47,13 @@ impl DirectIoWriter {
 
 impl Read for DirectIoReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.fs.lock().read(buf)
+        self.fs.read(buf)
+    }
+}
+
+impl Seek for DirectIoReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.fs.seek(pos)
     }
 }
 
@@ -60,17 +65,6 @@ impl IoReader for DirectIoReader {
     fn get_path(&self) -> PathBuf {
         self.extension
             .path_with_gen(&self.dir_path, self.gen)
-    }
-
-    fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
-        let mut reader = self.fs.lock();
-
-        let mut buffer = vec![0; len];
-        // 使用Vec buffer获取数据
-        let _ignore = reader.seek(SeekFrom::Start(start))?;
-        let _ignore1 = reader.read(&mut buffer)?;
-
-        Ok(buffer)
     }
 
     fn get_type(&self) -> IoType {
@@ -89,14 +83,7 @@ impl Write for DirectIoWriter {
 }
 
 impl IoWriter for DirectIoWriter {
-    fn io_write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
-        let start_pos = self.fs.stream_position()?;
-
-        Ok(self.fs.write(&buf).map(|len| (start_pos, len))?)
-    }
-
-    fn io_flush(&mut self) -> Result<()> {
-        self.fs.flush()?;
-        Ok(())
+    fn current_pos(&mut self) -> Result<u64> {
+        Ok(self.fs.stream_position()?)
     }
 }

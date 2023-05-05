@@ -3,11 +3,8 @@ use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use parking_lot::Mutex;
 use crate::kernel::io::{FileExtension, IoType, IoReader, IoWriter};
 use crate::kernel::Result;
-
-type SyncReader = Mutex<BufReaderWithPos<File>>;
 
 /// 使用BufReade和BufWriter实现的IOHandler
 /// 目前是使用了Mutex实现其线程安全
@@ -16,7 +13,7 @@ type SyncReader = Mutex<BufReaderWithPos<File>>;
 pub(crate) struct BufIoReader {
     gen: i64,
     dir_path: Arc<PathBuf>,
-    reader: SyncReader,
+    reader: BufReaderWithPos<File>,
     extension: Arc<FileExtension>,
 }
 
@@ -24,7 +21,7 @@ impl BufIoReader {
     pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
 
-        let reader = Mutex::new(BufReaderWithPos::new(File::open(path)?)?);
+        let reader = BufReaderWithPos::new(File::open(path)?)?;
 
         Ok(BufIoReader {
             gen,
@@ -55,7 +52,13 @@ impl BufIoWriter {
 
 impl Read for BufIoReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.reader.lock().read(buf)
+        self.reader.read(buf)
+    }
+}
+
+impl Seek for BufIoReader {
+    fn seek(&mut self, seek: SeekFrom) -> io::Result<u64> {
+        self.reader.seek(seek)
     }
 }
 
@@ -67,17 +70,6 @@ impl IoReader for BufIoReader {
     fn get_path(&self) -> PathBuf {
         self.extension
             .path_with_gen(&self.dir_path, self.gen)
-    }
-
-    fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>> {
-        let mut reader = self.reader.lock();
-
-        let mut buffer = vec![0; len];
-        // 使用Vec buffer获取数据
-        let _ignore = reader.seek(SeekFrom::Start(start))?;
-        let _ignore1 = reader.read(&mut buffer)?;
-
-        Ok(buffer)
     }
 
     fn get_type(&self) -> IoType {
@@ -96,15 +88,8 @@ impl Write for BufIoWriter {
 }
 
 impl IoWriter for BufIoWriter {
-    fn io_write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)> {
-        let start_pos = self.writer.pos;
-
-        Ok(self.writer.write(&buf).map(|len| (start_pos, len))?)
-    }
-
-    fn io_flush(&mut self) -> Result<()> {
-        self.writer.flush()?;
-        Ok(())
+    fn current_pos(&mut self) -> Result<u64> {
+        Ok(self.writer.pos)
     }
 }
 
