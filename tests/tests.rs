@@ -1,3 +1,4 @@
+use std::io::{Read, Seek, SeekFrom, Write};
 use bytes::Bytes;
 use tempfile::TempDir;
 use walkdir::WalkDir;
@@ -235,17 +236,26 @@ fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     let mut writer = factory.writer(1, io_type)?;
     let data_write1 = vec![b'1', b'2', b'3'];
     let data_write2 = vec![b'4', b'5', b'6'];
-    let (pos_1, len_1) = writer.io_write(data_write1)?;
-    let (pos_2, len_2) = writer.io_write(data_write2)?;
-    writer.io_flush()?;
-    let reader = factory.reader(1, io_type)?;
-    let data_read = reader.read_with_pos(0, 6)?;
+    let pos_1 = writer.current_pos()?;
+    let len_1 = writer.write(&data_write1)?;
+    let pos_2 = writer.current_pos()?;
+    let len_2 = writer.write(&data_write2)?;
+    writer.flush()?;
 
-    assert_eq!(vec![b'1', b'2', b'3', b'4', b'5', b'6'], data_read);
+    let mut reader = factory.reader(1, io_type)?;
+    let mut buf = [0; 6];
+
+    reader.read_exact(&mut buf)?;
+
+    assert_eq!([b'1', b'2', b'3', b'4', b'5', b'6'], buf);
     assert_eq!(pos_1, 0);
     assert_eq!(pos_2, 3);
     assert_eq!(len_1, 3);
     assert_eq!(len_2, 3);
+
+    assert_eq!(reader.seek(SeekFrom::Start(2))?, 2);
+    assert_eq!(reader.seek(SeekFrom::End(-1))?, 5);
+    assert_eq!(reader.seek(SeekFrom::Current(-1))?, 4);
 
     assert_eq!(reader.file_size()?, 6);
     assert!(factory.exists(1)?);

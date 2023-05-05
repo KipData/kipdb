@@ -1,10 +1,9 @@
 use std::collections::VecDeque;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use itertools::Itertools;
 use parking_lot::Mutex;
 use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
-use crate::kernel::io::IoReader;
 use crate::kernel::lsm::block::{Entry, Value};
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::mem_table::KeyValue;
@@ -78,7 +77,7 @@ impl LogLoader {
         let bytes = Self::data_to_bytes(data)?;
 
         let _ = self.inner.lock()
-            .writer.io_write(bytes)?;
+            .writer.write(&bytes)?;
         Ok(())
     }
 
@@ -94,14 +93,16 @@ impl LogLoader {
             .collect_vec();
 
         let mut guard = self.inner.lock();
-        let _ = guard.writer.io_write(bytes)?;
+        let _ = guard.writer.write(&bytes)?;
         guard.writer.flush()?;
         Ok(())
     }
 
     pub(crate) fn flush(&self) -> Result<()> {
         self.inner.lock()
-            .writer.io_flush()
+            .writer.flush()?;
+
+        Ok(())
     }
 
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
@@ -110,7 +111,7 @@ impl LogLoader {
         let mut inner = self.inner.lock();
 
         let current_gen = inner.current_gen;
-        inner.writer.io_flush()?;
+        inner.writer.flush()?;
 
         // 去除一半的SSTable
         let vec_len = inner.vec_gen.len();
@@ -132,9 +133,13 @@ impl LogLoader {
 
     /// 通过Gen载入数据进行读取
     pub(crate) fn load(&self, gen: i64) -> Result<Vec<KeyValue>> {
-        Ok(Entry::<Value>::decode_with_cursor(&mut Cursor::new(
-            IoReader::bytes(self.factory.reader(gen, IoType::Direct)?.as_ref())?
-        ))?.into_iter()
+        let mut reader = self.factory.reader(gen, IoType::Direct)?;
+
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf)?;
+
+        Ok(Entry::<Value>::decode_with_cursor(&mut Cursor::new(buf))?
+            .into_iter()
             .map(|(_, Entry{ key, item, .. })| (key, item.bytes))
             .collect_vec())
     }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use bytes::BytesMut;
 use parking_lot::Mutex;
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
@@ -122,7 +122,7 @@ impl IoFactory {
     }
 }
 
-pub trait IoReader: Send + Sync + 'static + Read {
+pub trait IoReader: Send + Sync + 'static + Read + Seek {
 
     fn get_gen(&self) -> i64;
 
@@ -134,20 +134,9 @@ pub trait IoReader: Send + Sync + 'static + Read {
         Ok(fs::metadata(path_buf)?.len())
     }
 
-    fn read_with_pos(&self, start: u64, len: usize) -> Result<Vec<u8>>;
-
     fn get_type(&self) -> IoType;
-
-    #[inline]
-    fn bytes(&self) -> Result<Vec<u8>> {
-        let len = self.file_size()?;
-        self.read_with_pos(0, len as usize)
-    }
 }
 
 pub trait IoWriter: Send + Sync + 'static + Write {
-
-    fn io_write(&mut self, buf: Vec<u8>) -> Result<(u64, usize)>;
-
-    fn io_flush(&mut self) -> Result<()>;
+    fn current_pos(&mut self) -> Result<u64>;
 }

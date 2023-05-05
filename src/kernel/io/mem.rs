@@ -1,4 +1,4 @@
-use std::io::{Error, Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -33,13 +33,6 @@ impl MemIoWriter {
         }
     }
 
-    fn _write(buf: &[u8], inner: &mut MemIoWriterInner) -> Result<usize, Error> {
-        let len = buf.len();
-        inner.bytes.put(buf);
-        inner.pos += len as u64;
-        Ok(len)
-    }
-
     pub(crate) fn bytes(&self) -> Bytes {
         Bytes::from(self.inner.lock().bytes.to_vec())
     }
@@ -51,6 +44,18 @@ impl Read for MemIoReader {
         let len = (&self.bytes[last_pos..]).read(buf)?;
         self.pos += len;
         Ok(len)
+    }
+}
+
+impl Seek for MemIoReader {
+    fn seek(&mut self, seek: SeekFrom) -> std::io::Result<u64> {
+        match seek {
+            SeekFrom::Start(pos) => self.pos = pos as usize,
+            SeekFrom::End(pos) => self.pos = (self.bytes.len() as i64 + pos) as usize,
+            SeekFrom::Current(pos) => self.pos = (self.pos as i64 + pos) as usize,
+        }
+
+        Ok(self.pos as u64)
     }
 }
 
@@ -67,18 +72,8 @@ impl IoReader for MemIoReader {
         Ok(self.bytes.len() as u64)
     }
 
-    fn read_with_pos(&self, start: u64, len: usize) -> crate::kernel::Result<Vec<u8>> {
-        let start_pos = start as usize;
-
-        Ok(self.bytes[start_pos..len + start_pos].to_vec())
-    }
-
     fn get_type(&self) -> IoType {
         IoType::Mem
-    }
-
-    fn bytes(&self) -> crate::kernel::Result<Vec<u8>> {
-        Ok(self.bytes.to_vec())
     }
 }
 
@@ -87,7 +82,10 @@ impl Write for MemIoWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut inner = self.inner.lock();
 
-        Self::_write(buf, &mut inner)
+        let len = buf.len();
+        inner.bytes.put(buf);
+        inner.pos += len as u64;
+        Ok(len)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -96,15 +94,8 @@ impl Write for MemIoWriter {
 }
 
 impl IoWriter for MemIoWriter {
-    fn io_write(&mut self, buf: Vec<u8>) -> crate::kernel::Result<(u64, usize)> {
-        let mut inner = self.inner.lock();
-        let start_pos = inner.pos;
-
-        Ok(Self::_write(&buf, &mut inner).map(|len| (start_pos, len))?)
-    }
-
-    fn io_flush(&mut self) -> crate::kernel::Result<()> {
-        Ok(())
+    fn current_pos(&mut self) -> crate::kernel::Result<u64> {
+        Ok(self.inner.lock().pos)
     }
 }
 

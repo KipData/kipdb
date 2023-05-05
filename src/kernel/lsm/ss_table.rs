@@ -1,7 +1,9 @@
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use bytes::Bytes;
 use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
@@ -34,7 +36,7 @@ pub(crate) struct SSTableInner {
     // 表索引信息
     footer: Footer,
     // 文件IO操作器
-    reader: Box<dyn IoReader>,
+    reader: Mutex<Box<dyn IoReader>>,
     // 该SSTable的唯一编号(时间递增)
     gen: i64,
     // 统计信息存储Block
@@ -136,18 +138,22 @@ impl SSTable {
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
-    pub(crate) fn load_from_file(reader: Box<dyn IoReader>) -> Result<Self>{
+    pub(crate) fn load_from_file(mut reader: Box<dyn IoReader>) -> Result<Self>{
         let gen = reader.get_gen();
-        let footer = Footer::read_to_file(reader.as_ref())?;
+        let footer = Footer::read_to_file(reader.as_mut())?;
         let Footer { size_of_disk, meta_offset, meta_len ,.. } = &footer;
         info!(
             "[SsTable: {gen}][load_from_file][MetaBlock]: {footer:?}, Size of Disk: {}, IO Type: {:?}",
             size_of_disk ,
             reader.get_type()
         );
-        let meta = bincode::deserialize(
-            &reader.read_with_pos(*meta_offset as u64, *meta_len as usize)?
-        )?;
+
+        let mut buf = vec![0; *meta_len as usize];
+        let _ = reader.seek(SeekFrom::Start(*meta_offset as u64))?;
+        let _ = reader.read(&mut buf)?;
+
+        let meta = bincode::deserialize(&buf)?;
+        let reader = Mutex::new(reader);
         Ok(SSTable {
             inner : Arc::new(
                 SSTableInner { footer, gen, reader, meta, }
@@ -162,7 +168,6 @@ impl SSTable {
         block_cache: &BlockCache
     ) -> Result<Option<Bytes>> {
         let inner = &self.inner;
-        let reader = inner.reader.as_ref();
         if inner.meta.filter.contains(key) {
             let index_block = self.get_index_block(block_cache)?;
 
@@ -170,7 +175,7 @@ impl SSTable {
                 (self.get_gen(), Some(index_block.find_with_upper(key))),
                 |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                    Ok(Self::get_data_block_(inner, reader, index)?)
+                    Ok(Self::get_data_block_(inner, index)?)
                 }
             )? { return Ok(data_block.find(key)); }
         }
@@ -184,7 +189,7 @@ impl SSTable {
             (self.get_gen(), Some(index)),
             |(_, index)| {
                 let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                Ok(Self::get_data_block_(inner, inner.reader.as_ref(), index)?)
+                Ok(Self::get_data_block_(inner, index)?)
             }
         ).map(|block_type| {
             match block_type {
@@ -194,10 +199,14 @@ impl SSTable {
         })?)
     }
 
-    fn get_data_block_(inner: &Arc<SSTableInner>, reader: &dyn IoReader, index: Index) -> Result<BlockType> {
+    fn get_data_block_(inner: &SSTableInner, index: Index) -> Result<BlockType> {
         Ok(BlockType::Data(
             Self::loading_block(
-                reader, index.offset(), index.len(), CompressType::LZ4, inner.meta.data_restart_interval
+                inner.reader.lock().as_mut(),
+                index.offset(),
+                index.len(),
+                CompressType::LZ4,
+                inner.meta.data_restart_interval
             )?
         ))
     }
@@ -206,7 +215,7 @@ impl SSTable {
         let inner = &self.inner;
         block_cache.get_or_insert(
             (self.get_gen(), None),
-            |_| Ok(Self::get_index_block_(inner, inner.reader.as_ref())?)
+            |_| Ok(Self::get_index_block_(inner)?)
         ).map(|block_type| {
             match block_type {
                 BlockType::Index(data_block) => Some(data_block),
@@ -215,17 +224,21 @@ impl SSTable {
         })?.ok_or(KernelError::DataEmpty)
     }
 
-    fn get_index_block_(inner: &Arc<SSTableInner>, reader: &dyn IoReader) -> Result<BlockType> {
+    fn get_index_block_(inner: &Arc<SSTableInner>) -> Result<BlockType> {
         let Footer { index_offset, index_len, .. } = inner.footer;
         Ok(BlockType::Index(
             Self::loading_block(
-                reader, index_offset, index_len as usize, CompressType::None, inner.meta.index_restart_interval
+                inner.reader.lock().as_mut(),
+                index_offset,
+                index_len as usize,
+                CompressType::None,
+                inner.meta.index_restart_interval
             )?
         ))
     }
 
     fn loading_block<T>(
-        reader: &dyn IoReader,
+        reader: &mut dyn IoReader,
         offset: u32,
         len: usize,
         compress_type: CompressType,
@@ -233,9 +246,11 @@ impl SSTable {
     ) -> Result<Block<T>>
         where T: BlockItem
     {
-        Block::decode(
-            reader.read_with_pos(offset as u64, len)?, compress_type, restart_interval
-        )
+        let mut buf = vec![0; len];
+        let _ = reader.seek(SeekFrom::Start(offset as u64))?;
+        reader.read_exact(&mut buf)?;
+
+        Block::decode(buf, compress_type, restart_interval)
     }
 
     /// 通过一组SSTable收集对应的Gen
@@ -297,21 +312,23 @@ impl SSTable {
             size_of_disk: (data_bytes.len() + index_bytes.len() + meta_bytes.len() + TABLE_FOOTER_SIZE) as u32,
         };
         let mut writer = io_factory.writer(gen, IoType::Direct)?;
-        let _ = writer.io_write(
+        let _ = writer.write(
             data_bytes.into_iter()
                 .chain(index_bytes)
                 .chain(meta_bytes)
                 .chain(bincode::serialize(&footer)?)
                 .collect_vec()
+                .as_mut()
         )?;
-        writer.io_flush()?;
+        let _ = writer.flush()?;
         info!("[SsTable: {}][create_form_index][MetaBlock]: {:?}", gen, meta);
 
+        let reader = Mutex::new(io_factory.reader(gen, IoType::Direct)?);
         Ok((SSTable {
             inner: Arc::new(
                 SSTableInner {
                     footer,
-                    reader: io_factory.reader(gen, IoType::Direct)?,
+                    reader,
                     gen,
                     meta,
                 }
