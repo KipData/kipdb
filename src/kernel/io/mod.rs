@@ -13,6 +13,7 @@ use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
 use crate::kernel::io::direct::{DirectIoReader, DirectIoWriter};
 use crate::kernel::io::mem::{MemIoReader, MemIoWriter};
 use crate::kernel::Result;
+use crate::KernelError;
 
 
 #[derive(Debug, Copy, Clone)]
@@ -61,7 +62,13 @@ impl IoFactory {
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoReader::new(dir_path, gen, extension)?),
             IoType::Direct => Box::new(DirectIoReader::new(dir_path, gen, extension)?),
-            IoType::Mem => Box::new(MemIoReader::new(gen, self.load_mem_file(gen).bytes())),
+            IoType::Mem => {
+                let bytes = self.mem_files.lock()
+                    .get(&gen)
+                    .ok_or(KernelError::FileNotFound)?
+                    .bytes();
+                Box::new(MemIoReader::new(gen, bytes))
+            },
         })
     }
 

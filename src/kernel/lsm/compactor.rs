@@ -7,7 +7,7 @@ use itertools::Itertools;
 use tokio::sync::oneshot;
 use tracing::info;
 use crate::KernelError;
-use crate::kernel::io::IoFactory;
+use crate::kernel::io::{IoFactory, IoType};
 use crate::kernel::Result;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
@@ -101,7 +101,8 @@ impl Compactor {
                 gen,
                 self.sst_factory(),
                 values,
-                LEVEL_0
+                LEVEL_0,
+                IoType::Direct
             )?;
 
             self.ver_status().insert_vec_ss_table(vec![ss_table]).await?;
@@ -150,7 +151,8 @@ impl Compactor {
                                 gen,
                                 self.sst_factory(),
                                 sharding,
-                                level + 1
+                                level + 1,
+                                IoType::Direct
                             )
                         }
                     });
@@ -317,7 +319,7 @@ mod tests {
     use std::collections::hash_map::RandomState;
     use bytes::Bytes;
     use tempfile::TempDir;
-    use crate::kernel::io::{FileExtension, IoFactory};
+    use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::Compactor;
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
@@ -348,7 +350,8 @@ mod tests {
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"2"))),
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"31")))
             ],
-            0
+            0,
+            IoType::Direct
         )?;
         let (ss_table_2, _) = SSTable::create_for_mem_table(
             &config,
@@ -358,7 +361,8 @@ mod tests {
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"3"))),
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4")))
             ],
-            0
+            0,
+            IoType::Direct
         )?;
         let (ss_table_3, _) = SSTable::create_for_mem_table(
             &config,
@@ -368,7 +372,8 @@ mod tests {
                 (Bytes::from_static(b"1"), Some(Bytes::from_static(b"11"))),
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"21")))
             ],
-            1
+            1,
+            IoType::Direct
         )?;
         let (ss_table_4, _) = SSTable::create_for_mem_table(
             &config,
@@ -379,7 +384,8 @@ mod tests {
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"41"))),
                 (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5")))
             ],
-            1
+            1,
+            IoType::Direct
         )?;
 
         let (_, vec_data) = &tokio_test::block_on(async move {

@@ -633,7 +633,8 @@ mod tests {
                 1,
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
-                0
+                0,
+                IoType::Direct
             )?;
 
             let (ss_table_2, scope_2) = SSTable::create_for_mem_table(
@@ -641,7 +642,8 @@ mod tests {
                 2,
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
-                0
+                0,
+                IoType::Direct
             )?;
 
             ver_status.insert_vec_ss_table(vec![ss_table_1]).await?;
@@ -728,7 +730,8 @@ mod tests {
                 1,
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
-                0
+                0,
+                IoType::Direct
             )?;
 
             let (ss_table_2, scope_2) = SSTable::create_for_mem_table(
@@ -736,7 +739,8 @@ mod tests {
                 2,
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
-                0
+                0,
+                IoType::Direct
             )?;
 
             let vec_edit = vec![

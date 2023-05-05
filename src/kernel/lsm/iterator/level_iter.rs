@@ -207,14 +207,16 @@ mod tests {
                 1,
                 &sst_factory,
                 slice_1.to_vec(),
-                1
+                1,
+                IoType::Direct
             )?;
             let (ss_table_2, scope_2) = SSTable::create_for_mem_table(
                 &config,
                 2,
                 &sst_factory,
                 slice_2.to_vec(),
-                1
+                1,
+                IoType::Direct
             )?;
             let cache = ShardingLruCache::new(
                 config.block_cache_size,

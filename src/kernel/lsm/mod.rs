@@ -88,7 +88,8 @@ impl SSTableLoader {
                         *gen,
                         sst_factory,
                         reload_data,
-                        LEVEL_0
+                        LEVEL_0,
+                        IoType::Direct
                     )?.0
                 }
             };
@@ -238,7 +239,8 @@ mod tests {
             1,
             &sst_factory,
             vec_data.clone(),
-            0
+            0,
+            IoType::Direct
         )?;
         let mut loader = SSTableLoader::new(
             config, sst_factory.clone(), Arc::new(wal)
