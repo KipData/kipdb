@@ -2,9 +2,9 @@ use std::cmp::min;
 use std::io::{Cursor, Read, Write};
 use std::mem;
 use bytes::{Buf, BufMut, Bytes};
+use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
 use itertools::Itertools;
 use lz4::Decoder;
-use varuint::{ReadVarint, WriteVarint};
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
@@ -83,8 +83,8 @@ impl<T> Entry<T> where T: BlockItem {
         let mut index = 0;
 
         while !cursor.is_empty() {
-            let unshared_len = ReadVarint::<u32>::read_varint(cursor)? as usize;
-            let shared_len = ReadVarint::<u32>::read_varint(cursor)? as usize;
+            let unshared_len = cursor.read_varint::<u32>()? as usize;
+            let shared_len = cursor.read_varint::<u32>()? as usize;
 
             let mut bytes = vec![0u8; unshared_len];
             let _ = cursor.read(&mut bytes)?;
@@ -152,7 +152,7 @@ pub(crate) trait BlockItem: Sized + Clone {
 
 impl BlockItem for Value {
     fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read + ?Sized {
-        let value_len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+        let value_len = reader.read_varint::<u32>()? as usize;
 
         let bytes = (value_len > 0)
             .then(|| {
@@ -180,8 +180,8 @@ impl BlockItem for Value {
 
 impl BlockItem for Index {
     fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read + ?Sized {
-        let offset = ReadVarint::<u32>::read_varint(&mut reader)?;
-        let len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+        let offset = reader.read_varint::<u32>()?;
+        let len = reader.read_varint::<u32>()? as usize;
 
         Ok(Index {
             offset,
@@ -530,9 +530,7 @@ impl<T> Block<T> where T: BlockItem {
     /// 读取Bytes进行Block的反序列化
     pub(crate) fn from_raw(mut buf: Vec<u8>, restart_interval: usize) -> Result<Self> {
         let date_bytes_len = buf.len() - CRC_SIZE;
-        if crc32fast::hash(&buf) == bincode::deserialize::<u32>(
-            &buf[date_bytes_len..]
-        )? {
+        if crc32fast::hash(&buf) == u32::decode_fixed(&buf[date_bytes_len..]) {
             return Err(KernelError::CrcMisMatch)
         }
         buf.truncate(date_bytes_len);
@@ -558,8 +556,7 @@ impl<T> Block<T> where T: BlockItem {
                 .flatten()
                 .collect_vec()
         );
-        let check_crc = crc32fast::hash(&bytes_block);
-        bytes_block.append(&mut bincode::serialize(&check_crc)?);
+        bytes_block.append(&mut crc32fast::hash(&bytes_block).encode_fixed_vec());
 
         Ok(bytes_block)
     }
