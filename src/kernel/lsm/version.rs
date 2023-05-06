@@ -194,9 +194,8 @@ impl VersionStatus {
         ));
 
         let (ver_log, vec_reload_edit) = LogLoader::reload(
-            config.clone(),
+            config.path(),
             DEFAULT_VERSION_PATH,
-            FileExtension::Manifest,
             IoType::Direct
         )?;
 
@@ -611,9 +610,8 @@ mod tests {
             let config = Config::new(temp_dir.into_path());
 
             let (wal, _) = LogLoader::reload(
-                config.clone(),
+                config.path(),
                 DEFAULT_WAL_PATH,
-                FileExtension::Log,
                 IoType::Direct
             )?;
 
@@ -706,9 +704,8 @@ mod tests {
             let config = Config::new(temp_dir.into_path());
 
             let (wal, _) = LogLoader::reload(
-                config.clone(),
+                config.path(),
                 DEFAULT_WAL_PATH,
-                FileExtension::Log,
                 IoType::Direct
             )?;
 

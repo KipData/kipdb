@@ -166,9 +166,8 @@ mod tests {
             let config = Config::new(temp_dir.into_path());
 
             let (wal, _) = LogLoader::reload(
-                config.clone(),
+                config.path(),
                 DEFAULT_WAL_PATH,
-                FileExtension::Log,
                 IoType::Direct
             )?;
 

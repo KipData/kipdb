@@ -11,7 +11,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::oneshot;
 use tracing::{error, info};
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
-use crate::kernel::io::{FileExtension, IoType};
+use crate::kernel::io::IoType;
 use crate::kernel::lsm::{block, is_exceeded_then_minor};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::iterator::version_iter::VersionIter;
@@ -94,9 +94,8 @@ pub(crate) struct StoreInner {
 impl StoreInner {
     pub(crate) async fn new(config: Config) -> Result<Self> {
         let (wal, reload_data) = LogLoader::reload(
-            config.clone(),
+            config.path(),
             DEFAULT_WAL_PATH,
-            FileExtension::Log,
             config.wal_io_type
         )?;
         let wal = Arc::new(wal);

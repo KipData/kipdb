@@ -78,29 +78,31 @@ impl<T> Entry<T> where T: BlockItem {
         Ok(buf)
     }
 
-    pub(crate) fn decode_with_cursor(cursor: &mut Cursor<Vec<u8>>) -> Result<Vec<(usize, Self)>> {
+    pub(crate) fn batch_decode(cursor: &mut Cursor<Vec<u8>>) -> Result<Vec<(usize, Self)>> {
         let mut vec_entry = Vec::new();
         let mut index = 0;
 
         while !cursor.is_empty() {
-            let unshared_len = cursor.read_varint::<u32>()? as usize;
-            let shared_len = cursor.read_varint::<u32>()? as usize;
-
-            let mut bytes = vec![0u8; unshared_len];
-            let _ = cursor.read(&mut bytes)?;
-
-            let item = T::decode(cursor)?;
-
-            vec_entry.push((index, Self {
-                unshared_len,
-                shared_len,
-                key:  Bytes::from(bytes),
-                item,
-            }));
+            vec_entry.push((index, Self::decode(cursor)?));
             index += 1;
         }
 
         Ok(vec_entry)
+    }
+
+    pub(crate) fn decode<R:Read>(reader: &mut R) -> Result<Entry<T>> {
+        let unshared_len = reader.read_varint::<u32>()? as usize;
+        let shared_len = reader.read_varint::<u32>()? as usize;
+
+        let mut bytes = vec![0u8; unshared_len];
+        let _ = reader.read(&mut bytes)?;
+
+        Ok(Self {
+            unshared_len,
+            shared_len,
+            key: Bytes::from(bytes),
+            item: T::decode(reader)?,
+        })
     }
 }
 
@@ -536,7 +538,7 @@ impl<T> Block<T> where T: BlockItem {
         buf.truncate(date_bytes_len);
 
         let mut cursor = Cursor::new(buf);
-        let vec_entry = Entry::<T>::decode_with_cursor(&mut cursor)?;
+        let vec_entry = Entry::<T>::batch_decode(&mut cursor)?;
         Ok(Self {
             restart_interval,
             vec_entry
@@ -642,7 +644,7 @@ mod tests {
             .chain(entry2.encode()?)
             .collect_vec();
 
-        let vec_entry = Entry::decode_with_cursor(&mut Cursor::new(bytes_vec_entry))?;
+        let vec_entry = Entry::batch_decode(&mut Cursor::new(bytes_vec_entry))?;
 
         assert_eq!(vec![(0, entry1), (1, entry2)], vec_entry);
 

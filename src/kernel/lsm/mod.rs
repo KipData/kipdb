@@ -223,7 +223,9 @@ mod tests {
         let mut vec_data = Vec::new();
         let times = 2333;
         let (wal, _) = LogLoader::reload(
-            config.clone(), DEFAULT_WAL_PATH, FileExtension::Log, IoType::Buf
+            config.path(),
+            DEFAULT_WAL_PATH,
+            IoType::Buf
         )?;
         let _ = wal.switch(1)?;
 
