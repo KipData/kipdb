@@ -113,7 +113,7 @@ impl CommandPackage {
     /// 写入完成后该cmd的去除len位置的写入起始位置与长度
     pub(crate) fn write(writer: &mut dyn IoWriter, cmd: &CommandData) -> Result<(u64, usize)> {
         let start = writer.current_pos()?;
-        let len =  writer.write(&mut ByteUtils::tag_with_head(bincode::serialize(cmd)?))?;
+        let len =  writer.write(&ByteUtils::tag_with_head(bincode::serialize(cmd)?))?;
         Ok((start + 4, len - 4))
     }
 
@@ -131,7 +131,7 @@ impl CommandPackage {
     pub(crate) fn from_read_to_vec(reader: &mut dyn IoReader) -> Result<Vec<CommandPackage>> {
         let mut buf = Vec::new();
 
-        let _ = reader.seek(SeekFrom::Start(0));
+        reader.rewind()?;
         let _ = reader.read_to_end(&mut buf)?;
 
         Self::from_bytes_to_vec(&buf)

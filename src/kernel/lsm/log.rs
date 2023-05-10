@@ -9,12 +9,11 @@ use std::cmp::min;
 /// checksum is the crc32 sum of type and data; type is one of RecordType::{Full/First/Middle/Last}
 
 
-use std::collections::VecDeque;
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::mem;
-use std::path::PathBuf;
+use std::path::Path;
+use std::sync::Arc;
 use integer_encoding::FixedInt;
-use parking_lot::Mutex;
 use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::block::{Entry, Value};
@@ -26,19 +25,20 @@ const BLOCK_SIZE: usize = 32 * 1024;
 const HEADER_SIZE: usize = 4 + 4 + 1;
 
 pub(crate) struct LogLoader {
-    factory: IoFactory,
-    inner: Mutex<Inner>,
+    inner: LogLoaderInner,
+    writer: LogWriter<Box<dyn IoWriter>>,
 }
 
-struct Inner {
+#[derive(Clone)]
+pub(crate) struct LogLoaderInner {
+    factory: Arc<IoFactory>,
     current_gen: i64,
-    writer: LogWriter<Box<dyn IoWriter>>,
-    vec_gen: VecDeque<i64>
+    io_type: IoType,
 }
 
 impl LogLoader {
     pub(crate) fn reload(
-        wal_dir_path: &PathBuf,
+        wal_dir_path: &Path,
         path_name: &str,
         log_type: IoType
     ) -> Result<(Self, Vec<KeyValue>)> {
@@ -53,84 +53,78 @@ impl LogLoader {
     }
 
     fn reload_(
-        wal_dir_path: &PathBuf,
+        wal_dir_path: &Path,
         path_name: &str,
-        log_type: IoType
+        io_type: IoType
     ) -> Result<(Self, i64)> {
         let wal_path = wal_dir_path.join(path_name);
 
-        let factory = IoFactory::new(
-            wal_path.clone(),
-            FileExtension::Log
-        )?;
-
-        let vec_gen = VecDeque::from_iter(
-            sorted_gen_list(&wal_path, FileExtension::Log)?
+        let factory = Arc::new(
+            IoFactory::new(
+                wal_path.clone(),
+                FileExtension::Log
+            )?
         );
-        let last_gen = vec_gen.back()
+
+        let current_gen = sorted_gen_list(&wal_path, FileExtension::Log)?
+            .last()
             .cloned()
             .unwrap_or(Gen::create());
-        let writer = LogWriter::new(factory.writer(last_gen, log_type)?);
-
-        let inner = Mutex::new(
-            Inner {
-                current_gen: last_gen,
-                writer,
-                vec_gen,
-            }
+        let writer = LogWriter::new(
+            factory.writer(current_gen, io_type)?
         );
 
         Ok((LogLoader {
-            factory,
-            inner,
-        }, last_gen))
+            inner: LogLoaderInner {
+                factory,
+                current_gen,
+                io_type,
+            },
+            writer,
+        }, current_gen))
     }
 
-    pub(crate) fn log(&self, data: KeyValue) -> Result<()> {
-        let bytes = Self::data_to_bytes(data)?;
+    pub(crate) fn add_record(&mut self, data: KeyValue) -> Result<()> {
+        let _ = self.writer.add_record(&Self::data_to_bytes(data)?)?;
 
-        let _ = self.inner.lock()
-            .writer.add_record(&bytes)?;
         Ok(())
     }
 
-    pub(crate) fn log_batch(&self, vec_data: Vec<KeyValue>) -> Result<()> {
-        let mut guard = self.inner.lock();
-
+    pub(crate) fn batch_add_record(&mut self, vec_data: Vec<KeyValue>) -> Result<()> {
         for record in vec_data {
-            let _ = guard.writer.add_record(&Self::data_to_bytes(record)?)?;
+            let _ = self.writer.add_record(&Self::data_to_bytes(record)?)?;
         }
-        guard.writer.flush()?;
+        self.writer.flush()?;
         Ok(())
     }
 
-    pub(crate) fn flush(&self) -> Result<()> {
-        self.inner.lock()
-            .writer.flush()?;
+    pub(crate) fn flush(&mut self) -> Result<()> {
+        self.writer.flush()?;
 
         Ok(())
     }
 
     /// 弹出此日志的Gen并重新以新Gen进行日志记录
-    pub(crate) fn switch(&self, next_gen: i64) -> Result<i64> {
-        let mut inner = self.inner.lock();
+    pub(crate) fn new_log(&mut self, next_gen: i64) -> Result<i64> {
+        let inner = &mut self.inner;
+        let new_fs = inner.factory.writer(next_gen, inner.io_type)?;
 
-        mem::replace(
-            &mut inner.writer,
-            LogWriter::new(self.factory.writer(next_gen, IoType::Direct)?)
-        ).flush()?;
-        inner.vec_gen.push_back(next_gen);
+        mem::replace(&mut self.writer, LogWriter::new(new_fs)).flush()?;
 
         Ok(mem::replace(&mut inner.current_gen, next_gen))
     }
 
     /// 通过Gen载入数据进行读取
     pub(crate) fn load(&self, gen: i64) -> Result<Vec<KeyValue>> {
+        Self::_load(&self.inner, gen)
+    }
+
+    pub(crate) fn _load(inner: &LogLoaderInner, gen: i64) -> Result<Vec<KeyValue>> {
         let mut reader = LogReader::new(
-            self.factory.reader(gen, IoType::Direct)?, true
+            inner.factory.reader(gen, inner.io_type)?
         );
         let mut vec_data = Vec::new();
-        let mut buf = Vec::new();
+        let mut buf = vec![0; 128];
 
         while reader.read(&mut buf)? > 0 {
             let Entry { key, item, .. } = Entry::<Value>::decode(&mut buf.as_slice())?;
@@ -140,13 +134,26 @@ impl LogLoader {
         Ok(vec_data)
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn clean(&self, gen: i64) -> Result<()> {
+        Self::_clean(&self.inner, gen)
+    }
+
+    pub(crate) fn _clean(inner: &LogLoaderInner, gen: i64) -> Result<()> {
+        inner.factory.clean(gen)
+    }
+
+    pub(crate) fn clone_inner(&self) -> LogLoaderInner {
+        self.inner.clone()
+    }
+
     fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
         let (key, value) = data;
         Entry::new(0, key.len(), key, Value::from(value)).encode()
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum RecordType {
     Full = 1,
     First = 2,
@@ -161,7 +168,7 @@ impl From<u8> for RecordType {
             2 => RecordType::First,
             3 => RecordType::Middle,
             4 => RecordType::Last,
-            _ => panic!("Unknown value: {}", value),
+            _ => panic!("Unknown value: {value}"),
         }
     }
 }
@@ -191,7 +198,7 @@ impl<W: Write> LogWriter<W> {
     }
 
     pub(crate) fn add_record(&mut self, r: &[u8]) -> Result<usize> {
-        let mut record = &r[..];
+        let mut record = r;
         let mut len = 0;
 
         while !record.is_empty() {
@@ -201,7 +208,9 @@ impl<W: Write> LogWriter<W> {
 
             // Fill up block; go to next block.
             if space_left < HEADER_SIZE {
-                self.dst.write_all(&vec![0; HEADER_SIZE][0..space_left])?;
+                if space_left > 0 {
+                    self.dst.write_all(&vec![0u8; space_left])?;
+                }
                 self.current_block_offset = 0;
             }
 
@@ -251,63 +260,65 @@ pub(crate) struct LogReader<R: Read + Seek> {
     offset: usize,
     block_size: usize,
     head_scratch: [u8; HEADER_SIZE],
-    checksums: bool,
 }
 
 impl<R: Read + Seek> LogReader<R> {
-    pub(crate) fn new(src: R, checksums: bool) -> LogReader<R> {
+    pub(crate) fn new(src: R) -> LogReader<R> {
         LogReader {
             src,
             offset: 0,
             block_size: BLOCK_SIZE,
-            checksums,
             head_scratch: [0u8; HEADER_SIZE],
         }
     }
 
     /// EOF is signalled by Ok(0)
     pub(crate) fn read(&mut self, dst: &mut Vec<u8>) -> Result<usize> {
-        let mut dst_offset: usize = 0;
+        let mut dst_offset = 0;
+        let mut head_pos = 0;
 
         dst.clear();
 
         loop {
-            if self.block_size - self.offset < HEADER_SIZE {
+            let leftover = self.block_size - self.offset;
+            if leftover < HEADER_SIZE {
                 // skip to next block
-                let _ = self.src.seek(SeekFrom::Current((self.block_size - self.offset) as i64))?;
+                if leftover != 0 {
+                    let _ = self.src.seek(SeekFrom::Current((leftover) as i64))?;
+                }
                 self.offset = 0;
             }
 
-            let head_len = self.src.read(&mut self.head_scratch)?;
-
+            head_pos += self.src.read(&mut self.head_scratch[head_pos..])?;
             // EOF
-            if head_len == 0 {
+            if head_pos == 0 {
                 return Ok(dst_offset);
+            } else if head_pos != HEADER_SIZE {
+                continue
+            } else {
+                head_pos = 0;
             }
 
-            self.offset += head_len;
+            self.offset += HEADER_SIZE;
 
             let crc = u32::decode_fixed(&self.head_scratch[0..4]);
-            let length = u32::decode_fixed(&self.head_scratch[4..8]);
+            let length = u32::decode_fixed(&self.head_scratch[4..8]) as usize;
 
-            dst.resize(dst_offset + length as usize, 0);
+            let mut buf = vec![0; length];
 
-            let data_len = self
-                .src
-                .read(&mut dst[dst_offset..dst_offset + length as usize])?;
-            self.offset += data_len;
+            self.src
+                .read_exact(&mut buf)?;
+            self.offset += length;
+            dst_offset += length;
 
-            if self.checksums
-                && crc32fast::hash(&dst[dst_offset..dst_offset + data_len]) != crc
-            {
+            if crc32fast::hash(&buf) != crc {
                 return Err(KernelError::CrcMisMatch);
             }
 
-            dst_offset += length as usize;
+            dst.append(&mut buf);
 
-            match RecordType::from(self.head_scratch[8]) {
-                RecordType::Full | RecordType::Last => return Ok(dst_offset),
-                RecordType::First | RecordType::Middle => continue,
+            if let RecordType::Full | RecordType::Last = RecordType::from(self.head_scratch[8]) {
+                return Ok(dst_offset);
             }
         }
     }
@@ -322,7 +333,8 @@ mod tests {
     use crate::kernel::io::IoType;
     use crate::kernel::lsm::log::{HEADER_SIZE, LogLoader, LogReader, LogWriter};
     use crate::kernel::Result;
-    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH, Gen};
+    use crate::kernel::lsm::lsm_kv::{Config, Gen};
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
 
     #[test]
     fn test_writer() {
@@ -399,7 +411,7 @@ mod tests {
 
         assert_eq!(lw.dst.metadata()?.len(), 70);
 
-        let mut lr = LogReader::new(File::open(file_path)?, true);
+        let mut lr = LogReader::new(File::open(file_path)?);
         let mut dst = Vec::with_capacity(128);
 
         let mut i = 0;
@@ -426,7 +438,7 @@ mod tests {
 
         let config = Config::new(temp_dir.into_path());
 
-        let (wal, _) = LogLoader::reload(
+        let (mut wal, _) = LogLoader::reload(
             config.path(),
             DEFAULT_WAL_PATH,
             IoType::Buf
@@ -435,10 +447,10 @@ mod tests {
         let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
         let data_2 = (Bytes::from_static(b"kip_key_2"), Some(Bytes::from_static(b"kip_value")));
 
-        wal.log(data_1.clone())?;
-        wal.log(data_2.clone())?;
+        wal.add_record(data_1.clone())?;
+        wal.add_record(data_2.clone())?;
 
-        let gen = wal.switch(Gen::create())?;
+        let gen = wal.new_log(Gen::create())?;
 
         drop(wal);
 
@@ -459,7 +471,7 @@ mod tests {
 
         let config = Config::new(temp_dir.into_path());
 
-        let (wal_1, _) = LogLoader::reload(
+        let (mut wal_1, _) = LogLoader::reload(
             config.path(),
             DEFAULT_WAL_PATH,
             IoType::Buf
@@ -468,8 +480,8 @@ mod tests {
         let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
         let data_2 = (Bytes::from_static(b"kip_key_2"), Some(Bytes::from_static(b"kip_value")));
 
-        wal_1.log(data_1.clone())?;
-        wal_1.log(data_2.clone())?;
+        wal_1.add_record(data_1.clone())?;
+        wal_1.add_record(data_2.clone())?;
 
         wal_1.flush()?;
         // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复

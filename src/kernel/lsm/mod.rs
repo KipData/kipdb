@@ -8,7 +8,7 @@ use tracing::warn;
 use crate::kernel::Result;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::compactor::{CompactTask, LEVEL_0, MergeShardingVec};
-use crate::kernel::lsm::log::LogLoader;
+use crate::kernel::lsm::log::{LogLoader, LogLoaderInner};
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
 use crate::kernel::lsm::ss_table::SSTable;
@@ -52,11 +52,11 @@ pub(crate) struct SSTableLoader {
     inner: ShardingLruCache<i64, SSTable>,
     factory: Arc<IoFactory>,
     config: Config,
-    wal: Arc<LogLoader>
+    wal: LogLoaderInner
 }
 
 impl SSTableLoader {
-    pub(crate) fn new(config: Config, factory: Arc<IoFactory>, wal: Arc<LogLoader>) -> Result<Self> {
+    pub(crate) fn new(config: Config, factory: Arc<IoFactory>, wal: LogLoaderInner) -> Result<Self> {
         let inner = ShardingLruCache::new(
             config.table_cache_size,
             16,
@@ -82,7 +82,7 @@ impl SSTableLoader {
                         "[LSMStore][Load SSTable: {}][try to reload with wal]: {:?}",
                         gen, err
                     );
-                    let reload_data = self.wal.load(*gen)?;
+                    let reload_data = LogLoader::_load(&self.wal, *gen)?;
                     SSTable::create_for_mem_table(
                         &self.config,
                         *gen,
@@ -182,7 +182,8 @@ mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::{Footer, SSTableLoader, TABLE_FOOTER_SIZE};
     use crate::kernel::lsm::log::LogLoader;
-    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
+    use crate::kernel::lsm::lsm_kv::Config;
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
@@ -222,17 +223,17 @@ mod tests {
         )?;
         let mut vec_data = Vec::new();
         let times = 2333;
-        let (wal, _) = LogLoader::reload(
+        let (mut wal, _) = LogLoader::reload(
             config.path(),
             DEFAULT_WAL_PATH,
             IoType::Buf
         )?;
-        let _ = wal.switch(1)?;
+        let _ = wal.new_log(1)?;
 
         for i in 0..times {
             let key_value = (Bytes::from(bincode::options().with_big_endian().serialize(&i)?), Some(value.clone()));
 
-            wal.log(key_value.clone())?;
+            wal.add_record(key_value.clone())?;
             vec_data.push(key_value);
         }
         wal.flush()?;
@@ -245,7 +246,9 @@ mod tests {
             IoType::Direct
         )?;
         let mut loader = SSTableLoader::new(
-            config, sst_factory.clone(), Arc::new(wal)
+            config,
+            sst_factory.clone(),
+            wal.clone_inner()
         )?;
 
         assert!(loader.insert(ss_table).is_none());
@@ -265,7 +268,6 @@ mod tests {
         assert!(!sst_factory.exists(1).unwrap());
 
         let ss_table_old_2 = loader.get(1).unwrap();
-
         for i in 0..times {
             assert_eq!(ss_table_old_2.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
         }

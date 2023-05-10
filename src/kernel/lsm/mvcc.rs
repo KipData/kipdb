@@ -6,7 +6,6 @@ use skiplist::SkipMap;
 use tokio::sync::mpsc::UnboundedSender;
 use crate::kernel::lsm::compactor::CompactTask;
 use crate::kernel::lsm::is_exceeded_then_minor;
-use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Sequence, StoreInner};
 use crate::kernel::lsm::mem_table::MemTable;
@@ -64,11 +63,6 @@ impl Transaction {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect_vec();
 
-        // Wal与MemTable双写
-        if self.config().wal_enable {
-            self.wal().log_batch(batch_data.clone())?;
-        }
-
         let mem_table = self.mem_table();
         let data_len = mem_table.insert_batch_data(batch_data, Sequence::create())?;
 
@@ -82,10 +76,6 @@ impl Transaction {
 
     fn mem_table(&self) -> &MemTable {
         &self.store_inner.mem_table
-    }
-
-    fn wal(&self) -> &LogLoader {
-        &self.store_inner.wal
     }
 
     fn config(&self) -> &Config {
@@ -114,7 +104,6 @@ mod tests {
             there with a sign.";
 
             let config = Config::new(temp_dir.into_path())
-                .wal_enable(false)
                 .minor_threshold_with_len(1000)
                 .major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;

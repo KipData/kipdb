@@ -12,7 +12,7 @@ use crate::kernel::io::{FileExtension, IoFactory, IoType};
 use crate::kernel::lsm::SSTableLoader;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::log::LogLoader;
+use crate::kernel::lsm::log::{LogLoader, LogLoaderInner};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
@@ -126,15 +126,15 @@ impl Cleaner {
 
 /// 用于切换Version的封装Inner
 struct VersionInner {
-    inner: Arc<Version>,
+    version: Arc<Version>,
+    /// TODO: 日志快照
+    ver_log: LogLoader,
 }
 
 pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
     ss_table_loader: Arc<RwLock<SSTableLoader>>,
     sst_factory: Arc<IoFactory>,
-    /// TODO: 日志快照
-    ver_log: LogLoader,
     /// 用于Drop时通知Cleaner drop
     _cleaner_tx: UnboundedSender<CleanTag>,
 }
@@ -173,7 +173,7 @@ impl VersionStatus {
 
     pub(crate) async fn load_with_path(
         config: Config,
-        wal: Arc<LogLoader>,
+        wal: LogLoaderInner,
     ) -> Result<Self> {
         let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
 
@@ -190,7 +190,11 @@ impl VersionStatus {
         );
 
         let ss_table_loader = Arc::new(RwLock::new(
-            SSTableLoader::new(config.clone(), Arc::clone(&sst_factory), wal)?
+            SSTableLoader::new(
+                config.clone(),
+                Arc::clone(&sst_factory),
+                wal
+            )?
         ));
 
         let (ver_log, vec_reload_edit) = LogLoader::reload(
@@ -224,10 +228,9 @@ impl VersionStatus {
         });
 
         Ok(Self {
-            inner: RwLock::new(VersionInner { inner: version }),
+            inner: RwLock::new(VersionInner { version, ver_log }),
             ss_table_loader,
             sst_factory,
-            ver_log,
             _cleaner_tx: tag_sender,
         })
     }
@@ -242,7 +245,7 @@ impl VersionStatus {
 
     pub(crate) async fn current(&self) -> Arc<Version> {
         Arc::clone(
-            &self.inner.read().await.inner
+            &self.inner.read().await.version
         )
     }
 
@@ -277,11 +280,10 @@ impl VersionStatus {
 
         version_display(&new_version, "log_and_apply");
 
-        self.ver_log
-            .log_batch(vec_data)?;
-        self.inner
-            .write().await
-            .inner = Arc::new(new_version);
+        let mut inner = self.inner.write().await;
+
+        inner.ver_log.batch_add_record(vec_data)?;
+        inner.version = Arc::new(new_version);
 
         Ok(())
     }
@@ -596,7 +598,8 @@ mod tests {
     use tokio::time;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::log::LogLoader;
-    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
+    use crate::kernel::lsm::lsm_kv::Config;
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, Version, VersionEdit, VersionStatus};
     use crate::kernel::Result;
@@ -618,7 +621,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), Arc::new(wal)).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone_inner()).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -709,12 +712,10 @@ mod tests {
                 IoType::Direct
             )?;
 
-            let wal = Arc::new(wal);
-
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status_1 =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone_inner()).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -755,7 +756,7 @@ mod tests {
             drop(ver_status_1);
 
             let ver_status_2 =
-                VersionStatus::load_with_path(config, wal.clone()).await?;
+                VersionStatus::load_with_path(config, wal.clone_inner()).await?;
             let version_2 = ver_status_2.current().await;
 
             assert_eq!(version_1.level_slice, version_2.level_slice);

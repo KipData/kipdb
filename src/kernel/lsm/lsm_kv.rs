@@ -15,8 +15,7 @@ use crate::kernel::io::IoType;
 use crate::kernel::lsm::{block, is_exceeded_then_minor};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::iterator::version_iter::VersionIter;
-use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemTable};
+use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
@@ -54,9 +53,7 @@ pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 1024;
 
 pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
-pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
-
-pub(crate) const DEFAULT_WAL_IO_TYPE: IoType = IoType::Buf;
+pub(crate) const DEFAULT_WAL_IO_TYPE: IoType = IoType::Direct;
 
 static SEQ_COUNT: AtomicI64 = AtomicI64::new(1);
 
@@ -82,41 +79,22 @@ pub(crate) struct StoreInner {
     pub(crate) ver_status: VersionStatus,
     /// LSM全局参数配置
     pub(crate) config: Config,
-    /// WAL载入器
-    ///
-    /// 用于异常停机时MemTable的恢复
-    /// 同时当Level 0的SSTable异常时，可以尝试恢复
-    /// `Config.wal_threshold`用于控制WalLoader的的SSTable数据日志个数
-    /// 超出个数阈值时会清空最旧的一半日志
-    pub(crate) wal: Arc<LogLoader>,
 }
 
 impl StoreInner {
     pub(crate) async fn new(config: Config) -> Result<Self> {
-        let (wal, reload_data) = LogLoader::reload(
-            config.path(),
-            DEFAULT_WAL_PATH,
-            config.wal_io_type
-        )?;
-        let wal = Arc::new(wal);
-        // Q: 为什么INIT_SEQ作为Seq id?
-        // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
-        // 因此不会影响Version的读取顺序
-        let mem_map = MemMap::from_iter(
-            reload_data.into_iter()
-                .map(|(key, value)| (InternalKey::new_with_seq(key, 0), value))
-        );
+        let mem_table = MemTable::new(&config)?;
 
         // 初始化wal日志
-        let ver_status = VersionStatus::load_with_path(config.clone(), Arc::clone(&wal)).await?;
-
-        let mem_table = MemTable::new(mem_map);
+        let ver_status = VersionStatus::load_with_path(
+            config.clone(),
+            mem_table.log_loader_inner()
+        ).await?;
 
         Ok(StoreInner {
             mem_table,
             ver_status,
             config,
-            wal,
         })
     }
 }
@@ -138,7 +116,6 @@ impl KVStore for LsmStore {
         let (tx, rx) = oneshot::channel();
 
         self.compactor_tx.send(CompactTask::Flush(Some(tx)))?;
-        self.wal().flush()?;
 
         rx.await.map_err(|_| KernelError::ChannelClose)?;
 
@@ -207,22 +184,15 @@ impl LsmStore {
 
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
-        // Wal与MemTable双写
-        if self.is_enable_wal() {
-            self.wal().log(data.clone())?;
-        }
+        let data_len = self.mem_table().insert_data(data)?;
 
         is_exceeded_then_minor(
-            self.mem_table().insert_data(data)?,
+            data_len,
             &self.compactor_tx,
             self.config()
         )?;
 
         Ok(())
-    }
-
-    fn is_enable_wal(&self) -> bool {
-        self.config().wal_enable
     }
 
     /// 使用Config进行LsmStore初始化
@@ -257,10 +227,6 @@ impl LsmStore {
 
     pub(crate) fn config(&self) -> &Config {
         &self.inner.config
-    }
-
-    pub(crate) fn wal(&self) -> &Arc<LogLoader> {
-        &self.inner.wal
     }
 
     fn mem_table(&self) -> &MemTable {
@@ -319,10 +285,6 @@ pub struct Config {
     pub(crate) block_cache_size: usize,
     /// 用于缓存SSTable
     pub(crate) table_cache_size: usize,
-    /// 开启wal日志写入
-    /// 在开启状态时，会在SSTable文件读取失败时生效，避免数据丢失
-    /// 不过在设备IO容易成为瓶颈，或使用多节点冗余写入时，建议关闭以提高写入性能
-    pub(crate) wal_enable: bool,
     /// WAL写入类型
     /// 直写: Direct
     /// 异步: Buf、Mmap
@@ -349,7 +311,6 @@ impl Config {
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
             block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
             table_cache_size: DEFAULT_TABLE_CACHE_SIZE,
-            wal_enable: true,
             wal_io_type: DEFAULT_WAL_IO_TYPE,
             block_size: block::DEFAULT_BLOCK_SIZE,
             data_restart_interval: block::DEFAULT_DATA_RESTART_INTERVAL,
@@ -436,12 +397,6 @@ impl Config {
     #[inline]
     pub fn table_cache_size(mut self, cache_size: usize) -> Self {
         self.table_cache_size = cache_size;
-        self
-    }
-
-    #[inline]
-    pub fn wal_enable(mut self, wal_enable: bool) -> Self {
-        self.wal_enable = wal_enable;
         self
     }
 
@@ -536,7 +491,6 @@ mod tests {
             there with a sign.";
 
             let config = Config::new(temp_dir.path().to_str().unwrap())
-                .wal_enable(false)
                 .minor_threshold_with_len(1000)
                 .major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;

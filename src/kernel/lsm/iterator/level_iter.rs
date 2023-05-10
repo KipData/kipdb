@@ -144,18 +144,18 @@ impl Drop for LevelIter<'_> {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;
-    use std::sync::Arc;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
+    use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
     use crate::kernel::Result;
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
@@ -171,12 +171,10 @@ mod tests {
                 IoType::Direct
             )?;
 
-            let wal = Arc::new(wal);
-
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone_inner()).await?;
 
 
             let sst_factory = IoFactory::new(

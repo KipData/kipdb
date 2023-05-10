@@ -10,7 +10,7 @@ use crate::KernelError;
 use crate::kernel::io::{IoFactory, IoType};
 use crate::kernel::Result;
 use crate::kernel::lsm::block::BlockCache;
-use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
+use crate::kernel::lsm::lsm_kv::{Config, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::DiskIter;
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
@@ -60,9 +60,8 @@ impl Compactor {
         &mut self,
         option_tx: Option<oneshot::Sender<()>>
     ) -> Result<()> {
-        if let Some(values) = self.mem_table().swap() {
+        if let Some((gen, values)) = self.mem_table().swap()? {
             if !values.is_empty() {
-                let gen = self.switch_wal()?;
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
                 self.minor_compaction(gen, values).await?;
@@ -74,20 +73,6 @@ impl Compactor {
         if let Some(tx) = option_tx { tx.send(()).map_err(|_| KernelError::ChannelClose)? }
 
         Ok(())
-    }
-
-    /// 创建gen
-    ///
-    /// 需要保证获取到了MemTable的写锁以保证wal在switch时MemTable的数据和Wal不一致(多出几条)
-    /// 当wal配置启用时，使用预先记录的gen作为结果
-    fn switch_wal(&self) -> Result<i64> {
-        let next_gen = Gen::create();
-
-        Ok(if self.config().wal_enable {
-            self.store_inner.wal.switch(next_gen)?
-        } else {
-            next_gen
-        })
     }
 
     /// 持久化immutable_table为SSTable

@@ -105,7 +105,6 @@ mod tests {
             Delusions of knowledge are like the fog of the morning.";
 
             let config = Config::new(temp_dir.path().to_str().unwrap())
-                .wal_enable(false)
                 .minor_threshold_with_len(1000)
                 .major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;

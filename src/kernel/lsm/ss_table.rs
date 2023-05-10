@@ -321,7 +321,7 @@ impl SSTable {
                 .collect_vec()
                 .as_mut()
         )?;
-        let _ = writer.flush()?;
+        writer.flush()?;
         info!("[SsTable: {}][create_form_index][MetaBlock]: {:?}", gen, meta);
 
         let reader = Mutex::new(io_factory.reader(gen, io_type)?);
