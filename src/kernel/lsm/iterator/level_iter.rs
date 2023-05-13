@@ -165,16 +165,17 @@ mod tests {
         tokio_test::block_on(async move {
             let config = Config::new(temp_dir.into_path());
 
-            let (wal, _) = LogLoader::reload(
+            let (wal, _, _) = LogLoader::reload(
                 config.path(),
-                DEFAULT_WAL_PATH,
-                IoType::Direct
+                (DEFAULT_WAL_PATH, Some(1)),
+                IoType::Direct,
+                |_| Ok(())
             )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), wal.clone_inner()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
 
 
             let sst_factory = IoFactory::new(

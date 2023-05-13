@@ -53,7 +53,7 @@ pub(crate) const DEFAULT_TABLE_CACHE_SIZE: usize = 1024;
 
 pub(crate) const DEFAULT_WAL_THRESHOLD: usize = 20;
 
-pub(crate) const DEFAULT_WAL_IO_TYPE: IoType = IoType::Direct;
+pub(crate) const DEFAULT_WAL_IO_TYPE: IoType = IoType::Buf;
 
 static SEQ_COUNT: AtomicI64 = AtomicI64::new(1);
 
@@ -88,7 +88,7 @@ impl StoreInner {
         // 初始化wal日志
         let ver_status = VersionStatus::load_with_path(
             config.clone(),
-            mem_table.log_loader_inner()
+            mem_table.log_loader_clone()
         ).await?;
 
         Ok(StoreInner {

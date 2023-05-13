@@ -8,11 +8,11 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::RwLock;
 use tracing::{error, info};
 use crate::kernel::Result;
-use crate::kernel::io::{FileExtension, IoFactory, IoType};
+use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::SSTableLoader;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::log::{LogLoader, LogLoaderInner};
+use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
@@ -20,7 +20,7 @@ use crate::KernelError::SSTableLost;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 
-pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
+pub(crate) const DEFAULT_VERSION_PATH: (&str, Option<i64>) = ("version", Some(0));
 
 pub(crate) type LevelSlice = [Vec<Scope>; 7];
 
@@ -128,7 +128,7 @@ impl Cleaner {
 struct VersionInner {
     version: Arc<Version>,
     /// TODO: 日志快照
-    ver_log: LogLoader,
+    ver_log_writer: LogWriter<Box<dyn IoWriter>>
 }
 
 pub(crate) struct VersionStatus {
@@ -173,7 +173,7 @@ impl VersionStatus {
 
     pub(crate) async fn load_with_path(
         config: Config,
-        wal: LogLoaderInner,
+        wal: LogLoader,
     ) -> Result<Self> {
         let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
 
@@ -197,16 +197,12 @@ impl VersionStatus {
             )?
         ));
 
-        let (ver_log, vec_reload_edit) = LogLoader::reload(
+        let (ver_log_loader, vec_log, log_gen) = LogLoader::reload(
             config.path(),
             DEFAULT_VERSION_PATH,
-            IoType::Direct
+            IoType::Direct,
+            |bytes| Ok(bincode::deserialize::<VersionEdit>(bytes)?)
         )?;
-
-        let vec_log = vec_reload_edit
-            .into_iter()
-            .filter_map(|key_value| bincode::deserialize(&key_value.0).ok())
-            .collect_vec();
 
         let (tag_sender, tag_rev) = unbounded_channel();
         let version = Arc::new(
@@ -227,8 +223,10 @@ impl VersionStatus {
             cleaner.listen().await;
         });
 
+        let ver_log_writer = ver_log_loader.writer(log_gen)?;
+
         Ok(Self {
-            inner: RwLock::new(VersionInner { version, ver_log }),
+            inner: RwLock::new(VersionInner { version, ver_log_writer }),
             ss_table_loader,
             sst_factory,
             _cleaner_tx: tag_sender,
@@ -268,21 +266,15 @@ impl VersionStatus {
             self.current().await
                 .as_ref()
         );
-
-        let vec_data = vec_version_edit.iter()
-            .filter_map(|edit| {
-                bincode::serialize(&edit).ok()
-                    .map(|key| (Bytes::from(key), None))
-            })
-            .collect_vec();
-
-        new_version.apply(vec_version_edit, false).await?;
-
+        let mut inner = self.inner.write().await;
         version_display(&new_version, "log_and_apply");
 
-        let mut inner = self.inner.write().await;
-
-        inner.ver_log.batch_add_record(vec_data)?;
+        for bytes in vec_version_edit.iter()
+            .filter_map(|edit| bincode::serialize(&edit).ok())
+        {
+            let _ = inner.ver_log_writer.add_record(&bytes)?;
+        }
+        new_version.apply(vec_version_edit, false).await?;
         inner.version = Arc::new(new_version);
 
         Ok(())
@@ -612,16 +604,17 @@ mod tests {
 
             let config = Config::new(temp_dir.into_path());
 
-            let (wal, _) = LogLoader::reload(
+            let (wal, _, _) = LogLoader::reload(
                 config.path(),
-                DEFAULT_WAL_PATH,
-                IoType::Direct
+                (DEFAULT_WAL_PATH, Some(1)),
+                IoType::Direct,
+                |_| Ok(())
             )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), wal.clone_inner()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -706,16 +699,17 @@ mod tests {
 
             let config = Config::new(temp_dir.into_path());
 
-            let (wal, _) = LogLoader::reload(
+            let (wal, _, _) = LogLoader::reload(
                 config.path(),
-                DEFAULT_WAL_PATH,
-                IoType::Direct
+                (DEFAULT_WAL_PATH, Some(1)),
+                IoType::Direct,
+                |_| Ok(())
             )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status_1 =
-                VersionStatus::load_with_path(config.clone(), wal.clone_inner()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
 
 
             let sst_factory = IoFactory::new(
@@ -756,7 +750,7 @@ mod tests {
             drop(ver_status_1);
 
             let ver_status_2 =
-                VersionStatus::load_with_path(config, wal.clone_inner()).await?;
+                VersionStatus::load_with_path(config, wal.clone()).await?;
             let version_2 = ver_status_2.current().await;
 
             assert_eq!(version_1.level_slice, version_2.level_slice);

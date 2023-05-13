@@ -10,54 +10,50 @@ use std::cmp::min;
 
 
 use std::io::{Read, Write, Seek, SeekFrom};
-use std::mem;
 use std::path::Path;
 use std::sync::Arc;
 use integer_encoding::FixedInt;
 use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
-use crate::kernel::lsm::block::{Entry, Value};
 use crate::kernel::lsm::lsm_kv::Gen;
-use crate::kernel::lsm::mem_table::KeyValue;
 use crate::KernelError;
 
 const BLOCK_SIZE: usize = 32 * 1024;
 const HEADER_SIZE: usize = 4 + 4 + 1;
 
-pub(crate) struct LogLoader {
-    inner: LogLoaderInner,
-    writer: LogWriter<Box<dyn IoWriter>>,
-}
-
 #[derive(Clone)]
-pub(crate) struct LogLoaderInner {
+pub(crate) struct LogLoader {
     factory: Arc<IoFactory>,
-    current_gen: i64,
     io_type: IoType,
 }
 
 impl LogLoader {
-    pub(crate) fn reload(
+    pub(crate) fn reload<F, R>(
         wal_dir_path: &Path,
-        path_name: &str,
-        log_type: IoType
-    ) -> Result<(Self, Vec<KeyValue>)> {
-        let (loader, last_gen) = Self::reload_(
+        path_name: (&str, Option<i64>),
+        io_type: IoType,
+        fn_decode: F
+    ) -> Result<(Self, Vec<R>, i64)>
+        where F: Fn(&mut Vec<u8>) -> Result<R>
+    {
+        let (loader, log_gen) = Self::_reload(
             wal_dir_path,
             path_name,
-            log_type
+            io_type
         )?;
-        let reload_data = loader.load(last_gen)?;
+        let reload_data = loader.load(log_gen, fn_decode)
+            .unwrap_or(Vec::new());
 
-        Ok((loader, reload_data))
+        Ok((loader, reload_data, log_gen))
     }
 
-    fn reload_(
+    fn _reload(
         wal_dir_path: &Path,
-        path_name: &str,
+        path_name: (&str, Option<i64>),
         io_type: IoType
     ) -> Result<(Self, i64)> {
-        let wal_path = wal_dir_path.join(path_name);
+        let (path, name) = path_name;
+        let wal_path = wal_dir_path.join(path);
 
         let factory = Arc::new(
             IoFactory::new(
@@ -66,69 +62,31 @@ impl LogLoader {
             )?
         );
 
-        let current_gen = sorted_gen_list(&wal_path, FileExtension::Log)?
-            .last()
-            .cloned()
-            .unwrap_or(Gen::create());
-        let writer = LogWriter::new(
-            factory.writer(current_gen, io_type)?
-        );
+        let current_gen = name.or_else(|| {
+            sorted_gen_list(&wal_path, FileExtension::Log)
+                .ok()
+                .and_then(|vec| vec.last().cloned())
+        }).unwrap_or(Gen::create());
 
         Ok((LogLoader {
-            inner: LogLoaderInner {
-                factory,
-                current_gen,
-                io_type,
-            },
-            writer,
+            factory,
+            io_type,
         }, current_gen))
     }
 
-    pub(crate) fn add_record(&mut self, data: KeyValue) -> Result<()> {
-        let _ = self.writer.add_record(&Self::data_to_bytes(data)?)?;
-
-        Ok(())
-    }
-
-    pub(crate) fn batch_add_record(&mut self, vec_data: Vec<KeyValue>) -> Result<()> {
-        for record in vec_data {
-            let _ = self.writer.add_record(&Self::data_to_bytes(record)?)?;
-        }
-        self.writer.flush()?;
-        Ok(())
-    }
-
-    pub(crate) fn flush(&mut self) -> Result<()> {
-        self.writer.flush()?;
-
-        Ok(())
-    }
-
-    /// 弹出此日志的Gen并重新以新Gen进行日志记录
-    pub(crate) fn new_log(&mut self, next_gen: i64) -> Result<i64> {
-        let inner = &mut self.inner;
-        let new_fs = inner.factory.writer(next_gen, inner.io_type)?;
-
-        mem::replace(&mut self.writer, LogWriter::new(new_fs)).flush()?;
-
-        Ok(mem::replace(&mut inner.current_gen, next_gen))
-    }
 
     /// 通过Gen载入数据进行读取
-    pub(crate) fn load(&self, gen: i64) -> Result<Vec<KeyValue>> {
-        Self::_load(&self.inner, gen)
-    }
-
-    pub(crate) fn _load(inner: &LogLoaderInner, gen: i64) -> Result<Vec<KeyValue>> {
+    pub(crate) fn load<F, R>(&self, gen: i64, fn_decode: F) -> Result<Vec<R>>
+        where F: Fn(&mut Vec<u8>) -> Result<R>
+    {
         let mut reader = LogReader::new(
-            inner.factory.reader(gen, inner.io_type)?
+            self.factory.reader(gen, self.io_type)?
         );
         let mut vec_data = Vec::new();
         let mut buf = vec![0; 128];
 
         while reader.read(&mut buf)? > 0 {
-            let Entry { key, item, .. } = Entry::<Value>::decode(&mut buf.as_slice())?;
-            vec_data.push((key, item.bytes));
+            vec_data.push(fn_decode(&mut buf)?);
         }
 
         Ok(vec_data)
@@ -136,20 +94,12 @@ impl LogLoader {
 
     #[allow(dead_code)]
     pub(crate) fn clean(&self, gen: i64) -> Result<()> {
-        Self::_clean(&self.inner, gen)
+        self.factory.clean(gen)
     }
 
-    pub(crate) fn _clean(inner: &LogLoaderInner, gen: i64) -> Result<()> {
-        inner.factory.clean(gen)
-    }
-
-    pub(crate) fn clone_inner(&self) -> LogLoaderInner {
-        self.inner.clone()
-    }
-
-    fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
-        let (key, value) = data;
-        Entry::new(0, key.len(), key, Value::from(value)).encode()
+    pub(crate) fn writer(&self, gen: i64) -> Result<LogWriter<Box<dyn IoWriter>>> {
+        let new_fs = self.factory.writer(gen, self.io_type)?;
+        Ok(LogWriter::new(new_fs))
     }
 }
 
@@ -328,12 +278,11 @@ impl<R: Read + Seek> LogReader<R> {
 mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::Cursor;
-    use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::IoType;
     use crate::kernel::lsm::log::{HEADER_SIZE, LogLoader, LogReader, LogWriter};
     use crate::kernel::Result;
-    use crate::kernel::lsm::lsm_kv::{Config, Gen};
+    use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
 
     #[test]
@@ -433,66 +382,39 @@ mod tests {
     }
 
     #[test]
-    fn test_log_load() -> Result<()> {
+    fn test_log_loader() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let config = Config::new(temp_dir.into_path());
 
-        let (mut wal, _) = LogLoader::reload(
+        let (loader, _, _) = LogLoader::reload(
             config.path(),
-            DEFAULT_WAL_PATH,
-            IoType::Buf
+            (DEFAULT_WAL_PATH, Some(1)),
+            IoType::Buf,
+            |bytes| Ok(bytes.clone())
         )?;
 
-        let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
-        let data_2 = (Bytes::from_static(b"kip_key_2"), Some(Bytes::from_static(b"kip_value")));
+        let mut writer = loader.writer(1)?;
 
-        wal.add_record(data_1.clone())?;
-        wal.add_record(data_2.clone())?;
+        let _ = writer.add_record(b"kip_key_1")?;
+        let _ = writer.add_record(b"kip_key_2")?;
 
-        let gen = wal.new_log(Gen::create())?;
+        writer.flush()?;
 
-        drop(wal);
+        drop(loader);
 
-        let (wal, _) = LogLoader::reload(
+        let (wal, reload_data_1, log_gen) = LogLoader::reload(
             config.path(),
-            DEFAULT_WAL_PATH,
-            IoType::Buf
+            (DEFAULT_WAL_PATH, Some(1)),
+            IoType::Buf,
+            |bytes| Ok(bytes.clone())
         )?;
 
-        assert_eq!(wal.load(gen)?, vec![data_1, data_2]);
+        let reload_data_2 = wal.load(1, |bytes| Ok(bytes.clone()))?;
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_log_reload() -> Result<()> {
-        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-        let config = Config::new(temp_dir.into_path());
-
-        let (mut wal_1, _) = LogLoader::reload(
-            config.path(),
-            DEFAULT_WAL_PATH,
-            IoType::Buf
-        )?;
-
-        let data_1 = (Bytes::from_static(b"kip_key_1"), Some(Bytes::from_static(b"kip_value")));
-        let data_2 = (Bytes::from_static(b"kip_key_2"), Some(Bytes::from_static(b"kip_value")));
-
-        wal_1.add_record(data_1.clone())?;
-        wal_1.add_record(data_2.clone())?;
-
-        wal_1.flush()?;
-        // wal_1尚未drop时，则开始reload，模拟SUCCESS_FS未删除的情况(即停机异常)，触发数据恢复
-
-        let (_, reload_data) = LogLoader::reload(
-            config.path(),
-            DEFAULT_WAL_PATH,
-            IoType::Buf
-        )?;
-
-        assert_eq!(reload_data, vec![data_1, data_2]);
+        assert_eq!(log_gen, 1);
+        assert_eq!(reload_data_1, vec![b"kip_key_1", b"kip_key_2"]);
+        assert_eq!(reload_data_1, reload_data_2);
 
         Ok(())
     }

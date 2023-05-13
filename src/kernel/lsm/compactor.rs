@@ -142,7 +142,7 @@ impl Compactor {
                         }
                     });
                 let (vec_new_ss_table, vec_new_scope): (Vec<SSTable>, Vec<Scope>) =
-                    (future::try_join_all(ss_table_futures).await?: Vec<(SSTable, Scope)>)
+                        (future::try_join_all(ss_table_futures).await?: Vec<(SSTable, Scope)>)
                     .into_iter()
                     .unzip();
 

@@ -7,7 +7,9 @@ use bytes::Bytes;
 use itertools::Itertools;
 use parking_lot::Mutex;
 use skiplist::SkipMap;
- use crate::kernel::lsm::log::{LogLoader, LogLoaderInner};
+use crate::kernel::io::IoWriter;
+use crate::kernel::lsm::block::{Entry, Value};
+use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, Sequence};
 
@@ -76,17 +78,19 @@ struct TableInner {
     ///
     /// 用于异常停机时MemTable的恢复
     /// 同时当Level 0的SSTable异常时，可以尝试恢复
-    log_loader: LogLoader
+    log_loader: LogLoader,
+    log_writer: (LogWriter<Box<dyn IoWriter>>, i64),
 }
 
 impl MemTable {
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        let (log_loader, reload_data) = LogLoader::reload(
+        let (log_loader, reload_data, log_gen) = LogLoader::reload(
             config.path(),
-            DEFAULT_WAL_PATH,
-            config.wal_io_type
+            (DEFAULT_WAL_PATH, None),
+            config.wal_io_type,
+            Self::key_value_decode
         )?;
-
+        let log_writer = (log_loader.writer(log_gen)?, log_gen);
         // Q: 为什么INIT_SEQ作为Seq id?
         // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
         // 因此不会影响Version的读取顺序
@@ -102,6 +106,7 @@ impl MemTable {
                 _mem: mem_map,
                 _immut: None,
                 log_loader,
+                log_writer,
             }),
             tx_count: AtomicUsize::new(0),
         })
@@ -117,12 +122,13 @@ impl MemTable {
         let (key, value) = data.clone();
         let mut inner = self.inner.lock();
 
-        inner.log_loader.add_record(data)?;
+        let _ = inner.log_writer.0.add_record(&data_to_bytes(data)?)?;
         let _ = inner._mem.insert(InternalKey::new(key), value);
 
         Ok(inner._mem.len())
     }
 
+    /// Tips: 当数据在插入mem_table中停机，则不会存入日志中
     pub(crate) fn insert_batch_data(
         &self,
         vec_data: Vec<KeyValue>,
@@ -130,11 +136,12 @@ impl MemTable {
     ) -> Result<usize> {
         let mut inner = self.inner.lock();
 
+        let mut buf = Vec::new();
         for (key, value) in vec_data {
-            inner.log_loader.add_record((key.clone(), value.clone()))?;
+            buf.append(&mut data_to_bytes((key.clone(), value.clone()))?);
             let _ = inner._mem.insert(InternalKey::new_with_seq(key, seq_id), value);
         }
-        inner.log_loader.flush()?;
+        let _ = inner.log_writer.0.add_record(&buf)?;
 
         Ok(inner._mem.len())
     }
@@ -147,8 +154,8 @@ impl MemTable {
         self.inner.lock()._mem.len()
     }
 
-    pub(crate) fn log_loader_inner(&self) -> LogLoaderInner {
-        self.inner.lock().log_loader.clone_inner()
+    pub(crate) fn log_loader_clone(&self) -> LogLoader {
+        self.inner.lock().log_loader.clone()
     }
 
     /// MemTable将数据弹出并转移到immutable中  (弹出数据为有序的)
@@ -174,10 +181,12 @@ impl MemTable {
 
                     vec_data.reverse();
 
-                    inner._immut = Some(mem::replace(
-                        &mut inner._mem, SkipMap::new()
-                    ));
-                    let old_gen = inner.log_loader.new_log(Gen::create())?;
+                    inner._immut = Some(mem::replace(&mut inner._mem, SkipMap::new()));
+
+                    let new_gen = Gen::create();
+                    let new_writer = (inner.log_loader.writer(new_gen)?, new_gen);
+                    let (mut old_writer, old_gen) = mem::replace(&mut inner.log_writer, new_writer);
+                    old_writer.flush()?;
 
                     Ok(Some((old_gen, vec_data)))
                 } else {
@@ -222,6 +231,16 @@ impl MemTable {
             })
             .flatten()
     }
+
+    pub(crate) fn key_value_decode(buf: &mut Vec<u8>) -> Result<(Bytes, Option<Bytes>)> {
+        Entry::<Value>::decode(&mut buf.as_slice())
+            .map(|entry| (entry.key, entry.item.bytes))
+    }
+}
+
+pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
+    let (key, value) = data;
+    Entry::new(0, key.len(), key, Value::from(value)).encode()
 }
 
 #[cfg(test)]
