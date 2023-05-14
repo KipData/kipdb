@@ -135,8 +135,6 @@ pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
     ss_table_loader: Arc<RwLock<SSTableLoader>>,
     sst_factory: Arc<IoFactory>,
-    /// 用于Drop时通知Cleaner drop
-    _cleaner_tx: UnboundedSender<CleanTag>,
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -163,7 +161,7 @@ pub(crate) struct Version {
     pub(crate) block_cache: Arc<BlockCache>,
     /// 清除信号发送器
     /// Drop时通知Cleaner进行删除
-    clean_sender: UnboundedSender<CleanTag>
+    clean_tx: UnboundedSender<CleanTag>
 }
 
 impl VersionStatus {
@@ -204,19 +202,19 @@ impl VersionStatus {
             |bytes| Ok(bincode::deserialize::<VersionEdit>(bytes)?)
         )?;
 
-        let (tag_sender, tag_rev) = unbounded_channel();
+        let (tag_tx, tag_rx) = unbounded_channel();
         let version = Arc::new(
             Version::load_from_log(
                 vec_log,
                 &ss_table_loader,
                 &block_cache,
-                tag_sender.clone()
+                tag_tx
             ).await?
         );
 
         let mut cleaner = Cleaner::new(
             &ss_table_loader,
-            tag_rev
+            tag_rx
         );
 
         let _ignore = tokio::spawn(async move {
@@ -229,7 +227,6 @@ impl VersionStatus {
             inner: RwLock::new(VersionInner { version, ver_log_writer }),
             ss_table_loader,
             sst_factory,
-            _cleaner_tx: tag_sender,
         })
     }
 
@@ -302,7 +299,7 @@ impl Version {
     fn new(
         ss_table_loader: &Arc<RwLock<SSTableLoader>>,
         block_cache: &Arc<BlockCache>,
-        clean_sender: UnboundedSender<CleanTag>,
+        clean_tx: UnboundedSender<CleanTag>,
     ) -> Self {
         Self {
             version_num: 0,
@@ -310,7 +307,7 @@ impl Version {
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
-            clean_sender,
+            clean_tx,
         }
     }
 
@@ -319,12 +316,12 @@ impl Version {
         vec_log: Vec<VersionEdit>,
         ss_table_loader: &Arc<RwLock<SSTableLoader>>,
         block_cache: &Arc<BlockCache>,
-        sender: UnboundedSender<CleanTag>
+        tag_tx: UnboundedSender<CleanTag>
     ) -> Result<Self>{
         let mut version = Self::new(
             ss_table_loader,
             block_cache,
-            sender,
+            tag_tx,
         );
 
         version.apply(vec_log, true).await?;
@@ -404,7 +401,7 @@ impl Version {
         }
 
         self.version_num += 1;
-        self.clean_sender.send(CleanTag::Add(self.version_num, del_gens))?;
+        self.clean_tx.send(CleanTag::Add(self.version_num, del_gens))?;
         Ok(())
     }
 
@@ -564,8 +561,8 @@ impl VersionMeta {
 impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
-        if self.clean_sender.send(CleanTag::Clean(self.version_num)).is_err() {
-            error!("[Cleaner][clean][SSTable: {}]: Channel Close!", self.version_num);
+        if self.clean_tx.send(CleanTag::Clean(self.version_num)).is_err() {
+            error!("[Cleaner][clean][Version: {}]: Channel Close!", self.version_num);
         }
     }
 }

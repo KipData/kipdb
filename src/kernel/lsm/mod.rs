@@ -11,7 +11,7 @@ use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::lsm::compactor::{CompactTask, LEVEL_0, MergeShardingVec};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
-use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue, MemTable};
+use crate::kernel::lsm::mem_table::{key_value_bytes_len, logs_decode, KeyValue};
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::KernelError;
@@ -83,15 +83,9 @@ impl SSTableLoader {
                         "[LSMStore][Load SSTable: {}][try to reload with wal]: {:?}",
                         gen, err
                     );
-                    let mut reload_data = LogLoader::load(
-                        &self.wal,
-                        *gen,
-                        MemTable::key_value_decode
-                    )?.into_iter()
-                        .rev()
-                        .unique_by(|(key, _)| key.clone())
-                        .collect_vec();
-                    reload_data.sort_by_key(|(key, _)| key.clone());
+                    let reload_data = logs_decode(
+                        self.wal.load(*gen, |bytes| Ok(bytes.clone()))?
+                    )?.collect_vec();
 
                     SSTable::create_for_mem_table(
                         &self.config,

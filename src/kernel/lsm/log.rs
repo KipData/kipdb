@@ -85,7 +85,8 @@ impl LogLoader {
         let mut vec_data = Vec::new();
         let mut buf = vec![0; 128];
 
-        while reader.read(&mut buf)? > 0 {
+        // 当数据排列有误时仅恢复已正常读取的数据
+        while reader.read(&mut buf).unwrap_or(0) > 0 {
             vec_data.push(fn_decode(&mut buf)?);
         }
 

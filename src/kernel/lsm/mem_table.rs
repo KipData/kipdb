@@ -1,8 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::Bound;
+use std::io::Cursor;
 use std::mem;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Acquire;
+use std::vec::IntoIter;
 use bytes::Bytes;
 use itertools::Itertools;
 use parking_lot::Mutex;
@@ -84,20 +86,18 @@ struct TableInner {
 
 impl MemTable {
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        let (log_loader, reload_data, log_gen) = LogLoader::reload(
+        let (log_loader, log_bytes, log_gen) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, None),
             config.wal_io_type,
-            Self::key_value_decode
+            |bytes| Ok(bytes.clone())
         )?;
         let log_writer = (log_loader.writer(log_gen)?, log_gen);
         // Q: 为什么INIT_SEQ作为Seq id?
         // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
         // 因此不会影响Version的读取顺序
         let mem_map = MemMap::from_iter(
-            reload_data.into_iter()
-                .rev()
-                .unique_by(|(key, _)| key.clone())
+            logs_decode(log_bytes)?
                 .map(|(key, value)| (InternalKey::new_with_seq(key, 0), value))
         );
 
@@ -226,16 +226,25 @@ impl MemTable {
     fn find_(internal_key: &InternalKey, mem_map: &MemMap) -> Option<Bytes> {
         mem_map.upper_bound(Bound::Included(internal_key))
             .and_then(|(intern_key, value)| {
-                (internal_key.get_key() == &intern_key.key)
-                    .then(|| value.clone())
+                (internal_key.get_key() == &intern_key.key).then(|| value.clone())
             })
             .flatten()
     }
+}
 
-    pub(crate) fn key_value_decode(buf: &mut Vec<u8>) -> Result<(Bytes, Option<Bytes>)> {
-        Entry::<Value>::decode(&mut buf.as_slice())
-            .map(|entry| (entry.key, entry.item.bytes))
-    }
+pub(crate) fn logs_decode(log_bytes: Vec<Vec<u8>>) -> Result<IntoIter<(Bytes, Option<Bytes>)>> {
+    let flatten_bytes = log_bytes.into_iter()
+        .flatten()
+        .collect_vec();
+    Entry::<Value>::batch_decode(&mut Cursor::new(flatten_bytes))
+        .map(|vec| {
+            vec.into_iter()
+                .map(|(_, Entry { key, item, .. })| (key, item.bytes))
+                .rev()
+                .unique_by(|(key, _)| key.clone())
+                .sorted_by_key(|(key, _)| key.clone())
+        })
+
 }
 
 pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
