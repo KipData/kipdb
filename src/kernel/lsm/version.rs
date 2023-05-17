@@ -1,5 +1,4 @@
 use std::collections::hash_map::RandomState;
-use std::collections::HashSet;
 use std::sync::Arc;
 use bytes::Bytes;
 use itertools::Itertools;
@@ -38,6 +37,12 @@ pub(crate) enum VersionEdit {
 enum CleanTag {
     Clean(u64),
     Add(u64, Vec<i64>)
+}
+
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+enum EditType {
+    Add = 0,
+    Del = 1
 }
 
 /// SSTable的文件删除器
@@ -271,7 +276,7 @@ impl VersionStatus {
         {
             let _ = inner.ver_log_writer.add_record(&bytes)?;
         }
-        new_version.apply(vec_version_edit, false).await?;
+        new_version.apply(vec_version_edit).await?;
         inner.version = Arc::new(new_version);
 
         Ok(())
@@ -324,7 +329,7 @@ impl Version {
             tag_tx,
         );
 
-        version.apply(vec_log, true).await?;
+        version.apply(vec_log).await?;
         version_display(&version, "load_from_log");
 
         Ok(version)
@@ -337,101 +342,48 @@ impl Version {
     /// 也就是可能存在一次Version的冗余SSTable
     /// 可能是个确定，但是Minor Compactor比较起来更加频繁，也就是大多数情况不会冗余，因此我觉得影响较小
     /// 也可以算作是一种Major Compaction异常时的备份？
-    async fn apply(&mut self, vec_version_edit: Vec<VersionEdit>, is_init: bool) -> Result<()> {
+    async fn apply(&mut self, vec_version_edit: Vec<VersionEdit>) -> Result<()> {
         let mut del_gens = vec![];
         let loader = self.ss_tables_loader.read().await;
-        // 初始化时使用gen_set确定最终SSTable的持有状态再进行数据统计处理
         // 避免日志重溯时对最终状态不存在的SSTable进行数据统计处理
         // 导致SSTableMap不存在此SSTable而抛出`KvsError::SSTableLostError`
-        let mut gen_set = HashSet::new();
+        let mut vec_statistics_gen = Vec::new();
 
         for version_edit in vec_version_edit {
             match version_edit {
                 VersionEdit::DeleteFile((mut vec_gen, level)) => {
-                    if !is_init {
-                        Self::apply_del_on_running(
-                            &mut self.meta_data,
-                            &loader,
-                            &vec_gen
-                        ).await?;
-                    }
-
-                    for gen in vec_gen.iter() {
-                        let _ignore = gen_set.remove(gen);
+                    for gen in vec_gen.clone() {
+                        vec_statistics_gen.push((EditType::Del, gen));
                     }
                     self.level_slice[level]
                         .retain(|scope| !vec_gen.contains(&scope.get_gen()));
                     del_gens.append(&mut vec_gen);
                 }
                 VersionEdit::NewFile((vec_scope, level), index) => {
-                    let vec_gen = Self::map_gen(&vec_scope);
-
-                    if !is_init {
-                        Self::apply_add(
-                            &mut self.meta_data,
-                            &loader,
-                            &vec_gen
-                        ).await?;
-                    }
-                    for gen in vec_gen.iter() {
-                        let _ignore = gen_set.insert(*gen);
+                    for gen in vec_scope.iter().map(Scope::get_gen) {
+                        vec_statistics_gen.push((EditType::Add, gen));
                     }
                     // Level 0中的SSTable绝对是以gen为优先级
                     // Level N中则不以gen为顺序，此处对gen排序是因为单次NewFile中的gen肯定是有序的
+                    let scope_iter = vec_scope
+                        .into_iter()
+                        .sorted_by_key(Scope::get_gen);
                     if level == LEVEL_0 {
-                        for scope in vec_scope.into_iter().sorted_by_key(Scope::get_gen) {
+                        for scope in scope_iter {
                             self.level_slice[level].push(scope);
                         }
                     } else {
-                        for scope in vec_scope.into_iter().sorted_by_key(Scope::get_gen).rev() {
+                        for scope in scope_iter.rev() {
                             self.level_slice[level].insert(index, scope);
                         }
                     }
                 }
             }
         }
-        // 在初始化时进行统计数据累加
-        // 注意与运行时统计数据处理互斥
-        if is_init {
-            Self::apply_add(
-                &mut self.meta_data,
-                &loader,
-                &Vec::from_iter(gen_set)
-            ).await?;
-        }
 
+        self.meta_data.statistical_process(&loader, vec_statistics_gen)?;
         self.version_num += 1;
         self.clean_tx.send(CleanTag::Add(self.version_num, del_gens))?;
-        Ok(())
-    }
-
-    fn map_gen(vec_gen: &[Scope]) -> Vec<i64> {
-        vec_gen.iter()
-            .map(Scope::get_gen)
-            .collect_vec()
-    }
-
-    async fn apply_add(meta_data: &mut VersionMeta, ss_table_loader: &SSTableLoader, vec_gen: &[i64]) -> Result<()>  {
-        meta_data.statistical_process(
-            ss_table_loader,
-            vec_gen,
-            |meta_data, ss_table| {
-                meta_data.size_of_disk += ss_table.get_size_of_disk();
-                meta_data.len += ss_table.len();
-            }
-        ).await?;
-        Ok(())
-    }
-
-    async fn apply_del_on_running(meta_data: &mut VersionMeta, ss_table_loader: &SSTableLoader, vec_gen: &[i64]) -> Result<()> {
-        meta_data.statistical_process(
-            ss_table_loader,
-            vec_gen,
-            |meta_data, ss_table| {
-                meta_data.size_of_disk -= ss_table.get_size_of_disk();
-                meta_data.len -= ss_table.len();
-            }
-        ).await?;
         Ok(())
     }
 
@@ -540,18 +492,28 @@ impl Version {
 
 impl VersionMeta {
     // MetaData对SSTable统计数据处理
-    async fn statistical_process<F>(
+    fn statistical_process(
         &mut self,
         ss_table_loader: &SSTableLoader,
-        vec_gen: &[i64],
-        fn_process: F
-    ) -> Result<()>
-        where F: Fn(&mut VersionMeta, &SSTable)
-    {
-        for gen in vec_gen.iter() {
-            let ss_table = ss_table_loader.get(*gen)
-                .ok_or_else(|| SSTableLost)?;
-            fn_process(self, &ss_table);
+        vec_statistics_gen: Vec<(EditType, i64)>
+    ) -> Result<()> {
+        for (event_type, gen) in vec_statistics_gen
+            .into_iter()
+            .sorted_by_key(|(edit_type, _)| *edit_type)
+        {
+            let (size_of_disk, len) = ss_table_loader.get(gen)
+                .ok_or_else(|| SSTableLost)
+                .map(|ss_table| (ss_table.get_size_of_disk(), ss_table.len()))?;
+            match event_type {
+                EditType::Add => {
+                    self.size_of_disk += size_of_disk;
+                    self.len += len;
+                }
+                EditType::Del => {
+                    self.size_of_disk -= size_of_disk;
+                    self.len -= len;
+                }
+            }
         }
 
         Ok(())

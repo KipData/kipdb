@@ -189,14 +189,16 @@ impl<W: Write> LogWriter<W> {
     fn emit_record(&mut self, t: RecordType, data: &[u8], len: usize) -> Result<usize> {
         let crc = crc32fast::hash(&data[0..len]);
 
-        let mut s = 0;
-        s += self.dst.write(&crc.encode_fixed_vec())?;
-        s += self.dst.write(&(len as u32).encode_fixed_vec())?;
-        s += self.dst.write(&[t as u8])?;
-        s += self.dst.write(&data[0..len])?;
+        let mut header_bytes = crc.encode_fixed_vec();
+        header_bytes.append(&mut (len as u32).encode_fixed_vec());
+        header_bytes.append(&mut vec![t as u8]);
 
-        self.current_block_offset += s;
-        Ok(s)
+        let mut offset = 0;
+        offset += self.dst.write(&header_bytes)?;
+        offset += self.dst.write(&data[0..len])?;
+
+        self.current_block_offset += offset;
+        Ok(offset)
     }
 
     #[allow(dead_code)]
