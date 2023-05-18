@@ -46,7 +46,7 @@ impl<'a> LevelIter<'a> {
     }
 
     async fn get_ss_table_ptr(version: &Version, level: usize, offset: usize) -> Result<InnerPtr<SSTable>> {
-        let ss_table = version.get_ss_table(level, offset).await
+        let ss_table = version.get_ss_table(level, offset)
             .ok_or(KernelError::DataEmpty)?;
 
         Ok(InnerPtr(Box::leak(Box::new(ss_table)).into()))
@@ -227,7 +227,7 @@ mod tests {
                 VersionEdit::NewFile((vec![scope_1, scope_2], 1),0)
             ];
 
-            ver_status.insert_vec_ss_table(vec![ss_table_1, ss_table_2]).await?;
+            ver_status.insert_vec_ss_table(vec![ss_table_1, ss_table_2])?;
             ver_status.log_and_apply(vec_edit).await?;
 
             let version = ver_status.current().await;

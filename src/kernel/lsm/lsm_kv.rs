@@ -136,7 +136,7 @@ impl KVStore for LsmStore {
         }
 
         if let Some(value) = self.current_version().await
-            .find_data_for_ss_tables(key).await?
+            .find_data_for_ss_tables(key)?
         {
             return Ok(Some(value));
         }

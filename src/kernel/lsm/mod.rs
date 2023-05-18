@@ -66,7 +66,7 @@ impl SSTableLoader {
         Ok(SSTableLoader { inner, factory, config, wal })
     }
 
-    pub(crate) fn insert(&mut self, ss_table: SSTable) -> Option<SSTable> {
+    pub(crate) fn insert(&self, ss_table: SSTable) -> Option<SSTable> {
         self.inner.put(ss_table.get_gen(), ss_table)
     }
 
@@ -104,7 +104,7 @@ impl SSTableLoader {
             .ok()
     }
 
-    pub(crate) fn remove(&mut self, gen: &i64) -> Option<SSTable> {
+    pub(crate) fn remove(&self, gen: &i64) -> Option<SSTable> {
         self.inner.remove(gen)
     }
 
@@ -257,7 +257,7 @@ mod tests {
             0,
             IoType::Direct
         )?;
-        let mut sst_loader = SSTableLoader::new(
+        let sst_loader = SSTableLoader::new(
             config,
             sst_factory.clone(),
             log_loader.clone()

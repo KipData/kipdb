@@ -47,7 +47,7 @@ impl Compactor {
     }
 
     fn sst_factory(&self) -> &IoFactory {
-        self.store_inner.ver_status.get_sst_factory_ref()
+        &self.store_inner.ver_status.sst_factory
     }
 
     /// 检查并进行压缩 （默认为 异步、被动 的Lazy压缩）
@@ -90,7 +90,7 @@ impl Compactor {
                 IoType::Direct
             )?;
 
-            self.ver_status().insert_vec_ss_table(vec![ss_table]).await?;
+            self.ver_status().insert_vec_ss_table(vec![ss_table])?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
@@ -147,7 +147,7 @@ impl Compactor {
                     .unzip();
 
                 self.ver_status()
-                    .insert_vec_ss_table(vec_new_ss_table).await?;
+                    .insert_vec_ss_table(vec_new_ss_table)?;
                 vec_ver_edit.append(&mut vec![
                     VersionEdit::NewFile((vec_new_scope, level + 1), index),
                     VersionEdit::DeleteFile((del_gens_l, level)),
@@ -175,12 +175,12 @@ impl Compactor {
         // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
         if let Some((mut ss_tables_l, scopes_l)) =
-            version.first_ss_tables(level, major_select_file_size).await
+            version.first_ss_tables(level, major_select_file_size)
         {
             let start = Instant::now();
             let scope_l = Scope::fusion(&scopes_l)?;
             // 获取下一级中有重复键值范围的SSTable
-            let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l).await;
+            let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l);
             let index = SSTable::find_index_with_level(
                 ss_tables_ll.first().map(SSTable::get_gen),
                 &version,
@@ -190,7 +190,7 @@ impl Compactor {
             // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
             if level == LEVEL_0 {
                 ss_tables_l.append(
-                    &mut version.get_meet_scope_ss_tables(level, &scope_l).await
+                    &mut version.get_meet_scope_ss_tables(level, &scope_l)
                 )
             }
 
@@ -201,7 +201,7 @@ impl Compactor {
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
             let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll).await,
+                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll),
                 Err(_) => ss_tables_l
             }.into_iter()
                 .unique_by(SSTable::get_gen)

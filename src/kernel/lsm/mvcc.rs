@@ -26,7 +26,7 @@ impl Transaction {
     /// 通过Key获取对应的Value
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
-    pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         if let Some(value) = self.writer_buf.get(key).and_then(Option::clone) {
             return Ok(Some(value));
         }
@@ -35,7 +35,7 @@ impl Transaction {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.version.find_data_for_ss_tables(key).await? {
+        if let Some(value) = self.version.find_data_for_ss_tables(key)? {
             return Ok(Some(value));
         }
 
@@ -48,8 +48,8 @@ impl Transaction {
         );
     }
 
-    pub async fn remove(&mut self, key: &[u8]) -> Result<()> {
-        let _ = self.get(key).await?
+    pub fn remove(&mut self, key: &[u8]) -> Result<()> {
+        let _ = self.get(key)?
             .ok_or(KernelError::KeyNotFound)?;
 
         let _ignore = self.writer_buf
@@ -58,7 +58,7 @@ impl Transaction {
         Ok(())
     }
 
-    pub async fn commit(self) -> Result<()> {
+    pub fn commit(self) -> Result<()> {
         let batch_data = self.writer_buf.iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect_vec();
@@ -126,20 +126,20 @@ mod tests {
                 transaction.set(&vec_kv[i].0, vec_kv[i].1.clone());
             }
 
-            transaction.remove(&vec_kv[times - 1].0).await?;
+            transaction.remove(&vec_kv[times - 1].0)?;
 
             for i in 0..times - 1 {
-                assert_eq!(transaction.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
+                assert_eq!(transaction.get(&vec_kv[i].0)?, Some(vec_kv[i].1.clone()));
             }
 
-            assert_eq!(transaction.get(&vec_kv[times - 1].0).await?, None);
+            assert_eq!(transaction.get(&vec_kv[times - 1].0)?, None);
 
             // 提交前不应该读取到数据
             for i in 0..times {
                 assert_eq!(kv_store.get(&vec_kv[i].0).await?, None);
             }
 
-            transaction.commit().await?;
+            transaction.commit()?;
 
             for i in 0..times - 1 {
                 assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
