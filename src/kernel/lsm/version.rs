@@ -252,11 +252,15 @@ impl VersionStatus {
         let mut inner = self.inner.write().await;
         version_display(&new_version, "log_and_apply");
 
-        for bytes in vec_version_edit.iter()
-            .filter_map(|edit| bincode::serialize(&edit).ok())
-        {
-            let _ = inner.ver_log_writer.add_record(&bytes)?;
+        let log_bytes=vec_version_edit.iter()
+            .filter_map(|edit|bincode::serialize(&edit).ok())
+            .flatten()
+            .collect_vec();
+
+        if !log_bytes.is_empty(){
+            let _ =inner.ver_log_writer.add_record(&log_bytes)?;
         }
+
         new_version.apply(vec_version_edit)?;
         inner.version = Arc::new(new_version);
 
