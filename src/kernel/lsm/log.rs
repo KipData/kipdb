@@ -3,12 +3,6 @@ use std::cmp::min;
 /// https://github.com/dermesser/leveldb-rs/blob/master/src/log.rs
 /// The MIT License (MIT)
 
-/// A log consists of a number of blocks.
-/// A block consists of a number of records and an optional trailer (filler).
-/// A record is a bytestring: [checksum: uint32, length: uint16, type: uint8, data: [u8]]
-/// checksum is the crc32 sum of type and data; type is one of RecordType::{Full/First/Middle/Last}
-
-
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;

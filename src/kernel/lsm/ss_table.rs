@@ -313,7 +313,7 @@ impl SSTable {
             size_of_disk: (data_bytes.len() + index_bytes.len() + meta_bytes.len() + TABLE_FOOTER_SIZE) as u32,
         };
         let mut writer = io_factory.writer(gen, io_type)?;
-        let _ = writer.write(
+        writer.write_all(
             data_bytes.into_iter()
                 .chain(index_bytes)
                 .chain(meta_bytes)

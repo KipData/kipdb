@@ -114,6 +114,18 @@ impl SSTableLoader {
     }
 
     pub(crate) fn clean(&self, gen: i64) -> Result<()> {
+        let _ = self.remove(&gen);
+        self.clean_only_sst(gen)?;
+        self.clean_only_wal(gen)
+
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clean_only_wal(&self, gen: i64) -> Result<()> {
+        self.wal.clean(gen)
+    }
+
+    pub(crate) fn clean_only_sst(&self, gen: i64) -> Result<()> {
         self.factory.clean(gen)
     }
 }
@@ -277,7 +289,7 @@ mod tests {
         // 模拟SSTable异常而使用Wal进行恢复的情况
         assert!(sst_loader.remove(&1).is_some());
         assert!(sst_loader.is_emtpy());
-        sst_loader.clean(1).unwrap();
+        sst_loader.clean_only_sst(1).unwrap();
         assert!(!sst_factory.exists(1).unwrap());
 
         let ss_table_backup = sst_loader.get(1).unwrap();

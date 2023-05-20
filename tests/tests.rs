@@ -209,8 +209,10 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
             let kv_store = T::open(temp_dir.path()).await?;
             for key_id in 0..1000 {
                 let key = format!("key{}", key_id);
-                assert_eq!(kv_store.get(&encode_key(key.as_str())?).await?,
-                           Some(Bytes::from(encode_key(format!("{}", iter).as_str())?)));
+                assert_eq!(
+                    kv_store.get(&encode_key(key.as_str())?).await?,
+                    Some(Bytes::from(encode_key(format!("{}", iter).as_str())?))
+                );
             }
             return Ok(());
         }

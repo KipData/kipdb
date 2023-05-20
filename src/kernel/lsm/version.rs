@@ -15,7 +15,6 @@ use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::KernelError::SSTableLost;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 
@@ -105,7 +104,6 @@ impl Cleaner {
                 let ss_table_loader = &self.ss_table_loader;
                 // 当此Version处于第一位时，直接将其删除
                 for gen in vec_gen {
-                    let _ignore = ss_table_loader.remove(&gen);
                     if let Err(err) = ss_table_loader.clean(gen) {
                         error!("[Cleaner][clean][SSTable: {}]: Remove Error!: {:?}", gen, err);
                     };
@@ -479,17 +477,19 @@ impl VersionMeta {
             .into_iter()
             .sorted_by_key(|(edit_type, _)| *edit_type)
         {
-            let (size_of_disk, len) = ss_table_loader.get(gen)
-                .ok_or_else(|| SSTableLost)
-                .map(|ss_table| (ss_table.get_size_of_disk(), ss_table.len()))?;
-            match event_type {
-                EditType::Add => {
-                    self.size_of_disk += size_of_disk;
-                    self.len += len;
-                }
-                EditType::Del => {
-                    self.size_of_disk -= size_of_disk;
-                    self.len -= len;
+            // FIXME: 此处通过读取SSTable获取其统计信息，这会导致若是Cleaner删除SSTable后会丢失此统计数据
+            if let Some((size_of_disk, len)) = ss_table_loader.get(gen)
+                .map(|ss_table| (ss_table.get_size_of_disk(), ss_table.len()))
+            {
+                match event_type {
+                    EditType::Add => {
+                        self.size_of_disk += size_of_disk;
+                        self.len += len;
+                    }
+                    EditType::Del => {
+                        self.size_of_disk -= size_of_disk;
+                        self.len -= len;
+                    }
                 }
             }
         }
