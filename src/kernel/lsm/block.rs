@@ -2,9 +2,9 @@ use std::cmp::min;
 use std::io::{Cursor, Read, Write};
 use std::mem;
 use bytes::{Buf, BufMut, Bytes};
+use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
 use itertools::Itertools;
 use lz4::Decoder;
-use varuint::{ReadVarint, WriteVarint};
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
@@ -78,29 +78,31 @@ impl<T> Entry<T> where T: BlockItem {
         Ok(buf)
     }
 
-    pub(crate) fn decode_with_cursor(cursor: &mut Cursor<Vec<u8>>) -> Result<Vec<(usize, Self)>> {
+    pub(crate) fn batch_decode(cursor: &mut Cursor<Vec<u8>>) -> Result<Vec<(usize, Self)>> {
         let mut vec_entry = Vec::new();
         let mut index = 0;
 
         while !cursor.is_empty() {
-            let unshared_len = ReadVarint::<u32>::read_varint(cursor)? as usize;
-            let shared_len = ReadVarint::<u32>::read_varint(cursor)? as usize;
-
-            let mut bytes = vec![0u8; unshared_len];
-            let _ = cursor.read(&mut bytes)?;
-
-            let item = T::decode(cursor)?;
-
-            vec_entry.push((index, Self {
-                unshared_len,
-                shared_len,
-                key:  Bytes::from(bytes),
-                item,
-            }));
+            vec_entry.push((index, Self::decode(cursor)?));
             index += 1;
         }
 
         Ok(vec_entry)
+    }
+
+    pub(crate) fn decode<R:Read>(reader: &mut R) -> Result<Entry<T>> {
+        let unshared_len = reader.read_varint::<u32>()? as usize;
+        let shared_len = reader.read_varint::<u32>()? as usize;
+
+        let mut bytes = vec![0u8; unshared_len];
+        let _ = reader.read(&mut bytes)?;
+
+        Ok(Self {
+            unshared_len,
+            shared_len,
+            key: Bytes::from(bytes),
+            item: T::decode(reader)?,
+        })
     }
 }
 
@@ -152,7 +154,7 @@ pub(crate) trait BlockItem: Sized + Clone {
 
 impl BlockItem for Value {
     fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read + ?Sized {
-        let value_len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+        let value_len = reader.read_varint::<u32>()? as usize;
 
         let bytes = (value_len > 0)
             .then(|| {
@@ -180,8 +182,8 @@ impl BlockItem for Value {
 
 impl BlockItem for Index {
     fn decode<T>(mut reader: &mut T) -> Result<Self> where T: Read + ?Sized {
-        let offset = ReadVarint::<u32>::read_varint(&mut reader)?;
-        let len = ReadVarint::<u32>::read_varint(&mut reader)? as usize;
+        let offset = reader.read_varint::<u32>()?;
+        let len = reader.read_varint::<u32>()? as usize;
 
         Ok(Index {
             offset,
@@ -530,15 +532,13 @@ impl<T> Block<T> where T: BlockItem {
     /// 读取Bytes进行Block的反序列化
     pub(crate) fn from_raw(mut buf: Vec<u8>, restart_interval: usize) -> Result<Self> {
         let date_bytes_len = buf.len() - CRC_SIZE;
-        if crc32fast::hash(&buf) == bincode::deserialize::<u32>(
-            &buf[date_bytes_len..]
-        )? {
+        if crc32fast::hash(&buf) == u32::decode_fixed(&buf[date_bytes_len..]) {
             return Err(KernelError::CrcMisMatch)
         }
         buf.truncate(date_bytes_len);
 
         let mut cursor = Cursor::new(buf);
-        let vec_entry = Entry::<T>::decode_with_cursor(&mut cursor)?;
+        let vec_entry = Entry::<T>::batch_decode(&mut cursor)?;
         Ok(Self {
             restart_interval,
             vec_entry
@@ -558,8 +558,7 @@ impl<T> Block<T> where T: BlockItem {
                 .flatten()
                 .collect_vec()
         );
-        let check_crc = crc32fast::hash(&bytes_block);
-        bytes_block.append(&mut bincode::serialize(&check_crc)?);
+        bytes_block.append(&mut crc32fast::hash(&bytes_block).encode_fixed_vec());
 
         Ok(bytes_block)
     }
@@ -645,7 +644,7 @@ mod tests {
             .chain(entry2.encode()?)
             .collect_vec();
 
-        let vec_entry = Entry::decode_with_cursor(&mut Cursor::new(bytes_vec_entry))?;
+        let vec_entry = Entry::batch_decode(&mut Cursor::new(bytes_vec_entry))?;
 
         assert_eq!(vec![(0, entry1), (1, entry2)], vec_entry);
 

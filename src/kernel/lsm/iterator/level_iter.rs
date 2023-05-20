@@ -46,7 +46,7 @@ impl<'a> LevelIter<'a> {
     }
 
     async fn get_ss_table_ptr(version: &Version, level: usize, offset: usize) -> Result<InnerPtr<SSTable>> {
-        let ss_table = version.get_ss_table(level, offset).await
+        let ss_table = version.get_ss_table(level, offset)
             .ok_or(KernelError::DataEmpty)?;
 
         Ok(InnerPtr(Box::leak(Box::new(ss_table)).into()))
@@ -144,18 +144,18 @@ impl Drop for LevelIter<'_> {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;
-    use std::sync::Arc;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::lsm_kv::{Config, DEFAULT_WAL_PATH};
+    use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
     use crate::kernel::Result;
     use crate::kernel::lsm::iterator::{DiskIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
@@ -165,14 +165,12 @@ mod tests {
         tokio_test::block_on(async move {
             let config = Config::new(temp_dir.into_path());
 
-            let (wal, _) = LogLoader::reload(
-                config.clone(),
-                DEFAULT_WAL_PATH,
-                FileExtension::Log,
-                IoType::Direct
+            let (wal, _, _) = LogLoader::reload(
+                config.path(),
+                (DEFAULT_WAL_PATH, Some(1)),
+                IoType::Direct,
+                |_| Ok(())
             )?;
-
-            let wal = Arc::new(wal);
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
@@ -207,14 +205,16 @@ mod tests {
                 1,
                 &sst_factory,
                 slice_1.to_vec(),
-                1
+                1,
+                IoType::Direct
             )?;
             let (ss_table_2, scope_2) = SSTable::create_for_mem_table(
                 &config,
                 2,
                 &sst_factory,
                 slice_2.to_vec(),
-                1
+                1,
+                IoType::Direct
             )?;
             let cache = ShardingLruCache::new(
                 config.block_cache_size,
@@ -227,7 +227,7 @@ mod tests {
                 VersionEdit::NewFile((vec![scope_1, scope_2], 1),0)
             ];
 
-            ver_status.insert_vec_ss_table(vec![ss_table_1, ss_table_2]).await?;
+            ver_status.insert_vec_ss_table(vec![ss_table_1, ss_table_2])?;
             ver_status.log_and_apply(vec_edit).await?;
 
             let version = ver_status.current().await;

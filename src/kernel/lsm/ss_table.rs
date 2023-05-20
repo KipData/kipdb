@@ -274,7 +274,8 @@ impl SSTable {
         gen: i64,
         io_factory: &IoFactory,
         vec_mem_data: Vec<KeyValue>,
-        level: usize
+        level: usize,
+        io_type: IoType
     ) -> Result<(SSTable, Scope)>{
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_data(gen, &vec_mem_data)?;
@@ -311,8 +312,8 @@ impl SSTable {
             meta_len: meta_bytes.len() as u32,
             size_of_disk: (data_bytes.len() + index_bytes.len() + meta_bytes.len() + TABLE_FOOTER_SIZE) as u32,
         };
-        let mut writer = io_factory.writer(gen, IoType::Direct)?;
-        let _ = writer.write(
+        let mut writer = io_factory.writer(gen, io_type)?;
+        writer.write_all(
             data_bytes.into_iter()
                 .chain(index_bytes)
                 .chain(meta_bytes)
@@ -320,10 +321,10 @@ impl SSTable {
                 .collect_vec()
                 .as_mut()
         )?;
-        let _ = writer.flush()?;
+        writer.flush()?;
         info!("[SsTable: {}][create_form_index][MetaBlock]: {:?}", gen, meta);
 
-        let reader = Mutex::new(io_factory.reader(gen, IoType::Direct)?);
+        let reader = Mutex::new(io_factory.reader(gen, io_type)?);
         Ok((SSTable {
             inner: Arc::new(
                 SSTableInner {
@@ -353,7 +354,7 @@ mod tests {
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
-    fn test_sstable() -> Result<()> {
+    fn test_ss_table() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let value = Bytes::copy_from_slice(b"If you shed tears when you miss the sun, you also miss the stars.");
@@ -380,7 +381,8 @@ mod tests {
             1,
             &sst_factory,
             vec_data.clone(),
-            0
+            0,
+            IoType::Direct
         )?;
         for i in 0..times {
             assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))

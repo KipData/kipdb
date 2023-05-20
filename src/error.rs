@@ -39,8 +39,6 @@ pub enum KernelError {
     /// 而错误则是内存存在索引却在硬盘中不存在这个数据
     #[fail(display = "WAL log load error")]
     WalLoad,
-    #[fail(display = "Could not found the SSTable")]
-    SSTableLost,
     /// Unexpected command type error.
     /// It indicated a corrupted log or a program bug.
     #[fail(display = "Unexpected command type")]

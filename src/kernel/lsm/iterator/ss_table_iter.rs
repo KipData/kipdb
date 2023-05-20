@@ -94,7 +94,7 @@ mod tests {
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
-    use crate::kernel::io::{FileExtension, IoFactory};
+    use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
@@ -135,7 +135,8 @@ mod tests {
             1,
             &sst_factory,
             vec_data.clone(),
-            0
+            0,
+            IoType::Direct
         )?;
         let cache = ShardingLruCache::new(
             config.block_cache_size,

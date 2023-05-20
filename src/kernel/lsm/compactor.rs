@@ -7,10 +7,10 @@ use itertools::Itertools;
 use tokio::sync::oneshot;
 use tracing::info;
 use crate::KernelError;
-use crate::kernel::io::IoFactory;
+use crate::kernel::io::{IoFactory, IoType};
 use crate::kernel::Result;
 use crate::kernel::lsm::block::BlockCache;
-use crate::kernel::lsm::lsm_kv::{Config, Gen, StoreInner};
+use crate::kernel::lsm::lsm_kv::{Config, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::DiskIter;
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
@@ -47,7 +47,7 @@ impl Compactor {
     }
 
     fn sst_factory(&self) -> &IoFactory {
-        self.store_inner.ver_status.get_sst_factory_ref()
+        &self.store_inner.ver_status.sst_factory
     }
 
     /// 检查并进行压缩 （默认为 异步、被动 的Lazy压缩）
@@ -60,9 +60,8 @@ impl Compactor {
         &mut self,
         option_tx: Option<oneshot::Sender<()>>
     ) -> Result<()> {
-        if let Some(values) = self.mem_table().swap() {
+        if let Some((gen, values)) = self.mem_table().swap()? {
             if !values.is_empty() {
-                let gen = self.switch_wal()?;
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
                 self.minor_compaction(gen, values).await?;
@@ -76,20 +75,6 @@ impl Compactor {
         Ok(())
     }
 
-    /// 创建gen
-    ///
-    /// 需要保证获取到了MemTable的写锁以保证wal在switch时MemTable的数据和Wal不一致(多出几条)
-    /// 当wal配置启用时，使用预先记录的gen作为结果
-    fn switch_wal(&self) -> Result<i64> {
-        let next_gen = Gen::create();
-
-        Ok(if self.config().wal_enable {
-            self.store_inner.wal.switch(next_gen)?
-        } else {
-            next_gen
-        })
-    }
-
     /// 持久化immutable_table为SSTable
     ///
     /// 请注意：vec_values必须是依照key值有序的
@@ -101,10 +86,11 @@ impl Compactor {
                 gen,
                 self.sst_factory(),
                 values,
-                LEVEL_0
+                LEVEL_0,
+                IoType::Direct
             )?;
 
-            self.ver_status().insert_vec_ss_table(vec![ss_table]).await?;
+            self.ver_status().insert_vec_ss_table(vec![ss_table])?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
@@ -150,17 +136,18 @@ impl Compactor {
                                 gen,
                                 self.sst_factory(),
                                 sharding,
-                                level + 1
+                                level + 1,
+                                IoType::Direct
                             )
                         }
                     });
                 let (vec_new_ss_table, vec_new_scope): (Vec<SSTable>, Vec<Scope>) =
-                    (future::try_join_all(ss_table_futures).await?: Vec<(SSTable, Scope)>)
+                        (future::try_join_all(ss_table_futures).await?: Vec<(SSTable, Scope)>)
                     .into_iter()
                     .unzip();
 
                 self.ver_status()
-                    .insert_vec_ss_table(vec_new_ss_table).await?;
+                    .insert_vec_ss_table(vec_new_ss_table)?;
                 vec_ver_edit.append(&mut vec![
                     VersionEdit::NewFile((vec_new_scope, level + 1), index),
                     VersionEdit::DeleteFile((del_gens_l, level)),
@@ -188,12 +175,12 @@ impl Compactor {
         // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
         if let Some((mut ss_tables_l, scopes_l)) =
-            version.first_ss_tables(level, major_select_file_size).await
+            version.first_ss_tables(level, major_select_file_size)
         {
             let start = Instant::now();
             let scope_l = Scope::fusion(&scopes_l)?;
             // 获取下一级中有重复键值范围的SSTable
-            let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l).await;
+            let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l);
             let index = SSTable::find_index_with_level(
                 ss_tables_ll.first().map(SSTable::get_gen),
                 &version,
@@ -203,7 +190,7 @@ impl Compactor {
             // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
             if level == LEVEL_0 {
                 ss_tables_l.append(
-                    &mut version.get_meet_scope_ss_tables(level, &scope_l).await
+                    &mut version.get_meet_scope_ss_tables(level, &scope_l)
                 )
             }
 
@@ -214,7 +201,7 @@ impl Compactor {
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
             let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll).await,
+                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll),
                 Err(_) => ss_tables_l
             }.into_iter()
                 .unique_by(SSTable::get_gen)
@@ -317,7 +304,7 @@ mod tests {
     use std::collections::hash_map::RandomState;
     use bytes::Bytes;
     use tempfile::TempDir;
-    use crate::kernel::io::{FileExtension, IoFactory};
+    use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::Compactor;
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
@@ -348,7 +335,8 @@ mod tests {
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"2"))),
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"31")))
             ],
-            0
+            0,
+            IoType::Direct
         )?;
         let (ss_table_2, _) = SSTable::create_for_mem_table(
             &config,
@@ -358,7 +346,8 @@ mod tests {
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"3"))),
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4")))
             ],
-            0
+            0,
+            IoType::Direct
         )?;
         let (ss_table_3, _) = SSTable::create_for_mem_table(
             &config,
@@ -368,7 +357,8 @@ mod tests {
                 (Bytes::from_static(b"1"), Some(Bytes::from_static(b"11"))),
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"21")))
             ],
-            1
+            1,
+            IoType::Direct
         )?;
         let (ss_table_4, _) = SSTable::create_for_mem_table(
             &config,
@@ -379,7 +369,8 @@ mod tests {
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"41"))),
                 (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5")))
             ],
-            1
+            1,
+            IoType::Direct
         )?;
 
         let (_, vec_data) = &tokio_test::block_on(async move {

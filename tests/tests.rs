@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use bytes::Bytes;
 use tempfile::TempDir;
 use walkdir::WalkDir;
@@ -209,8 +209,10 @@ fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
             let kv_store = T::open(temp_dir.path()).await?;
             for key_id in 0..1000 {
                 let key = format!("key{}", key_id);
-                assert_eq!(kv_store.get(&encode_key(key.as_str())?).await?,
-                           Some(Bytes::from(encode_key(format!("{}", iter).as_str())?)));
+                assert_eq!(
+                    kv_store.get(&encode_key(key.as_str())?).await?,
+                    Some(Bytes::from(encode_key(format!("{}", iter).as_str())?))
+                );
             }
             return Ok(());
         }
@@ -227,6 +229,7 @@ fn test_io() -> Result<()> {
 
     io_type_test(&factory, IoType::Buf)?;
     io_type_test(&factory, IoType::Direct)?;
+    io_type_test(&factory, IoType::Mem)?;
 
     Ok(())
 }
@@ -252,7 +255,14 @@ fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     assert_eq!(len_1, 3);
     assert_eq!(len_2, 3);
 
+    assert_eq!(reader.seek(SeekFrom::Start(2))?, 2);
+    assert_eq!(reader.seek(SeekFrom::End(-1))?, 5);
+    assert_eq!(reader.seek(SeekFrom::Current(-1))?, 4);
+
     assert_eq!(reader.file_size()?, 6);
+    assert!(factory.exists(1)?);
+    factory.clean(1)?;
+    assert!(!factory.exists(1)?);
 
     Ok(())
 }

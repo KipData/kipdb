@@ -1,14 +1,19 @@
 pub(crate) mod buf;
 pub(crate) mod direct;
+mod mem;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fs;
-use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
+use bytes::BytesMut;
+use parking_lot::Mutex;
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
 use crate::kernel::io::direct::{DirectIoReader, DirectIoWriter};
+use crate::kernel::io::mem::{MemIoReader, MemIoWriter};
 use crate::kernel::Result;
+use crate::KernelError;
 
 
 #[derive(Debug, Copy, Clone)]
@@ -34,16 +39,17 @@ impl FileExtension {
     }
 }
 
-#[derive(Debug)]
 pub struct IoFactory {
     dir_path: Arc<PathBuf>,
     extension: Arc<FileExtension>,
+    mem_files: Mutex<HashMap<i64, MemIoWriter>>
 }
 
 #[derive(PartialEq, Copy, Clone, Debug)]
 pub enum IoType {
     Buf,
     Direct,
+    Mem
 }
 
 impl IoFactory {
@@ -55,7 +61,14 @@ impl IoFactory {
 
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoReader::new(dir_path, gen, extension)?),
-            IoType::Direct => Box::new(DirectIoReader::new(dir_path, gen, extension)?)
+            IoType::Direct => Box::new(DirectIoReader::new(dir_path, gen, extension)?),
+            IoType::Mem => {
+                let bytes = self.mem_files.lock()
+                    .get(&gen)
+                    .ok_or(KernelError::FileNotFound)?
+                    .bytes();
+                Box::new(MemIoReader::new(gen, bytes))
+            },
         })
     }
 
@@ -67,17 +80,16 @@ impl IoFactory {
 
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoWriter::new(dir_path, gen, extension)?),
-            IoType::Direct => Box::new(DirectIoWriter::new(dir_path, gen, extension)?)
+            IoType::Direct => Box::new(DirectIoWriter::new(dir_path, gen, extension)?),
+            IoType::Mem => Box::new(self.load_mem_file(gen))
         })
     }
 
-    #[inline]
-    pub fn create_fs(&self, gen: i64) -> Result<File> {
-        Ok(OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .open(self.extension.path_with_gen(&self.dir_path, gen))?)
+    fn load_mem_file(&self, gen: i64) -> MemIoWriter {
+        self.mem_files.lock()
+            .entry(gen)
+            .or_insert_with(|| MemIoWriter::new(BytesMut::new()))
+            .clone()
     }
 
     #[inline]
@@ -87,12 +99,17 @@ impl IoFactory {
         fs::create_dir_all(&path_buf)?;
         let dir_path = Arc::new(path_buf);
         let extension = Arc::new(extension);
+        let mem_files = Mutex::new(HashMap::new());
 
-        Ok(Self { dir_path, extension })
+        Ok(Self { dir_path, extension, mem_files })
     }
 
     #[inline]
     pub fn clean(&self, gen: i64) -> Result<()>{
+        if self.mem_files.lock().remove(&gen).is_some() {
+            return Ok(());
+        }
+
         fs::remove_file(
             self.extension
                 .path_with_gen(&self.dir_path, gen)
@@ -101,11 +118,14 @@ impl IoFactory {
     }
 
     #[inline]
-    pub fn has_gen(&self, gen: i64) -> Result<bool>{
-        Ok(fs::try_exists(
-            self.extension
-                .path_with_gen(&self.dir_path, gen)
-        )?)
+    pub fn exists(&self, gen: i64) -> Result<bool>{
+        if self.mem_files.lock().contains_key(&gen) {
+            return Ok(true);
+        }
+
+        let path = self.extension
+            .path_with_gen(&self.dir_path, gen);
+        Ok(fs::try_exists(path)?)
     }
 }
 

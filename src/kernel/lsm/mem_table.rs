@@ -1,14 +1,21 @@
 use std::cmp::Ordering;
 use std::collections::Bound;
+use std::io::Cursor;
 use std::mem;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Acquire;
+use std::vec::IntoIter;
 use bytes::Bytes;
 use itertools::Itertools;
 use parking_lot::Mutex;
 use skiplist::SkipMap;
+use crate::kernel::io::IoWriter;
+use crate::kernel::lsm::block::{Entry, Value};
+use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::Result;
-use crate::kernel::lsm::lsm_kv::Sequence;
+use crate::kernel::lsm::lsm_kv::{Config, Gen, Sequence};
+
+pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
 /// Value为此Key的Records(Key与seq_id)
 pub(crate) type MemMap = SkipMap<InternalKey, Option<Bytes>>;
@@ -68,17 +75,41 @@ pub(crate) struct MemTable {
 
 struct TableInner {
     _mem: MemMap,
-    _immut: Option<MemMap>
+    _immut: Option<MemMap>,
+    /// WAL载入器
+    ///
+    /// 用于异常停机时MemTable的恢复
+    /// 同时当Level 0的SSTable异常时，可以尝试恢复
+    log_loader: LogLoader,
+    log_writer: (LogWriter<Box<dyn IoWriter>>, i64),
 }
 
 impl MemTable {
-    pub(crate) fn new(mem_map: MemMap) -> Self {
-        MemTable {
+    pub(crate) fn new(config: &Config) -> Result<Self> {
+        let (log_loader, log_bytes, log_gen) = LogLoader::reload(
+            config.path(),
+            (DEFAULT_WAL_PATH, None),
+            config.wal_io_type,
+            |bytes| Ok(mem::replace(bytes, Vec::new()))
+        )?;
+        let log_writer = (log_loader.writer(log_gen)?, log_gen);
+        // Q: 为什么INIT_SEQ作为Seq id?
+        // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
+        // 因此不会影响Version的读取顺序
+        let mem_map = MemMap::from_iter(
+            logs_decode(log_bytes)?
+                .map(|(key, value)| (InternalKey::new_with_seq(key, 0), value))
+        );
+
+        Ok(MemTable {
             inner: Mutex::new(TableInner {
-                _mem: mem_map, _immut: None
+                _mem: mem_map,
+                _immut: None,
+                log_loader,
+                log_writer,
             }),
             tx_count: AtomicUsize::new(0),
-        }
+        })
     }
 
     /// 插入并判断是否溢出
@@ -88,14 +119,16 @@ impl MemTable {
         &self,
         data: KeyValue,
     ) -> Result<usize> {
-        let (key, value) = data;
+        let (key, value) = data.clone();
         let mut inner = self.inner.lock();
 
+        let _ = inner.log_writer.0.add_record(&data_to_bytes(data)?)?;
         let _ = inner._mem.insert(InternalKey::new(key), value);
 
         Ok(inner._mem.len())
     }
 
+    /// Tips: 当数据在插入mem_table中停机，则不会存入日志中
     pub(crate) fn insert_batch_data(
         &self,
         vec_data: Vec<KeyValue>,
@@ -103,9 +136,12 @@ impl MemTable {
     ) -> Result<usize> {
         let mut inner = self.inner.lock();
 
+        let mut buf = Vec::new();
         for (key, value) in vec_data {
+            buf.append(&mut data_to_bytes((key.clone(), value.clone()))?);
             let _ = inner._mem.insert(InternalKey::new_with_seq(key, seq_id), value);
         }
+        let _ = inner.log_writer.0.add_record(&buf)?;
 
         Ok(inner._mem.len())
     }
@@ -118,8 +154,12 @@ impl MemTable {
         self.inner.lock()._mem.len()
     }
 
+    pub(crate) fn log_loader_clone(&self) -> LogLoader {
+        self.inner.lock().log_loader.clone()
+    }
+
     /// MemTable将数据弹出并转移到immutable中  (弹出数据为有序的)
-    pub(crate) fn swap(&self) -> Option<Vec<KeyValue>> {
+    pub(crate) fn swap(&self) -> Result<Option<(i64, Vec<KeyValue>)>> {
         loop {
             if 0 == self.tx_count.load(Acquire) {
                 let mut inner = self.inner.lock();
@@ -131,23 +171,27 @@ impl MemTable {
                 if 0 != self.tx_count.load(Acquire) {
                     continue
                 }
-                return (!inner._mem.is_empty())
-                    .then(|| {
-                        let mut vec_data = inner._mem.iter()
-                            .map(|(k, v)| (k.key.clone(), v.clone()))
-                            // rev以使用最后(最新)的key
-                            .rev()
-                            .unique_by(|(k, _)| k.clone())
-                            .collect_vec();
+                return if !inner._mem.is_empty() {
+                    let mut vec_data = inner._mem.iter()
+                        .map(|(k, v)| (k.key.clone(), v.clone()))
+                        // rev以使用最后(最新)的key
+                        .rev()
+                        .unique_by(|(k, _)| k.clone())
+                        .collect_vec();
 
-                        vec_data.reverse();
+                    vec_data.reverse();
 
-                        inner._immut = Some(mem::replace(
-                            &mut inner._mem, SkipMap::new()
-                        ));
+                    inner._immut = Some(mem::replace(&mut inner._mem, SkipMap::new()));
 
-                        vec_data
-                    });
+                    let new_gen = Gen::create();
+                    let new_writer = (inner.log_loader.writer(new_gen)?, new_gen);
+                    let (mut old_writer, old_gen) = mem::replace(&mut inner.log_writer, new_writer);
+                    old_writer.flush()?;
+
+                    Ok(Some((old_gen, vec_data)))
+                } else {
+                    Ok(None)
+                };
             }
             std::hint::spin_loop();
         }
@@ -182,23 +226,45 @@ impl MemTable {
     fn find_(internal_key: &InternalKey, mem_map: &MemMap) -> Option<Bytes> {
         mem_map.upper_bound(Bound::Included(internal_key))
             .and_then(|(intern_key, value)| {
-                (internal_key.get_key() == &intern_key.key)
-                    .then(|| value.clone())
+                (internal_key.get_key() == &intern_key.key).then(|| value.clone())
             })
             .flatten()
     }
 }
 
+pub(crate) fn logs_decode(log_bytes: Vec<Vec<u8>>) -> Result<IntoIter<(Bytes, Option<Bytes>)>> {
+    let flatten_bytes = log_bytes.into_iter()
+        .flatten()
+        .collect_vec();
+    Entry::<Value>::batch_decode(&mut Cursor::new(flatten_bytes))
+        .map(|vec| {
+            vec.into_iter()
+                .map(|(_, Entry { key, item, .. })| (key, item.bytes))
+                .rev()
+                .unique_by(|(key, _)| key.clone())
+                .sorted_by_key(|(key, _)| key.clone())
+        })
+
+}
+
+pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
+    let (key, value) = data;
+    Entry::new(0, key.len(), key, Value::from(value)).encode()
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use crate::kernel::lsm::lsm_kv::Sequence;
+    use tempfile::TempDir;
+    use crate::kernel::lsm::lsm_kv::{Config, Sequence};
     use crate::kernel::Result;
-    use crate::kernel::lsm::mem_table::{MemMap, MemTable};
+    use crate::kernel::lsm::mem_table::MemTable;
 
     #[test]
     fn test_mem_table_find() -> Result<()> {
-        let mem_table = MemTable::new(MemMap::new());
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
 
         let data_1 = (Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'1'])));
         let data_2 = (Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'2'])));
@@ -224,14 +290,16 @@ mod tests {
 
     #[test]
     fn test_mem_table_swap() -> Result<()> {
-        let mem_table = MemTable::new(MemMap::new());
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
 
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'1']))))?, 1);
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))?, 2);
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))?, 3);
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?, 4);
 
-        let mut vec_unique_sort_with_cmd_key = mem_table.swap().unwrap();
+        let (_, mut vec_unique_sort_with_cmd_key) = mem_table.swap()?.unwrap();
 
         assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
         assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
