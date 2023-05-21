@@ -202,7 +202,8 @@ impl VersionStatus {
         )?;
 
         let vec_log = vec_batch_log.into_iter()
-            .flatten().collect_vec();
+            .flatten()
+            .collect_vec();
 
         let (tag_tx, tag_rx) = unbounded_channel();
         let version = Arc::new(
@@ -255,7 +256,7 @@ impl VersionStatus {
         let mut inner = self.inner.write().await;
         version_display(&new_version, "log_and_apply");
 
-        let _ =inner.ver_log_writer.add_record(&bincode::serialize(&vec_version_edit)?)?;
+        let _ = inner.ver_log_writer.add_record(&bincode::serialize(&vec_version_edit)?)?;
 
         new_version.apply(vec_version_edit)?;
         inner.version = Arc::new(new_version);
