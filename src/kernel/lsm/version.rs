@@ -194,12 +194,16 @@ impl VersionStatus {
             )?
         );
 
-        let (ver_log_loader, vec_log, log_gen) = LogLoader::reload(
+        let (ver_log_loader, vec_batch_log, log_gen) = LogLoader::reload(
             config.path(),
             DEFAULT_VERSION_PATH,
             IoType::Direct,
-            |bytes| Ok(bincode::deserialize::<VersionEdit>(bytes)?)
+            |bytes| Ok(bincode::deserialize::<Vec<VersionEdit>>(bytes)?)
         )?;
+
+        let vec_log = vec_batch_log.into_iter()
+            .flatten()
+            .collect_vec();
 
         let (tag_tx, tag_rx) = unbounded_channel();
         let version = Arc::new(
@@ -252,11 +256,8 @@ impl VersionStatus {
         let mut inner = self.inner.write().await;
         version_display(&new_version, "log_and_apply");
 
-        for bytes in vec_version_edit.iter()
-            .filter_map(|edit| bincode::serialize(&edit).ok())
-        {
-            let _ = inner.ver_log_writer.add_record(&bytes)?;
-        }
+        let _ = inner.ver_log_writer.add_record(&bincode::serialize(&vec_version_edit)?)?;
+
         new_version.apply(vec_version_edit)?;
         inner.version = Arc::new(new_version);
 
@@ -681,6 +682,33 @@ mod tests {
             ver_status_1.insert_vec_ss_table(vec![ss_table_1])?;
             ver_status_1.insert_vec_ss_table(vec![ss_table_2])?;
             ver_status_1.log_and_apply(vec_edit).await?;
+
+            let (ss_table_3, scope_3) = SSTable::create_for_mem_table(
+                &config,
+                3,
+                &sst_factory,
+                vec![(Bytes::from_static(b"test3"), None)],
+                0,
+                IoType::Direct
+            )?;
+
+            let (ss_table_4, scope_4) = SSTable::create_for_mem_table(
+                &config,
+                4,
+                &sst_factory,
+                vec![(Bytes::from_static(b"test4"), None)],
+                0,
+                IoType::Direct
+            )?;
+
+            let vec_edit2 = vec![
+                VersionEdit::NewFile((vec![scope_3], 0),0),
+                VersionEdit::NewFile((vec![scope_4], 0),0),
+            ];
+
+            ver_status_1.insert_vec_ss_table(vec![ss_table_3])?;
+            ver_status_1.insert_vec_ss_table(vec![ss_table_4])?;
+            ver_status_1.log_and_apply(vec_edit2).await?;
 
             let version_1 = Version::clone(ver_status_1.current().await.as_ref());
 
