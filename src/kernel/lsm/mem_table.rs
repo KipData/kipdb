@@ -230,6 +230,42 @@ impl MemTable {
             })
             .flatten()
     }
+
+    /// 范围读取
+    ///
+    /// MemTable中涉及锁操作，因此若是使用iter进行range操作容易长时间占用锁，因此直接返回范围值并命名为range_scan会比较合适
+    #[allow(dead_code)]
+    pub(crate) fn range_scan(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<KeyValue> {
+        let inner = self.inner.lock();
+
+        inner._immut.as_ref()
+            .map(|mem_map| Self::_range_scan(&mem_map, min, max))
+            .unwrap_or(vec![])
+            .into_iter()
+            .chain(Self::_range_scan(&inner._mem, min, max))
+            .rev()
+            .unique_by(|(key, _)| key.clone())
+            .collect_vec()
+    }
+
+    /// Tips: 返回的数据为倒序
+    fn _range_scan(mem_map: &MemMap, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<KeyValue> {
+        fn to_internal_key(bound: &Bound<&[u8]>, included: i64, excluded: i64) -> Bound<InternalKey> {
+            bound.map(|key| InternalKey::new_with_seq(
+                Bytes::copy_from_slice(key),
+                if let Bound::Included(_) = &bound { included } else { excluded }
+            ))
+        }
+
+        let min_key = to_internal_key(&min, i64::MIN, i64::MAX);
+        let max_key = to_internal_key(&max, i64::MAX, i64::MIN);
+
+        mem_map.range(min_key.as_ref(), max_key.as_ref())
+            .rev()
+            .unique_by(|(internal_key, _)| &internal_key.key)
+            .map(|(key, value)| (key.key.clone(), value.clone()))
+            .collect_vec()
+    }
 }
 
 pub(crate) fn logs_decode(log_bytes: Vec<Vec<u8>>) -> Result<IntoIter<(Bytes, Option<Bytes>)>> {
@@ -254,6 +290,7 @@ pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::Bound;
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, Sequence};
@@ -299,10 +336,51 @@ mod tests {
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))?, 3);
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?, 4);
 
-        let (_, mut vec_unique_sort_with_cmd_key) = mem_table.swap()?.unwrap();
+        let (_, mut vec) = mem_table.swap()?.unwrap();
 
-        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
-        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mem_table_range_scan() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
+
+        let key1 = vec![b'k', b'1'];
+        let bytes_key1 = Bytes::copy_from_slice(&key1);
+
+        let key2 = vec![b'k', b'2'];
+        let bytes_key2 = Bytes::copy_from_slice(&key2);
+
+        let key3 = vec![b'k', b'3'];
+        let bytes_key3 = Bytes::copy_from_slice(&key3);
+
+        assert_eq!(mem_table.insert_data((bytes_key1.clone(), Some(Bytes::from(vec![b'1']))))?, 1);
+        assert_eq!(mem_table.insert_data((bytes_key1.clone(), Some(Bytes::from(vec![b'2']))))?, 2);
+        assert_eq!(mem_table.insert_data((bytes_key2.clone(), Some(Bytes::from(vec![b'1']))))?, 3);
+        assert_eq!(mem_table.insert_data((bytes_key2.clone(), Some(Bytes::from(vec![b'2']))))?, 4);
+        assert_eq!(mem_table.insert_data((bytes_key3.clone(), Some(Bytes::from(vec![b'1']))))?, 5);
+        assert_eq!(mem_table.insert_data((bytes_key3.clone(), Some(Bytes::from(vec![b'2']))))?, 6);
+
+        let mut vec1 = mem_table.range_scan(Bound::Included(&key1), Bound::Included(&key2));
+        assert_eq!(vec1.len(), 2);
+        assert_eq!(vec1.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec1.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+
+        let mut vec2 = mem_table.range_scan(Bound::Excluded(&key1), Bound::Excluded(&key3));
+        assert_eq!(vec2.len(), 1);
+        assert_eq!(vec2.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+
+        let mut vec3 = mem_table.range_scan(Bound::Unbounded, Bound::Unbounded);
+        assert_eq!(vec3.len(), 3);
+        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'3']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
 
         Ok(())
     }

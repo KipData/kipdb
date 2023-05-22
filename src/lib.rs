@@ -4,6 +4,7 @@
 #![feature(result_flattening)]
 #![feature(buf_read_has_data_left)]
 #![feature(slice_pattern)]
+#![feature(bound_map)]
 #![deny(
 // The following are allowed by default lints according to
 // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
