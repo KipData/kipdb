@@ -414,9 +414,11 @@ impl Version {
     }
 
     /// 获取指定level中与scope冲突的SSTables
-    pub(crate) fn get_meet_scope_ss_tables(&self, level: usize, target_scope: &Scope) -> Vec<SSTable> {
+    pub(crate) fn get_meet_scope_ss_tables<F>(&self, level: usize, fn_meet: F) -> Vec<SSTable>
+        where F: Fn(&Scope) -> bool
+    {
         self.level_slice[level].iter()
-            .filter(|scope| scope.meet(target_scope))
+            .filter(|scope| fn_meet(scope))
             .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
             .collect_vec()
     }

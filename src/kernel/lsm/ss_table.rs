@@ -1,3 +1,4 @@
+use std::collections::Bound;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use bytes::Bytes;
@@ -98,6 +99,22 @@ impl Scope {
     pub(crate) fn meet_with_key(&self, key: &[u8]) -> bool {
         self.start.as_ref().le(key)
             && self.end.as_ref().ge(key)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn meet_bound(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> bool {
+        let is_min_inside = match min {
+            Bound::Included(key) => self.start.as_ref().le(key),
+            Bound::Excluded(key) => self.start.as_ref().lt(key),
+            Bound::Unbounded => true
+        };
+        let is_max_inside = match max {
+            Bound::Included(key) => self.end.as_ref().ge(key),
+            Bound::Excluded(key) => self.end.as_ref().gt(key),
+            Bound::Unbounded => true
+        };
+
+        is_min_inside && is_max_inside
     }
 
     /// 由一组KeyValue组成一个scope

@@ -190,7 +190,7 @@ impl Compactor {
             // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
             if level == LEVEL_0 {
                 ss_tables_l.append(
-                    &mut version.get_meet_scope_ss_tables(level, &scope_l)
+                    &mut version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_l))
                 )
             }
 
@@ -201,7 +201,7 @@ impl Compactor {
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
             let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll),
+                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_ll)),
                 Err(_) => ss_tables_l
             }.into_iter()
                 .unique_by(SSTable::get_gen)
