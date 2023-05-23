@@ -90,7 +90,7 @@ impl MemTable {
             config.path(),
             (DEFAULT_WAL_PATH, None),
             config.wal_io_type,
-            |bytes| Ok(mem::replace(bytes, Vec::new()))
+            |bytes| Ok(mem::take(bytes))
         )?;
         let log_writer = (log_loader.writer(log_gen)?, log_gen);
         // Q: 为什么INIT_SEQ作为Seq id?
