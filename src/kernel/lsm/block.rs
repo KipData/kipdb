@@ -494,8 +494,7 @@ impl<T> Block<T> where T: BlockItem {
             })
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<Entry<T>> {
+    pub(crate) fn range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<T> {
         let last_index = self.entry_len();
         let start_index = match min {
             Bound::Excluded(key) => self.binary_search(key).map(|index| cmp::min(last_index,index + 1)),
@@ -516,7 +515,7 @@ impl<T> Block<T> where T: BlockItem {
         }
 
         self.vec_entry[start_index..end_index].iter()
-            .map(|(_, entry)| entry)
+            .map(|(_, Entry{ item, .. })| item)
             .cloned()
             .collect_vec()
     }
@@ -733,7 +732,7 @@ mod tests {
         test_block_serialization_(block.clone(), CompressType::None, options.data_restart_interval)?;
         test_block_serialization_(block.clone(), CompressType::LZ4, options.data_restart_interval)?;
 
-        for _ in 0..100 {
+        for _ in 0..1000 {
             test_block_range(&block)?;
         }
 
@@ -741,17 +740,17 @@ mod tests {
     }
 
     fn test_block_range<T: BlockItem + Eq + Debug>(block: &Block<T>) -> Result<()> {
-        let all_entry = block.vec_entry.iter()
+        let all_item = block.vec_entry.iter()
             .cloned()
-            .map(|(_, entry)| entry)
+            .map(|(_, entry)| entry.item)
             .collect_vec();
 
         let mut rng = rand::thread_rng();
-        let rand_max_idx: usize = rng.gen_range(2..all_entry.len() - 1);
+        let rand_max_idx: usize = rng.gen_range(2..all_item.len() - 1);
         let rand_min_idx: usize = rng.gen_range(0..rand_max_idx - 1);
 
-        let min_key = full_key(&block, &all_entry, rand_min_idx);
-        let max_key = full_key(&block, &all_entry, rand_max_idx);
+        let min_key = full_key(&block, &block.vec_entry, rand_min_idx);
+        let max_key = full_key(&block, &block.vec_entry, rand_max_idx);
 
         let excluded_vec = block.range(
             Bound::Excluded(&min_key),
@@ -765,15 +764,15 @@ mod tests {
 
         let unbounded_vec = block.range(Bound::Unbounded, Bound::Unbounded);
 
-        assert_eq!(all_entry[rand_min_idx + 1..rand_max_idx].to_vec(), excluded_vec);
-        assert_eq!(all_entry[rand_min_idx..rand_max_idx + 1].to_vec(), included_vec);
-        assert_eq!(all_entry, unbounded_vec);
+        assert_eq!(all_item[rand_min_idx + 1..rand_max_idx].to_vec(), excluded_vec);
+        assert_eq!(all_item[rand_min_idx..rand_max_idx + 1].to_vec(), included_vec);
+        assert_eq!(all_item, unbounded_vec);
 
         Ok(())
     }
 
-    fn full_key<T: BlockItem + Eq + Debug>(block: &Block<T>, all_entry: &Vec<Entry<T>>, index: usize) -> Vec<u8> {
-        let entry = &all_entry[index];
+    fn full_key<T: BlockItem + Eq + Debug>(block: &Block<T>, all_entry: &Vec<(usize, Entry<T>)>, index: usize) -> Vec<u8> {
+        let entry = &all_entry[index].1;
         [block.shared_key_prefix(index, entry.shared_len), &entry.key].concat()
     }
 
