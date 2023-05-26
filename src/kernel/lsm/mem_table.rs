@@ -239,7 +239,7 @@ impl MemTable {
         let inner = self.inner.lock();
 
         inner._immut.as_ref()
-            .map(|mem_map| Self::_range_scan(&mem_map, min, max))
+            .map(|mem_map| Self::_range_scan(mem_map, min, max))
             .unwrap_or(vec![])
             .into_iter()
             .chain(Self::_range_scan(&inner._mem, min, max))

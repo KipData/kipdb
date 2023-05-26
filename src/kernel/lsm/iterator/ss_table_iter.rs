@@ -1,6 +1,7 @@
 use async_trait::async_trait;
+use bytes::Bytes;
 use crate::kernel::lsm::block::{BlockCache, Index, Value};
-use crate::kernel::lsm::iterator::{DiskIter, Seek};
+use crate::kernel::lsm::iterator::{DiskIter, ForwardDiskIter, Seek};
 use crate::kernel::lsm::iterator::block_iter::BlockIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::SSTable;
@@ -22,7 +23,7 @@ impl<'a> SSTableIter<'a> {
         let data_iter = Self::data_iter_init(
             ss_table,
             block_cache,
-            index_iter.next_err().await?.1
+            index_iter.next_err().await?.ok_or(KernelError::DataEmpty)?.1
         )?;
 
         Ok(Self {
@@ -40,10 +41,10 @@ impl<'a> SSTableIter<'a> {
         ))
     }
 
-    async fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> Result<KeyValue> {
+    async fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> Result<Option<KeyValue>> {
         self.data_iter = Self::data_iter_init(self.ss_table, self.block_cache, index)?;
-        self.data_iter.seek(seek).await
-            .map(|(key, value)| (key, value.bytes))
+        Ok(self.data_iter.seek(seek).await?
+            .map(|(key, value)| (key, value.bytes)))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -53,26 +54,32 @@ impl<'a> SSTableIter<'a> {
 
 #[async_trait]
 #[allow(single_use_lifetimes)]
-impl DiskIter<Vec<u8>, Vec<u8>> for SSTableIter<'_> {
-    type Item = KeyValue;
-
-    async fn next_err(&mut self) -> Result<Self::Item> {
-        match DiskIter::next_err(&mut self.data_iter).await {
-            Err(KernelError::OutOfBounds) => {
-                let index = DiskIter::next_err(&mut self.index_iter).await?.1;
-                self.data_iter_seek(Seek::First, index).await
+impl ForwardDiskIter for SSTableIter<'_> {
+    async fn prev_err(&mut self) -> Result<Option<Self::Item>> {
+        match self.data_iter.prev_err().await? {
+            None => {
+                if let Some((_, index)) = self.index_iter.prev_err().await? {
+                    self.data_iter_seek(Seek::Last, index).await
+                } else { Ok(None) }
             }
-            res => res.map(|(k, v)| (k, v.bytes))
+            Some((key, value)) => Ok(Some((key, value.bytes)))
         }
     }
+}
 
-    async fn prev_err(&mut self) -> Result<Self::Item> {
-        match self.data_iter.prev_err().await {
-            Err(KernelError::OutOfBounds) => {
-                let index = self.index_iter.prev_err().await?.1;
-                self.data_iter_seek(Seek::Last, index).await
+#[async_trait]
+#[allow(single_use_lifetimes)]
+impl DiskIter for SSTableIter<'_> {
+    type Item = KeyValue;
+
+    async fn next_err(&mut self) -> Result<Option<Self::Item>> {
+        match self.data_iter.next_err().await? {
+            None => {
+                if let Some((_, index)) = self.index_iter.next_err().await? {
+                    self.data_iter_seek(Seek::First, index).await
+                } else { Ok(None) }
             }
-            res => res.map(|(k, v)| (k, v.bytes))
+            Some((key, value)) => Ok(Some((key, value.bytes)))
         }
     }
 
@@ -80,11 +87,16 @@ impl DiskIter<Vec<u8>, Vec<u8>> for SSTableIter<'_> {
         self.index_iter.is_valid() && self.data_iter.is_valid()
     }
 
-    async fn seek(&mut self, seek: Seek<'_>) -> Result<Self::Item> {
-        let index = self.index_iter.seek(
-            if let Some(key) = seek.get_key() { Seek::Backward(key) } else { seek }
-        ).await?.1;
-        self.data_iter_seek(seek, index).await
+    async fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+        if let Some((_, index)) = self.index_iter.seek(seek).await? {
+            self.data_iter_seek(seek, index).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn item_key(item: &Self::Item) -> Bytes {
+        item.0.clone()
     }
 }
 
@@ -99,7 +111,7 @@ mod tests {
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{DiskIter, Seek};
+    use crate::kernel::lsm::iterator::{DiskIter, ForwardDiskIter, Seek};
     use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
@@ -149,20 +161,18 @@ mod tests {
 
 
             for i in 0..times {
-                assert_eq!(DiskIter::next_err(&mut iterator).await?, vec_data[i]);
+                assert_eq!(iterator.next_err().await?.unwrap(), vec_data[i]);
             }
 
             for i in (0..times - 1).rev() {
-                assert_eq!(DiskIter::prev_err(&mut iterator).await?, vec_data[i]);
+                assert_eq!(iterator.prev_err().await?.unwrap(), vec_data[i]);
             }
 
-            assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0)).await?, vec_data[114]);
+            assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0)).await?.unwrap(), vec_data[114]);
 
-            assert_eq!(iterator.seek(Seek::Forward(&vec_data[514].0)).await?, vec_data[514]);
+            assert_eq!(iterator.seek(Seek::First).await?.unwrap(), vec_data[0]);
 
-            assert_eq!(iterator.seek(Seek::First).await?, vec_data[0]);
-
-            assert_eq!(iterator.seek(Seek::Last).await?, vec_data[times - 1]);
+            assert_eq!(iterator.seek(Seek::Last).await?.unwrap(), vec_data[times - 1]);
 
             Ok(())
         })

@@ -276,11 +276,9 @@ impl Compactor {
     {
         let mut iter = SSTableIter::new(ss_table, block_cache).await?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
-        loop {
-            match iter.next_err().await {
-                Ok(item) => { if fn_is_filter(&item.0) { vec_cmd.push(item) } }
-                Err(KernelError::OutOfBounds) => break,
-                Err(e) => { return Err(e) }
+        while let Some(item) = iter.next_err().await? {
+            if fn_is_filter(&item.0) {
+                vec_cmd.push(item)
             }
         }
         Ok(vec_cmd)

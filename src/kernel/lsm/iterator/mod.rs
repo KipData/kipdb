@@ -2,10 +2,12 @@ pub(crate) mod block_iter;
 pub(crate) mod ss_table_iter;
 pub(crate) mod level_iter;
 pub(crate) mod version_iter;
+mod merging_iter;
 
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use async_trait::async_trait;
+use bytes::Bytes;
 use crate::kernel::Result;
 
 #[derive(Clone, Copy)]
@@ -15,35 +17,29 @@ pub(crate) enum Seek<'s> {
     First,
     // 最后一个元素
     Last,
-    // 与key相等或稍小的元素
-    Forward(&'s [u8]),
     // 与key相等或稍大的元素
     Backward(&'s [u8])
 }
 
-impl<'s> Seek<'s> {
-    pub(crate) fn get_key(&self) -> Option<&'s [u8]> {
-        match self {
-            Seek::Forward(key) => Some(key),
-            Seek::Backward(key) => Some(key),
-
-            _ => None
-        }
-    }
-}
-
 /// 硬盘迭代器
 #[async_trait]
-pub(crate) trait DiskIter<K, V>: Send + Sync {
+pub(crate) trait DiskIter: Send + Sync {
     type Item;
 
-    async fn next_err(&mut self) -> Result<Self::Item>;
-
-    async fn prev_err(&mut self) -> Result<Self::Item>;
+    async fn next_err(&mut self) -> Result<Option<Self::Item>>;
 
     fn is_valid(&self) -> bool;
 
-    async fn seek(&mut self, seek: Seek<'_>) -> Result<Self::Item>;
+    async fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>>;
+
+    fn item_key(item: &Self::Item) -> Bytes;
+}
+
+/// 向前迭代器
+#[async_trait]
+pub(crate) trait ForwardDiskIter: DiskIter {
+
+    async fn prev_err(&mut self) -> Result<Option<Self::Item>>;
 }
 
 pub(crate) struct InnerPtr<T>(NonNull<T>);

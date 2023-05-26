@@ -45,8 +45,6 @@ pub enum KernelError {
     UnexpectedCommandType,
     #[fail(display = "Process already exists")]
     ProcessExists,
-    #[fail(display = "iterator index out of bounds")]
-    OutOfBounds,
     #[fail(display = "channel is closed")]
     ChannelClose,
     #[fail(display = "{}", _0)]

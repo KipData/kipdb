@@ -6,7 +6,6 @@ use crate::kernel::lsm::iterator::level_iter::LevelIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
-use crate::KernelError;
 
 /// Version键值对迭代器
 ///
@@ -46,12 +45,12 @@ impl<'a> VersionIter<'a> {
         self.offset < 7
     }
 
-    async fn iter_sync(&mut self, offset: usize, seek: Seek<'_>) -> Result<KeyValue> {
+    async fn iter_sync(&mut self, offset: usize, seek: Seek<'_>) -> Result<Option<KeyValue>> {
         let is_level_eq = self.offset != offset;
         self.offset = offset;
 
         if !self.is_valid() {
-            return Err(KernelError::OutOfBounds);
+            return Ok(None);
         }
 
         if is_level_eq {
@@ -67,12 +66,10 @@ impl<'a> VersionIter<'a> {
         self.level_iter.seek(seek).await
     }
 
-    pub async fn next(&mut self) -> Result<KeyValue> {
-        match self.level_iter.next_err().await {
-            Err(KernelError::OutOfBounds) => {
-                self.iter_sync(self.offset + 1, Seek::First).await
-            }
-            res => res
+    pub async fn next(&mut self) -> Result<Option<KeyValue>> {
+        match self.level_iter.next_err().await? {
+            None => self.iter_sync(self.offset + 1, Seek::First).await,
+            Some(item) => Ok(Some(item))
         }
     }
 }
@@ -134,7 +131,7 @@ mod tests {
             let mut iterator = kv_store.disk_iter().await?;
 
             for _ in (0..times).rev() {
-                let (key, _) = iterator.next().await?;
+                let (key, _) = iterator.next().await?.unwrap();
                 assert!(kv_map.remove(key.as_ref()).is_some())
             }
 

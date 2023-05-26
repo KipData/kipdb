@@ -484,6 +484,7 @@ impl<T> Block<T> where T: BlockItem {
             })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<T> {
         let last_index = self.entry_len();
         let start_index = match min {
