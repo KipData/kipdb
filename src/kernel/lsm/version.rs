@@ -181,7 +181,7 @@ impl VersionStatus {
         )?);
         let sst_factory = Arc::new(
             IoFactory::new(
-                sst_path.clone(),
+                sst_path,
                 FileExtension::SSTable
             )?
         );

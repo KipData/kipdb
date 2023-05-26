@@ -44,16 +44,6 @@ pub(crate) struct Entry<T> {
 }
 
 impl<T> Entry<T> where T: BlockItem {
-    pub(crate) fn key(&self) -> &Bytes {
-        &self.key
-    }
-
-    pub(crate) fn item(&self) -> &T {
-        &self.item
-    }
-}
-
-impl<T> Entry<T> where T: BlockItem {
     pub(crate) fn new(
         shared_len: usize,
         unshared_len: usize,
