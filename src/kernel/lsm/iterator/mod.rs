@@ -23,7 +23,7 @@ pub(crate) enum Seek<'s> {
 
 /// 硬盘迭代器
 #[async_trait]
-pub(crate) trait DiskIter: Send + Sync {
+pub(crate) trait Iter: Send {
     type Item;
 
     async fn next_err(&mut self) -> Result<Option<Self::Item>>;
@@ -37,7 +37,7 @@ pub(crate) trait DiskIter: Send + Sync {
 
 /// 向前迭代器
 #[async_trait]
-pub(crate) trait ForwardDiskIter: DiskIter {
+pub(crate) trait ForwardDiskIter: Iter {
 
     async fn prev_err(&mut self) -> Result<Option<Self::Item>>;
 }

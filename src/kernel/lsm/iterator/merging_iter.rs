@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use async_trait::async_trait;
 use bytes::Bytes;
-use crate::kernel::lsm::iterator::{DiskIter, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::Result;
 
 /// 用于取值以及对应的Iter下标
@@ -32,12 +32,12 @@ impl Ord for IterKey {
     }
 }
 
-pub(crate) struct MergingIter<I: DiskIter> {
+pub(crate) struct MergingIter<I: Iter> {
     vec_iter: Vec<I>,
     map_buf: BTreeMap<IterKey, I::Item>
 }
 
-impl<I: DiskIter> MergingIter<I> where <I as DiskIter>::Item: Sync + Send {
+impl<I: Iter> MergingIter<I> where <I as Iter>::Item: Sync + Send {
     #[allow(dead_code, clippy::mutable_key_type)]
     pub(crate) async fn new(mut vec_iter: Vec<I>) -> Result<Self> {
         let mut map_buf = BTreeMap::new();
@@ -53,7 +53,7 @@ impl<I: DiskIter> MergingIter<I> where <I as DiskIter>::Item: Sync + Send {
 }
 
 #[async_trait]
-impl<I: DiskIter> DiskIter for MergingIter<I> where <I as DiskIter>::Item: Sync + Send {
+impl<I: Iter> Iter for MergingIter<I> where <I as Iter>::Item: Sync + Send {
     type Item = I::Item;
 
     async fn next_err(&mut self) -> Result<Option<Self::Item>> {
@@ -100,8 +100,8 @@ impl<I: DiskIter> DiskIter for MergingIter<I> where <I as DiskIter>::Item: Sync 
 }
 
 #[allow(clippy::mutable_key_type)]
-impl<I: DiskIter> MergingIter<I> where <I as DiskIter>::Item: Send + Sync {
-    fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, <I as DiskIter>::Item>, num: usize, item: <I as DiskIter>::Item) {
+impl<I: Iter> MergingIter<I> where <I as Iter>::Item: Send + Sync {
+    fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, <I as Iter>::Item>, num: usize, item: <I as Iter>::Item) {
         let _ = seek_map.insert(IterKey { num, key: Self::item_key(&item) }, item);
     }
 }
@@ -111,7 +111,7 @@ mod tests {
     use bytes::Bytes;
     use crate::kernel::lsm::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
     use crate::kernel::lsm::iterator::block_iter::BlockIter;
-    use crate::kernel::lsm::iterator::{DiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
     use crate::kernel::Result;
 
@@ -127,8 +127,19 @@ mod tests {
             (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
             (Bytes::from(vec![b'8']), Value::from(None)),
         ];
+        let test_sequence = vec![
+            (Bytes::from(vec![b'1']), Value::from(None)),
+            (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'4']), Value::from(None)),
+            (Bytes::from(vec![b'6']), Value::from(None)),
+            (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
+            (Bytes::from(vec![b'8']), Value::from(None)),
+            (Bytes::from(vec![b'1']), Value::from(None)),
+            (Bytes::from(vec![b'8']), Value::from(None)),
+            (Bytes::from(vec![b'6']), Value::from(None))
+        ];
 
-        test_with_data(data_1, data_2)
+        test_with_data(data_1, data_2, test_sequence)
     }
 
     #[test]
@@ -143,17 +154,56 @@ mod tests {
             (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
             (Bytes::from(vec![b'8']), Value::from(None)),
         ];
+        let test_sequence = vec![
+            (Bytes::from(vec![b'1']), Value::from(None)),
+            (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'4']), Value::from(None)),
+            (Bytes::from(vec![b'6']), Value::from(None)),
+            (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
+            (Bytes::from(vec![b'8']), Value::from(None)),
+            (Bytes::from(vec![b'1']), Value::from(None)),
+            (Bytes::from(vec![b'8']), Value::from(None)),
+            (Bytes::from(vec![b'6']), Value::from(None))
+        ];
 
-        test_with_data(data_1, data_2)
+        test_with_data(data_1, data_2, test_sequence)
     }
 
-    fn test_with_data(data_1: Vec<(Bytes, Value)>, data_2: Vec<(Bytes, Value)>) -> Result<()> {
+    #[test]
+    fn test_same_key_iterator() -> Result<()> {
+        let data_1 = vec![
+            (Bytes::from(vec![b'4']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'5']), Value::from(None)),
+            (Bytes::from(vec![b'6']), Value::from(Some(Bytes::from(vec![b'0'])))),
+        ];
+        let data_2 = vec![
+            (Bytes::from(vec![b'4']), Value::from(None)),
+            (Bytes::from(vec![b'5']), Value::from(Some(Bytes::from(vec![b'1'])))),
+            (Bytes::from(vec![b'6']), Value::from(None)),
+        ];
+        let test_sequence = vec![
+            (Bytes::from(vec![b'4']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'4']), Value::from(None)),
+            (Bytes::from(vec![b'5']), Value::from(None)),
+            (Bytes::from(vec![b'5']), Value::from(Some(Bytes::from(vec![b'1'])))),
+            (Bytes::from(vec![b'6']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'6']), Value::from(None)),
+            (Bytes::from(vec![b'4']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'6']), Value::from(None)),
+            (Bytes::from(vec![b'5']), Value::from(None))
+        ];
+
+        test_with_data(data_1, data_2, test_sequence)
+    }
+
+    fn test_with_data(data_1: Vec<(Bytes, Value)>, data_2: Vec<(Bytes, Value)>, sequence: Vec<(Bytes, Value)>) -> Result<()> {
         let block_1 = Block::new(data_1, DEFAULT_DATA_RESTART_INTERVAL);
         let block_2 = Block::new(data_2, DEFAULT_DATA_RESTART_INTERVAL);
 
         tokio_test::block_on(async move {
             let iterator_1 = BlockIter::new(&block_1);
             let iterator_2 = BlockIter::new(&block_2);
+            let mut sequence_iter = sequence.into_iter();
 
             let mut merging_iter = MergingIter::new(vec![iterator_1, iterator_2]).await?;
 
@@ -161,47 +211,47 @@ mod tests {
 
             assert_eq!(
                 merging_iter.next_err().await?,
-                Some((Bytes::from(vec![b'1']), Value::from(None)))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.next_err().await?,
-                Some((Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.next_err().await?,
-                Some((Bytes::from(vec![b'4']), Value::from(None)))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.next_err().await?,
-                Some((Bytes::from(vec![b'6']), Value::from(None)))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.next_err().await?,
-                Some((Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.next_err().await?,
-                Some((Bytes::from(vec![b'8']), Value::from(None)))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.seek(Seek::First).await?,
-                Some((Bytes::from(vec![b'1']), Value::from(None)))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.seek(Seek::Last).await?,
-                Some((Bytes::from(vec![b'8']), Value::from(None)))
+                sequence_iter.next()
             );
 
             assert_eq!(
                 merging_iter.seek(Seek::Backward(&vec![b'5'])).await?,
-                Some((Bytes::from(vec![b'6']), Value::from(None)))
+                sequence_iter.next()
             );
 
             Ok(())

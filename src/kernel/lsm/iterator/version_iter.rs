@@ -1,7 +1,7 @@
 
 use std::sync::Arc;
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::iterator::{DiskIter, InnerPtr, Seek};
+use crate::kernel::lsm::iterator::{Iter, InnerPtr, Seek};
 use crate::kernel::lsm::iterator::level_iter::LevelIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;

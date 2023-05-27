@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use crate::kernel::lsm::block::{BlockCache, Index, Value};
-use crate::kernel::lsm::iterator::{DiskIter, ForwardDiskIter, Seek};
+use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
 use crate::kernel::lsm::iterator::block_iter::BlockIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::SSTable;
@@ -69,7 +69,7 @@ impl ForwardDiskIter for SSTableIter<'_> {
 
 #[async_trait]
 #[allow(single_use_lifetimes)]
-impl DiskIter for SSTableIter<'_> {
+impl Iter for SSTableIter<'_> {
     type Item = KeyValue;
 
     async fn next_err(&mut self) -> Result<Option<Self::Item>> {
@@ -111,7 +111,7 @@ mod tests {
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{DiskIter, ForwardDiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
     use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 

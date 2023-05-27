@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use async_trait::async_trait;
-use crate::kernel::lsm::iterator::{Seek, DiskIter, ForwardDiskIter};
+use crate::kernel::lsm::iterator::{Seek, Iter, ForwardDiskIter};
 use crate::kernel::lsm::block::{Block, BlockItem, Entry};
 use crate::kernel::Result;
 
@@ -74,7 +74,7 @@ impl<V> ForwardDiskIter for BlockIter<'_, V>
 
 #[async_trait]
 #[allow(single_use_lifetimes)]
-impl<V> DiskIter for BlockIter<'_, V>
+impl<V> Iter for BlockIter<'_, V>
     where V: Sync + Send + BlockItem
 {
     type Item = (Bytes, V);
@@ -114,7 +114,7 @@ mod tests {
     use bytes::Bytes;
     use crate::kernel::lsm::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
     use crate::kernel::lsm::iterator::block_iter::BlockIter;
-    use crate::kernel::lsm::iterator::{DiskIter, ForwardDiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
     use crate::kernel::Result;
 
     #[test]

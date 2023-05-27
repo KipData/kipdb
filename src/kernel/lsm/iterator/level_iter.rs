@@ -2,7 +2,7 @@ use std::mem;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crate::kernel::lsm::block::BlockCache;
-use crate::kernel::lsm::iterator::{DiskIter, ForwardDiskIter, InnerPtr, Seek};
+use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, InnerPtr, Seek};
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::SSTable;
@@ -105,7 +105,7 @@ impl ForwardDiskIter for LevelIter<'_> {
 
 #[async_trait]
 #[allow(single_use_lifetimes)]
-impl DiskIter for LevelIter<'_> {
+impl Iter for LevelIter<'_> {
     type Item = KeyValue;
 
     async fn next_err(&mut self) -> Result<Option<Self::Item>> {
@@ -158,7 +158,7 @@ mod tests {
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{DiskIter, ForwardDiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;

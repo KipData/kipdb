@@ -12,7 +12,7 @@ use crate::kernel::Result;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::lsm_kv::{Config, StoreInner};
 use crate::kernel::lsm::data_sharding;
-use crate::kernel::lsm::iterator::DiskIter;
+use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
