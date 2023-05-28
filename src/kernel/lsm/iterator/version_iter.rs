@@ -19,7 +19,7 @@ pub struct VersionIter<'a> {
 }
 
 impl<'a> VersionIter<'a> {
-    pub(crate) async fn new(version: Arc<Version>) -> Result<VersionIter<'a>> {
+    pub(crate) fn new(version: Arc<Version>) -> Result<VersionIter<'a>> {
         let version: InnerPtr<Arc<Version>> = InnerPtr(
             Box::leak(Box::new(
                 version
@@ -31,7 +31,7 @@ impl<'a> VersionIter<'a> {
                 version.as_ref(),
                 LEVEL_0,
                 &version.0.as_ref().block_cache
-            ).await?
+            )?
         };
 
         Ok(Self {
@@ -45,7 +45,7 @@ impl<'a> VersionIter<'a> {
         self.offset < 7
     }
 
-    async fn iter_sync(&mut self, offset: usize, seek: Seek<'_>) -> Result<Option<KeyValue>> {
+    fn iter_sync(&mut self, offset: usize, seek: Seek<'_>) -> Result<Option<KeyValue>> {
         let is_level_eq = self.offset != offset;
         self.offset = offset;
 
@@ -60,15 +60,15 @@ impl<'a> VersionIter<'a> {
                     version,
                     offset,
                     &self.version.0.as_ref().block_cache
-                ).await?;
+                )?;
             }
         }
-        self.level_iter.seek(seek).await
+        self.level_iter.seek(seek)
     }
 
-    pub async fn next(&mut self) -> Result<Option<KeyValue>> {
-        match self.level_iter.next_err().await? {
-            None => self.iter_sync(self.offset + 1, Seek::First).await,
+    pub fn next(&mut self) -> Result<Option<KeyValue>> {
+        match self.level_iter.next_err()? {
+            None => self.iter_sync(self.offset + 1, Seek::First),
             Some(item) => Ok(Some(item))
         }
     }
@@ -131,7 +131,7 @@ mod tests {
             let mut iterator = kv_store.disk_iter().await?;
 
             for _ in (0..times).rev() {
-                let (key, _) = iterator.next().await?.unwrap();
+                let (key, _) = iterator.next()?.unwrap();
                 assert!(kv_map.remove(key.as_ref()).is_some())
             }
 

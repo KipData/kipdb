@@ -255,7 +255,7 @@ impl LsmStore {
 
     #[inline]
     pub async fn disk_iter(&self) -> Result<VersionIter> {
-        VersionIter::new(self.current_version().await).await
+        VersionIter::new(self.current_version().await)
     }
 }
 

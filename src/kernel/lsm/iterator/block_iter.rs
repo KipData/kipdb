@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use async_trait::async_trait;
 use crate::kernel::lsm::iterator::{Seek, Iter, ForwardDiskIter};
 use crate::kernel::lsm::block::{Block, BlockItem, Entry};
 use crate::kernel::Result;
@@ -60,26 +59,24 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
     }
 }
 
-#[async_trait]
 #[allow(single_use_lifetimes)]
 impl<V> ForwardDiskIter for BlockIter<'_, V>
     where V: Sync + Send + BlockItem
 {
-    async fn prev_err(&mut self) -> Result<Option<Self::Item>> {
+     fn prev_err(&mut self) -> Result<Option<Self::Item>> {
         Ok((self.is_valid() || self.offset == self.entry_len)
             .then(|| self.offset_move(self.offset - 1))
             .flatten())
     }
 }
 
-#[async_trait]
 #[allow(single_use_lifetimes)]
 impl<V> Iter for BlockIter<'_, V>
     where V: Sync + Send + BlockItem
 {
     type Item = (Bytes, V);
 
-    async fn next_err(&mut self) -> Result<Option<Self::Item>> {
+     fn next_err(&mut self) -> Result<Option<Self::Item>> {
         Ok((self.is_valid() || self.offset == 0)
             .then(|| self.offset_move(self.offset + 1))
             .flatten())
@@ -89,7 +86,7 @@ impl<V> Iter for BlockIter<'_, V>
         self.offset > 0 && self.offset < self.entry_len
     }
 
-    async fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
         Ok(match seek {
             Seek::First => Some(0),
             Seek::Last => Some(self.entry_len - 1),
@@ -126,62 +123,60 @@ mod tests {
         ];
         let block = Block::new(data, DEFAULT_DATA_RESTART_INTERVAL);
 
-        tokio_test::block_on(async move {
-            let mut iterator = BlockIter::new(&block);
+        let mut iterator = BlockIter::new(&block);
 
-            assert!(!iterator.is_valid());
+        assert!(!iterator.is_valid());
 
-            assert_eq!(
-                iterator.next_err().await?,
-                Some((Bytes::from(vec![b'1']), Value::from(None)))
-            );
+        assert_eq!(
+            iterator.next_err()?,
+            Some((Bytes::from(vec![b'1']), Value::from(None)))
+        );
 
-            assert_eq!(
-                iterator.next_err().await?,
-                Some((Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))))
-            );
+        assert_eq!(
+            iterator.next_err()?,
+            Some((Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))))
+        );
 
-            assert_eq!(
-                iterator.next_err().await?,
-                Some((Bytes::from(vec![b'4']), Value::from(None)))
-            );
+        assert_eq!(
+            iterator.next_err()?,
+            Some((Bytes::from(vec![b'4']), Value::from(None)))
+        );
 
-            assert_eq!(iterator.next_err().await?, None);
+        assert_eq!(iterator.next_err()?, None);
 
-            assert_eq!(
-                iterator.prev_err().await?,
-                Some((Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))))
-            );
+        assert_eq!(
+            iterator.prev_err()?,
+            Some((Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))))
+        );
 
-            assert_eq!(
-                iterator.prev_err().await?,
-                Some((Bytes::from(vec![b'1']), Value::from(None)))
-            );
+        assert_eq!(
+            iterator.prev_err()?,
+            Some((Bytes::from(vec![b'1']), Value::from(None)))
+        );
 
-            assert_eq!(iterator.prev_err().await?, None);
+        assert_eq!(iterator.prev_err()?, None);
 
-            assert_eq!(
-                iterator.seek(Seek::First).await?,
-                Some((Bytes::from(vec![b'1']), Value::from(None)))
-            );
+        assert_eq!(
+            iterator.seek(Seek::First)?,
+            Some((Bytes::from(vec![b'1']), Value::from(None)))
+        );
 
-            assert_eq!(
-                iterator.seek(Seek::Last).await?,
-                Some((Bytes::from(vec![b'4']), Value::from(None)))
-            );
+        assert_eq!(
+            iterator.seek(Seek::Last)?,
+            Some((Bytes::from(vec![b'4']), Value::from(None)))
+        );
 
-            assert_eq!(
-                iterator.seek(Seek::Backward(&vec![b'2'])).await?,
-                Some((Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))))
-            );
+        assert_eq!(
+            iterator.seek(Seek::Backward(&vec![b'2']))?,
+            Some((Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))))
+        );
 
-            assert_eq!(
-                iterator.seek(Seek::Backward(&vec![b'3'])).await?,
-                Some((Bytes::from(vec![b'4']), Value::from(None)))
-            );
+        assert_eq!(
+            iterator.seek(Seek::Backward(&vec![b'3']))?,
+            Some((Bytes::from(vec![b'4']), Value::from(None)))
+        );
 
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
@@ -202,15 +197,15 @@ mod tests {
         }
         let block = Block::new(vec_data.clone(), DEFAULT_DATA_RESTART_INTERVAL);
 
-        tokio_test::block_on(async move {
+        tokio_test::block_on( async move {
             let mut iterator = BlockIter::new(&block);
 
             for i in 0..times {
-                assert_eq!(iterator.next_err().await?.unwrap(), vec_data[i]);
+                assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
             }
 
             for i in (0..times - 1).rev() {
-                assert_eq!(iterator.prev_err().await?.unwrap(), vec_data[i]);
+                assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
             }
 
             Ok(())

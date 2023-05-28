@@ -37,13 +37,13 @@ pub(crate) struct MergingIter<I: Iter> {
     map_buf: BTreeMap<IterKey, I::Item>
 }
 
-impl<I: Iter> MergingIter<I> where <I as Iter>::Item: Sync + Send {
+impl<I: Iter> MergingIter<I> {
     #[allow(dead_code, clippy::mutable_key_type)]
-    pub(crate) async fn new(mut vec_iter: Vec<I>) -> Result<Self> {
+    pub(crate) fn new(mut vec_iter: Vec<I>) -> Result<Self> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {
-            if let Some(item) = iter.next_err().await? {
+            if let Some(item) = iter.next_err()? {
                 Self::buf_map_insert(&mut map_buf, num, item);
             }
         }
@@ -53,12 +53,12 @@ impl<I: Iter> MergingIter<I> where <I as Iter>::Item: Sync + Send {
 }
 
 #[async_trait]
-impl<I: Iter> Iter for MergingIter<I> where <I as Iter>::Item: Sync + Send {
+impl<I: Iter> Iter for MergingIter<I> {
     type Item = I::Item;
 
-    async fn next_err(&mut self) -> Result<Option<Self::Item>> {
+    fn next_err(&mut self) -> Result<Option<Self::Item>> {
         if let Some((IterKey{ num, .. }, old_item)) = self.map_buf.pop_first() {
-            if let Some(item) = self.vec_iter[num].next_err().await? {
+            if let Some(item) = self.vec_iter[num].next_err()? {
                 let _ = self.map_buf.insert(IterKey { num, key: Self::item_key(&item) }, item);
             }
             return Ok(Some(old_item))
@@ -74,11 +74,11 @@ impl<I: Iter> Iter for MergingIter<I> where <I as Iter>::Item: Sync + Send {
     }
 
     #[allow(clippy::mutable_key_type)]
-    async fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
         let mut seek_map = BTreeMap::new();
 
         for (num, iter) in self.vec_iter.iter_mut().enumerate() {
-            if let Some(item) = iter.seek(seek).await? {
+            if let Some(item) = iter.seek(seek)? {
                 Self::buf_map_insert(&mut seek_map, num, item);
             }
         }
@@ -90,7 +90,7 @@ impl<I: Iter> Iter for MergingIter<I> where <I as Iter>::Item: Sync + Send {
         } else {
             self.map_buf = seek_map;
 
-            self.next_err().await
+            self.next_err()
         }
     }
 
@@ -100,7 +100,7 @@ impl<I: Iter> Iter for MergingIter<I> where <I as Iter>::Item: Sync + Send {
 }
 
 #[allow(clippy::mutable_key_type)]
-impl<I: Iter> MergingIter<I> where <I as Iter>::Item: Send + Sync {
+impl<I: Iter> MergingIter<I> {
     fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, <I as Iter>::Item>, num: usize, item: <I as Iter>::Item) {
         let _ = seek_map.insert(IterKey { num, key: Self::item_key(&item) }, item);
     }
@@ -205,52 +205,52 @@ mod tests {
             let iterator_2 = BlockIter::new(&block_2);
             let mut sequence_iter = sequence.into_iter();
 
-            let mut merging_iter = MergingIter::new(vec![iterator_1, iterator_2]).await?;
+            let mut merging_iter = MergingIter::new(vec![iterator_1, iterator_2])?;
 
             assert!(merging_iter.is_valid());
 
             assert_eq!(
-                merging_iter.next_err().await?,
+                merging_iter.next_err()?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.next_err().await?,
+                merging_iter.next_err()?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.next_err().await?,
+                merging_iter.next_err()?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.next_err().await?,
+                merging_iter.next_err()?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.next_err().await?,
+                merging_iter.next_err()?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.next_err().await?,
+                merging_iter.next_err()?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.seek(Seek::First).await?,
+                merging_iter.seek(Seek::First)?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.seek(Seek::Last).await?,
+                merging_iter.seek(Seek::Last)?,
                 sequence_iter.next()
             );
 
             assert_eq!(
-                merging_iter.seek(Seek::Backward(&vec![b'5'])).await?,
+                merging_iter.seek(Seek::Backward(&vec![b'5']))?,
                 sequence_iter.next()
             );
 

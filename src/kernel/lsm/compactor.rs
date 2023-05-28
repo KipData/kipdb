@@ -241,7 +241,7 @@ impl Compactor {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
         let map_futures_l = ss_tables_l.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(|ss_table| Self::ss_table_load_data(block_cache, ss_table, |_| true));
+            .map(|ss_table| async { Self::ss_table_load_data(block_cache, ss_table, |_| true) });
 
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
@@ -255,9 +255,9 @@ impl Compactor {
         // 并行: 因为即使l为0时，此时的ll(Level 1)仍然保证SSTable数据之间排列有序且不冲突，因此并行迭代不会导致数据冲突
         // 过滤: 基于l进行数据过滤避免冗余的数据迭代导致占用大量内存占用
         let sharding_ll = future::try_join_all(ss_tables_ll.iter()
-                .map(|ss_table| Self::ss_table_load_data(
-                    block_cache, ss_table, |key| !filter_set_l.contains(key))
-                )).await?;
+                .map(|ss_table| async {
+                    Self::ss_table_load_data(block_cache, ss_table, |key| !filter_set_l.contains(key))
+                })).await?;
 
         // 使用sharding_ll来链接sharding_l以保持数据倒序的顺序是由新->旧
         let vec_cmd_data = sharding_ll
@@ -271,12 +271,12 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, sst_file_size))
     }
 
-    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
+    fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
         where F: Fn(&Bytes) -> bool
     {
-        let mut iter = SSTableIter::new(ss_table, block_cache).await?;
+        let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
-        while let Some(item) = iter.next_err().await? {
+        while let Some(item) = iter.next_err()? {
             if fn_is_filter(&item.0) {
                 vec_cmd.push(item)
             }

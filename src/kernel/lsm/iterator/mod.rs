@@ -6,7 +6,6 @@ mod merging_iter;
 
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use async_trait::async_trait;
 use bytes::Bytes;
 use crate::kernel::Result;
 
@@ -22,24 +21,22 @@ pub(crate) enum Seek<'s> {
 }
 
 /// 硬盘迭代器
-#[async_trait]
-pub(crate) trait Iter: Send {
+pub(crate) trait Iter {
     type Item;
 
-    async fn next_err(&mut self) -> Result<Option<Self::Item>>;
+    fn next_err(&mut self) -> Result<Option<Self::Item>>;
 
     fn is_valid(&self) -> bool;
 
-    async fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>>;
+    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>>;
 
     fn item_key(item: &Self::Item) -> Bytes;
 }
 
 /// 向前迭代器
-#[async_trait]
 pub(crate) trait ForwardDiskIter: Iter {
 
-    async fn prev_err(&mut self) -> Result<Option<Self::Item>>;
+    fn prev_err(&mut self) -> Result<Option<Self::Item>>;
 }
 
 pub(crate) struct InnerPtr<T>(NonNull<T>);

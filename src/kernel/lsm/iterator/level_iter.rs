@@ -1,5 +1,4 @@
 use std::mem;
-use async_trait::async_trait;
 use bytes::Bytes;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, InnerPtr, Seek};
@@ -25,13 +24,13 @@ pub(crate) struct LevelIter<'a> {
 
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
-    pub(crate) async fn new(version: &'a Version, level: usize, block_cache: &'a BlockCache) -> Result<LevelIter<'a>> {
-        let ss_table_ptr: InnerPtr<SSTable> = Self::get_ss_table_ptr(version, level, 0).await?;
+    pub(crate) fn new(version: &'a Version, level: usize, block_cache: &'a BlockCache) -> Result<LevelIter<'a>> {
+        let ss_table_ptr: InnerPtr<SSTable> = Self::get_ss_table_ptr(version, level, 0)?;
         let sst_iter = unsafe {
             SSTableIter::new(
                 ss_table_ptr.0.as_ref(),
                 block_cache
-            ).await?
+            )?
         };
         let level_len = version.level_len(level);
 
@@ -46,7 +45,7 @@ impl<'a> LevelIter<'a> {
         })
     }
 
-    async fn get_ss_table_ptr(version: &Version, level: usize, offset: usize) -> Result<InnerPtr<SSTable>> {
+     fn get_ss_table_ptr(version: &Version, level: usize, offset: usize) -> Result<InnerPtr<SSTable>> {
         let ss_table = version.get_ss_table(level, offset)
             .ok_or(KernelError::DataEmpty)?;
 
@@ -54,13 +53,13 @@ impl<'a> LevelIter<'a> {
     }
 
     #[allow(clippy::drop_copy)]
-    async fn sst_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
+     fn sst_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
         self.offset = offset;
         if self.is_valid() {
             // 手动析构旧的ss_table裸指针
             drop(mem::replace(
                 &mut self.ss_table_ptr,
-                Self::get_ss_table_ptr(self.version, self.level, offset).await?
+                Self::get_ss_table_ptr(self.version, self.level, offset)?
             ).as_ptr());
 
             unsafe {
@@ -68,32 +67,31 @@ impl<'a> LevelIter<'a> {
                 self.sst_iter = SSTableIter::new(
                     ss_table,
                     self.block_cache
-                ).await?;
+                )?;
             }
-            self.sst_iter.seek(seek).await
+            self.sst_iter.seek(seek)
         } else {
             Ok(None)
         }
     }
 
-    async fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> Result<Option<KeyValue>> {
+     fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> Result<Option<KeyValue>> {
         let level = self.level;
 
         if level == 0 {
             return Err(KernelError::NotSupport(LEVEL_0_SEEK_MESSAGE));
         }
-        self.sst_iter_seek(seek, self.version.query_meet_index(key, level)).await
+        self.sst_iter_seek(seek, self.version.query_meet_index(key, level))
     }
 }
 
-#[async_trait]
 #[allow(single_use_lifetimes)]
 impl ForwardDiskIter for LevelIter<'_> {
-    async fn prev_err(&mut self) -> Result<Option<Self::Item>> {
-        match self.sst_iter.prev_err().await? {
+     fn prev_err(&mut self) -> Result<Option<Self::Item>> {
+        match self.sst_iter.prev_err()? {
             None => {
                 if self.offset > 0 {
-                    self.sst_iter_seek(Seek::Last, self.offset - 1).await
+                    self.sst_iter_seek(Seek::Last, self.offset - 1)
                 } else {
                     Ok(None)
                 }
@@ -103,14 +101,13 @@ impl ForwardDiskIter for LevelIter<'_> {
     }
 }
 
-#[async_trait]
 #[allow(single_use_lifetimes)]
 impl Iter for LevelIter<'_> {
     type Item = KeyValue;
 
-    async fn next_err(&mut self) -> Result<Option<Self::Item>> {
-        match self.sst_iter.next_err().await? {
-            None => self.sst_iter_seek(Seek::First, self.offset + 1).await,
+    fn next_err(&mut self) -> Result<Option<Self::Item>> {
+        match self.sst_iter.next_err()? {
+            None => self.sst_iter_seek(Seek::First, self.offset + 1),
             Some(item) => Ok(Some(item))
         }
     }
@@ -121,16 +118,16 @@ impl Iter for LevelIter<'_> {
 
     /// Tips: Level 0的LevelIter不支持Seek
     /// 因为Level 0中的SSTable并非有序排列，其中数据范围是可能交错的
-    async fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+     fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
         match seek {
             Seek::First => {
-                self.sst_iter_seek(Seek::First, 0).await
+                self.sst_iter_seek(Seek::First, 0)
             }
             Seek::Last => {
-                self.sst_iter_seek(Seek::Last, self.level_len - 1).await
+                self.sst_iter_seek(Seek::Last, self.level_len - 1)
             }
             Seek::Backward(key) => {
-                self.seek_ward(key, seek).await
+                self.seek_ward(key, seek)
             }
         }
     }
@@ -238,26 +235,26 @@ mod tests {
 
             let version = ver_status.current().await;
 
-            let mut iterator = LevelIter::new(&version, 1, &cache).await?;
+            let mut iterator = LevelIter::new(&version, 1, &cache)?;
             for i in 0..times {
-                assert_eq!(iterator.next_err().await?.unwrap(), vec_data[i]);
+                assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
             }
 
             for i in (0..times - 1).rev() {
-                assert_eq!(iterator.prev_err().await?.unwrap(), vec_data[i]);
+                assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
             }
 
-            assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0)).await?.unwrap(), vec_data[114]);
+            assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(), vec_data[114]);
 
-            assert_eq!(iterator.seek(Seek::Backward(&vec_data[2048].0)).await?.unwrap(), vec_data[2048]);
+            assert_eq!(iterator.seek(Seek::Backward(&vec_data[2048].0))?.unwrap(), vec_data[2048]);
 
-            assert_eq!(iterator.seek(Seek::First).await?.unwrap(), vec_data[0]);
+            assert_eq!(iterator.seek(Seek::First)?.unwrap(), vec_data[0]);
 
-            assert_eq!(iterator.seek(Seek::Last).await?.unwrap(), vec_data[3999]);
+            assert_eq!(iterator.seek(Seek::Last)?.unwrap(), vec_data[3999]);
 
-            let mut iterator_level_0 = LevelIter::new(&version, 0, &cache).await?;
+            let mut iterator_level_0 = LevelIter::new(&version, 0, &cache)?;
 
-            assert!(iterator_level_0.seek(Seek::Backward(&vec_data[3333].0)).await.is_err());
+            assert!(iterator_level_0.seek(Seek::Backward(&vec_data[3333].0)).is_err());
 
             Ok(())
         })
