@@ -6,7 +6,6 @@ mod merging_iter;
 
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use bytes::Bytes;
 use crate::kernel::Result;
 
 #[derive(Clone, Copy)]
@@ -29,8 +28,6 @@ pub(crate) trait Iter {
     fn is_valid(&self) -> bool;
 
     fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>>;
-
-    fn item_key(item: &Self::Item) -> Bytes;
 }
 
 /// 向前迭代器

@@ -69,9 +69,8 @@ impl InternalKey {
     }
 }
 
-struct MemMapIter<'a> {
+pub(crate) struct MemMapIter<'a> {
     mem_map: &'a MemMap,
-    seq_id: i64,
 
     prev_item: Option<(Bytes, Option<Bytes>)>,
     iter: Option<skipmap::Iter<'a, InternalKey, Option<Bytes>>>
@@ -82,7 +81,6 @@ impl<'a> MemMapIter<'a> {
     pub(crate) fn new(mem_map: &'a MemMap) -> Self {
         Self {
             mem_map,
-            seq_id: Sequence::create(),
             prev_item: None,
             iter: Some(mem_map.iter()),
         }
@@ -124,7 +122,7 @@ impl Iter for MemMapIter<'_> {
             Seek::Last => None,
             Seek::Backward(seek_key) => {
                 Some(self.mem_map.range(
-                    Bound::Included(&InternalKey { key: Bytes::copy_from_slice(seek_key), seq_id: self.seq_id }),
+                    Bound::Included(&InternalKey::new_with_seq(Bytes::copy_from_slice(seek_key), 0)),
                     Bound::Unbounded
                 ))
             }
@@ -137,10 +135,6 @@ impl Iter for MemMapIter<'_> {
         } else {
             self.next_err()
         }
-    }
-
-    fn item_key(item: &Self::Item) -> Bytes {
-        item.0.clone()
     }
 }
 

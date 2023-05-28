@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use crate::kernel::lsm::block::{BlockCache, Index, Value};
 use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
 use crate::kernel::lsm::iterator::block_iter::BlockIter;
@@ -81,7 +80,7 @@ impl Iter for SSTableIter<'_> {
     }
 
     fn is_valid(&self) -> bool {
-        self.index_iter.is_valid() && self.data_iter.is_valid()
+        self.data_iter.is_valid()
     }
 
     fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
@@ -90,10 +89,6 @@ impl Iter for SSTableIter<'_> {
         } else {
             Ok(None)
         }
-    }
-
-    fn item_key(item: &Self::Item) -> Bytes {
-        item.0.clone()
     }
 }
 
@@ -153,25 +148,22 @@ mod tests {
             RandomState::default()
         )?;
 
-        tokio_test::block_on(async move {
-            let mut iterator = SSTableIter::new(&ss_table, &cache)?;
+        let mut iterator = SSTableIter::new(&ss_table, &cache)?;
 
+        for i in 0..times {
+            assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
+        }
 
-            for i in 0..times {
-                assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
-            }
+        for i in (0..times - 1).rev() {
+            assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
+        }
 
-            for i in (0..times - 1).rev() {
-                assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
-            }
+        assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(), vec_data[114]);
 
-            assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(), vec_data[114]);
+        assert_eq!(iterator.seek(Seek::First)?.unwrap(), vec_data[0]);
 
-            assert_eq!(iterator.seek(Seek::First)?.unwrap(), vec_data[0]);
+        assert_eq!(iterator.seek(Seek::Last)?.unwrap(), vec_data[times - 1]);
 
-            assert_eq!(iterator.seek(Seek::Last)?.unwrap(), vec_data[times - 1]);
-
-            Ok(())
-        })
+        Ok(())
     }
 }

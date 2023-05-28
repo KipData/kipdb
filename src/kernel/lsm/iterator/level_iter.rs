@@ -1,5 +1,4 @@
 use std::mem;
-use bytes::Bytes;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, InnerPtr, Seek};
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
@@ -130,10 +129,6 @@ impl Iter for LevelIter<'_> {
                 self.seek_ward(key, seek)
             }
         }
-    }
-
-    fn item_key(item: &Self::Item) -> Bytes {
-        item.0.clone()
     }
 }
 

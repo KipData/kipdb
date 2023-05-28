@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use async_trait::async_trait;
 use bytes::Bytes;
 use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::Result;
 
 /// 用于取值以及对应的Iter下标
@@ -32,14 +32,14 @@ impl Ord for IterKey {
     }
 }
 
-pub(crate) struct MergingIter<I: Iter> {
-    vec_iter: Vec<I>,
-    map_buf: BTreeMap<IterKey, I::Item>
+pub(crate) struct MergingIter<'a> {
+    vec_iter: Vec<&'a mut dyn Iter<Item=KeyValue>>,
+    map_buf: BTreeMap<IterKey, KeyValue>
 }
 
-impl<I: Iter> MergingIter<I> {
+impl<'a> MergingIter<'a> {
     #[allow(dead_code, clippy::mutable_key_type)]
-    pub(crate) fn new(mut vec_iter: Vec<I>) -> Result<Self> {
+    pub(crate) fn new(mut vec_iter: Vec<&'a mut dyn Iter<Item=KeyValue>>) -> Result<Self> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {
@@ -52,14 +52,13 @@ impl<I: Iter> MergingIter<I> {
     }
 }
 
-#[async_trait]
-impl<I: Iter> Iter for MergingIter<I> {
-    type Item = I::Item;
+impl Iter for MergingIter<'_> {
+    type Item = KeyValue;
 
     fn next_err(&mut self) -> Result<Option<Self::Item>> {
         if let Some((IterKey{ num, .. }, old_item)) = self.map_buf.pop_first() {
             if let Some(item) = self.vec_iter[num].next_err()? {
-                let _ = self.map_buf.insert(IterKey { num, key: Self::item_key(&item) }, item);
+                Self::buf_map_insert(&mut self.map_buf, num, item);
             }
             return Ok(Some(old_item))
         }
@@ -93,50 +92,53 @@ impl<I: Iter> Iter for MergingIter<I> {
             self.next_err()
         }
     }
-
-    fn item_key(item: &Self::Item) -> Bytes {
-        I::item_key(item)
-    }
 }
 
 #[allow(clippy::mutable_key_type)]
-impl<I: Iter> MergingIter<I> {
-    fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, <I as Iter>::Item>, num: usize, item: <I as Iter>::Item) {
-        let _ = seek_map.insert(IterKey { num, key: Self::item_key(&item) }, item);
+impl MergingIter<'_> {
+    fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, KeyValue>, num: usize, item: KeyValue) {
+        let _ = seek_map.insert(IterKey { num, key: item.0.clone() }, item);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::RandomState;
     use bytes::Bytes;
-    use crate::kernel::lsm::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
-    use crate::kernel::lsm::iterator::block_iter::BlockIter;
+    use tempfile::TempDir;
+    use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
+    use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
+    use crate::kernel::lsm::lsm_kv::Config;
+    use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemMapIter};
+    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
+    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_sequential_iterator() -> Result<()> {
         let data_1 = vec![
-            (Bytes::from(vec![b'1']), Value::from(None)),
-            (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'4']), Value::from(None)),
+            (Bytes::from(vec![b'1']), None),
+            (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'4']), None),
         ];
         let data_2 = vec![
-            (Bytes::from(vec![b'6']), Value::from(None)),
-            (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
-            (Bytes::from(vec![b'8']), Value::from(None)),
+            (Bytes::from(vec![b'6']), None),
+            (Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1']))),
+            (Bytes::from(vec![b'8']), None),
         ];
         let test_sequence = vec![
-            (Bytes::from(vec![b'1']), Value::from(None)),
-            (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'4']), Value::from(None)),
-            (Bytes::from(vec![b'6']), Value::from(None)),
-            (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
-            (Bytes::from(vec![b'8']), Value::from(None)),
-            (Bytes::from(vec![b'1']), Value::from(None)),
-            (Bytes::from(vec![b'8']), Value::from(None)),
-            (Bytes::from(vec![b'6']), Value::from(None))
+            (Bytes::from(vec![b'1']), None),
+            (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'4']), None),
+            (Bytes::from(vec![b'6']), None),
+            (Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1']))),
+            (Bytes::from(vec![b'8']), None),
+            (Bytes::from(vec![b'1']), None),
+            (Bytes::from(vec![b'8']), None),
+            (Bytes::from(vec![b'6']), None)
         ];
 
         test_with_data(data_1, data_2, test_sequence)
@@ -145,25 +147,25 @@ mod tests {
     #[test]
     fn test_cross_iterator() -> Result<()> {
         let data_1 = vec![
-            (Bytes::from(vec![b'1']), Value::from(None)),
-            (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'6']), Value::from(None)),
+            (Bytes::from(vec![b'1']), None),
+            (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'6']), None),
         ];
         let data_2 = vec![
-            (Bytes::from(vec![b'4']), Value::from(None)),
-            (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
-            (Bytes::from(vec![b'8']), Value::from(None)),
+            (Bytes::from(vec![b'4']), None),
+            (Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1']))),
+            (Bytes::from(vec![b'8']), None),
         ];
         let test_sequence = vec![
-            (Bytes::from(vec![b'1']), Value::from(None)),
-            (Bytes::from(vec![b'2']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'4']), Value::from(None)),
-            (Bytes::from(vec![b'6']), Value::from(None)),
-            (Bytes::from(vec![b'7']), Value::from(Some(Bytes::from(vec![b'1'])))),
-            (Bytes::from(vec![b'8']), Value::from(None)),
-            (Bytes::from(vec![b'1']), Value::from(None)),
-            (Bytes::from(vec![b'8']), Value::from(None)),
-            (Bytes::from(vec![b'6']), Value::from(None))
+            (Bytes::from(vec![b'1']), None),
+            (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'4']), None),
+            (Bytes::from(vec![b'6']), None),
+            (Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1']))),
+            (Bytes::from(vec![b'8']), None),
+            (Bytes::from(vec![b'1']), None),
+            (Bytes::from(vec![b'8']), None),
+            (Bytes::from(vec![b'6']), None)
         ];
 
         test_with_data(data_1, data_2, test_sequence)
@@ -172,89 +174,112 @@ mod tests {
     #[test]
     fn test_same_key_iterator() -> Result<()> {
         let data_1 = vec![
-            (Bytes::from(vec![b'4']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'5']), Value::from(None)),
-            (Bytes::from(vec![b'6']), Value::from(Some(Bytes::from(vec![b'0'])))),
+            (Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'5']), None),
+            (Bytes::from(vec![b'6']), Some(Bytes::from(vec![b'0']))),
         ];
         let data_2 = vec![
-            (Bytes::from(vec![b'4']), Value::from(None)),
-            (Bytes::from(vec![b'5']), Value::from(Some(Bytes::from(vec![b'1'])))),
-            (Bytes::from(vec![b'6']), Value::from(None)),
+            (Bytes::from(vec![b'4']), None),
+            (Bytes::from(vec![b'5']), Some(Bytes::from(vec![b'1']))),
+            (Bytes::from(vec![b'6']), None),
         ];
         let test_sequence = vec![
-            (Bytes::from(vec![b'4']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'4']), Value::from(None)),
-            (Bytes::from(vec![b'5']), Value::from(None)),
-            (Bytes::from(vec![b'5']), Value::from(Some(Bytes::from(vec![b'1'])))),
-            (Bytes::from(vec![b'6']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'6']), Value::from(None)),
-            (Bytes::from(vec![b'4']), Value::from(Some(Bytes::from(vec![b'0'])))),
-            (Bytes::from(vec![b'6']), Value::from(None)),
-            (Bytes::from(vec![b'5']), Value::from(None))
+            (Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'4']), None),
+            (Bytes::from(vec![b'5']), None),
+            (Bytes::from(vec![b'5']), Some(Bytes::from(vec![b'1']))),
+            (Bytes::from(vec![b'6']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'6']), None),
+            (Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0']))),
+            (Bytes::from(vec![b'6']), None),
+            (Bytes::from(vec![b'5']), None)
         ];
 
         test_with_data(data_1, data_2, test_sequence)
     }
 
-    fn test_with_data(data_1: Vec<(Bytes, Value)>, data_2: Vec<(Bytes, Value)>, sequence: Vec<(Bytes, Value)>) -> Result<()> {
-        let block_1 = Block::new(data_1, DEFAULT_DATA_RESTART_INTERVAL);
-        let block_2 = Block::new(data_2, DEFAULT_DATA_RESTART_INTERVAL);
+    fn test_with_data(data_1: Vec<KeyValue>, data_2: Vec<KeyValue>, sequence: Vec<KeyValue>) -> Result<()> {
+        let map = MemMap::from_iter(
+            data_1.into_iter()
+                .map(|(key, value)| (InternalKey::new(key), value))
+        );
 
-        tokio_test::block_on(async move {
-            let iterator_1 = BlockIter::new(&block_1);
-            let iterator_2 = BlockIter::new(&block_2);
-            let mut sequence_iter = sequence.into_iter();
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-            let mut merging_iter = MergingIter::new(vec![iterator_1, iterator_2])?;
+        let config = Config::new(temp_dir.into_path());
 
-            assert!(merging_iter.is_valid());
+        let sst_factory = IoFactory::new(
+            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+            FileExtension::SSTable
+        )?;
 
-            assert_eq!(
-                merging_iter.next_err()?,
-                sequence_iter.next()
-            );
+        let (ss_table, _) = SSTable::create_for_mem_table(
+            &config,
+            1,
+            &sst_factory,
+            data_2,
+            0,
+            IoType::Direct
+        )?;
+        let cache = ShardingLruCache::new(
+            config.block_cache_size,
+            16,
+            RandomState::default()
+        )?;
 
-            assert_eq!(
-                merging_iter.next_err()?,
-                sequence_iter.next()
-            );
+        let mut map_iter = MemMapIter::new(&map);
 
-            assert_eq!(
-                merging_iter.next_err()?,
-                sequence_iter.next()
-            );
+        let mut sst_iter = SSTableIter::new(&ss_table, &cache)?;
 
-            assert_eq!(
-                merging_iter.next_err()?,
-                sequence_iter.next()
-            );
+        let mut sequence_iter = sequence.into_iter();
 
-            assert_eq!(
-                merging_iter.next_err()?,
-                sequence_iter.next()
-            );
+        let mut merging_iter = MergingIter::new(vec![&mut map_iter, &mut sst_iter])?;
 
-            assert_eq!(
-                merging_iter.next_err()?,
-                sequence_iter.next()
-            );
+        assert_eq!(
+            merging_iter.next_err()?,
+            sequence_iter.next()
+        );
 
-            assert_eq!(
-                merging_iter.seek(Seek::First)?,
-                sequence_iter.next()
-            );
+        assert_eq!(
+            merging_iter.next_err()?,
+            sequence_iter.next()
+        );
 
-            assert_eq!(
-                merging_iter.seek(Seek::Last)?,
-                sequence_iter.next()
-            );
+        assert_eq!(
+            merging_iter.next_err()?,
+            sequence_iter.next()
+        );
 
-            assert_eq!(
-                merging_iter.seek(Seek::Backward(&vec![b'5']))?,
-                sequence_iter.next()
-            );
+        assert_eq!(
+            merging_iter.next_err()?,
+            sequence_iter.next()
+        );
 
-            Ok(())
-        })
+        assert_eq!(
+            merging_iter.next_err()?,
+            sequence_iter.next()
+        );
+
+        assert_eq!(
+            merging_iter.next_err()?,
+            sequence_iter.next()
+        );
+
+        assert_eq!(
+            merging_iter.seek(Seek::First)?,
+            sequence_iter.next()
+        );
+
+        assert_eq!(
+            merging_iter.seek(Seek::Last)?,
+            sequence_iter.next()
+        );
+
+        assert_eq!(
+            merging_iter.seek(Seek::Backward(&vec![b'5']))?,
+            sequence_iter.next()
+        );
+
+        Ok(())
     }
 }

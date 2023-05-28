@@ -98,10 +98,6 @@ impl<V> Iter for BlockIter<'_, V>
             }
         }.and_then(|index| self.offset_move(index + 1)))
     }
-
-    fn item_key(item: &Self::Item) -> Bytes {
-        item.0.clone()
-    }
 }
 
 #[cfg(test)]
