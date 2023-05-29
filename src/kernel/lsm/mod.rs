@@ -70,7 +70,7 @@ impl SSTableLoader {
         self.inner.put(ss_table.get_gen(), ss_table)
     }
 
-    pub(crate) fn get(&self, gen: i64) -> Option<SSTable> {
+    pub(crate) fn get(&self, gen: i64) -> Option<&SSTable> {
         self.inner.get_or_insert(gen, |gen| {
             let sst_factory = &self.factory;
 
@@ -100,7 +100,6 @@ impl SSTableLoader {
 
             Ok(ss_table)
         })
-            .map(SSTable::clone)
             .ok()
     }
 

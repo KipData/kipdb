@@ -1,9 +1,7 @@
-use std::mem;
 use crate::kernel::lsm::block::BlockCache;
-use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, InnerPtr, Seek};
+use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -16,7 +14,6 @@ pub(crate) struct LevelIter<'a> {
     level: usize,
     level_len: usize,
 
-    ss_table_ptr: InnerPtr<SSTable>,
     offset: usize,
     sst_iter: SSTableIter<'a>,
 }
@@ -24,13 +21,9 @@ pub(crate) struct LevelIter<'a> {
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
     pub(crate) fn new(version: &'a Version, level: usize, block_cache: &'a BlockCache) -> Result<LevelIter<'a>> {
-        let ss_table_ptr: InnerPtr<SSTable> = Self::get_ss_table_ptr(version, level, 0)?;
-        let sst_iter = unsafe {
-            SSTableIter::new(
-                ss_table_ptr.0.as_ref(),
-                block_cache
-            )?
-        };
+        let ss_table = version.get_ss_table(level, 0)
+            .ok_or(KernelError::DataEmpty)?;
+        let sst_iter = SSTableIter::new(ss_table, block_cache)?;
         let level_len = version.level_len(level);
 
         Ok(Self {
@@ -38,40 +31,22 @@ impl<'a> LevelIter<'a> {
             block_cache,
             level,
             level_len,
-            ss_table_ptr,
             offset: 0,
             sst_iter,
         })
-    }
-
-     fn get_ss_table_ptr(version: &Version, level: usize, offset: usize) -> Result<InnerPtr<SSTable>> {
-        let ss_table = version.get_ss_table(level, offset)
-            .ok_or(KernelError::DataEmpty)?;
-
-        Ok(InnerPtr(Box::leak(Box::new(ss_table)).into()))
     }
 
     #[allow(clippy::drop_copy)]
      fn sst_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
         self.offset = offset;
         if self.is_valid() {
-            // 手动析构旧的ss_table裸指针
-            drop(mem::replace(
-                &mut self.ss_table_ptr,
-                Self::get_ss_table_ptr(self.version, self.level, offset)?
-            ).as_ptr());
-
-            unsafe {
-                let ss_table = self.ss_table_ptr.as_ref();
-                self.sst_iter = SSTableIter::new(
-                    ss_table,
-                    self.block_cache
-                )?;
+            if let Some(ss_table) = self.version.get_ss_table(self.level, offset) {
+                self.sst_iter = SSTableIter::new(ss_table, self.block_cache)?;
+                return self.sst_iter.seek(seek);
             }
-            self.sst_iter.seek(seek)
-        } else {
-            Ok(None)
         }
+
+        Ok(None)
     }
 
      fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> Result<Option<KeyValue>> {
@@ -129,13 +104,6 @@ impl Iter for LevelIter<'_> {
                 self.seek_ward(key, seek)
             }
         }
-    }
-}
-
-#[allow(clippy::drop_copy)]
-impl Drop for LevelIter<'_> {
-    fn drop(&mut self) {
-        drop(self.ss_table_ptr.as_ptr());
     }
 }
 

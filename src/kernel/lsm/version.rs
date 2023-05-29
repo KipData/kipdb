@@ -373,7 +373,7 @@ impl Version {
         [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()]
     }
 
-    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<SSTable> {
+    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<&SSTable> {
         self.level_slice[level].get(offset)
             .and_then(|scope| self.ss_tables_loader.get(scope.get_gen()))
     }
@@ -385,7 +385,7 @@ impl Version {
             .map(|(index, _)| index)
     }
 
-    pub(crate) fn first_ss_tables(&self, level: usize, size: usize) -> Option<(Vec<SSTable>, Vec<Scope>)> {
+    pub(crate) fn first_ss_tables(&self, level: usize, size: usize) -> Option<(Vec<&SSTable>, Vec<Scope>)> {
         if self.level_slice[level].is_empty() {
             return None
         }
@@ -402,7 +402,7 @@ impl Version {
     }
 
     /// 获取指定level中与scope冲突的SSTables和Scopes
-    pub(crate) fn get_meet_scope_ss_tables_with_scopes(&self, level: usize, target_scope: &Scope) -> (Vec<SSTable>, Vec<Scope>) {
+    pub(crate) fn get_meet_scope_ss_tables_with_scopes(&self, level: usize, target_scope: &Scope) -> (Vec<&SSTable>, Vec<Scope>) {
         self.level_slice[level].iter()
             .filter(|scope| scope.meet(target_scope))
             .filter_map(|scope| {
@@ -414,7 +414,7 @@ impl Version {
     }
 
     /// 获取指定level中与scope冲突的SSTables
-    pub(crate) fn get_meet_scope_ss_tables<F>(&self, level: usize, fn_meet: F) -> Vec<SSTable>
+    pub(crate) fn get_meet_scope_ss_tables<F>(&self, level: usize, fn_meet: F) -> Vec<&SSTable>
         where F: Fn(&Scope) -> bool
     {
         self.level_slice[level].iter()

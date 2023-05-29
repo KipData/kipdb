@@ -271,9 +271,9 @@ impl SSTable {
     }
 
     /// 通过一组SSTable收集对应的Gen
-    pub(crate) fn collect_gen(vec_ss_table: &[SSTable]) -> Result<Vec<i64>> {
+    pub(crate) fn collect_gen(vec_ss_table: &[&SSTable]) -> Result<Vec<i64>> {
         Ok(vec_ss_table.iter()
-            .map(SSTable::get_gen)
+            .map(|sst| sst.get_gen())
             .unique()
             .collect())
     }

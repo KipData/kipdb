@@ -182,7 +182,7 @@ impl Compactor {
             // 获取下一级中有重复键值范围的SSTable
             let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l);
             let index = SSTable::find_index_with_level(
-                ss_tables_ll.first().map(SSTable::get_gen),
+                ss_tables_ll.first().map(|sst| sst.get_gen()),
                 &version,
                 next_level
             );
@@ -204,7 +204,7 @@ impl Compactor {
                 Ok(scope_ll) => version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_ll)),
                 Err(_) => ss_tables_l
             }.into_iter()
-                .unique_by(SSTable::get_gen)
+                .unique_by(|sst| sst.get_gen())
                 .collect_vec();
 
             // 数据合并并切片
@@ -233,8 +233,8 @@ impl Compactor {
     /// 3. 并行对Level ll的SSTables_ll通过KeySet进行迭代同时过滤数据
     /// 4. 组合SSTables_l和SSTables_ll的数据合并并进行唯一，排序处理
     async fn data_merge_and_sharding(
-        ss_tables_l: Vec<SSTable>,
-        ss_tables_ll: Vec<SSTable>,
+        ss_tables_l: Vec<&SSTable>,
+        ss_tables_ll: Vec<&SSTable>,
         block_cache: &BlockCache,
         sst_file_size: usize
     ) -> Result<MergeShardingVec> {
@@ -373,8 +373,8 @@ mod tests {
 
         let (_, vec_data) = &tokio_test::block_on(async move {
             Compactor::data_merge_and_sharding(
-                vec![ss_table_1, ss_table_2],
-                vec![ss_table_3, ss_table_4],
+                vec![&ss_table_1, &ss_table_2],
+                vec![&ss_table_3, &ss_table_4],
                 &cache,
                 config.sst_file_size
             ).await
