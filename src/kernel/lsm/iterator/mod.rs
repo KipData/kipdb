@@ -4,8 +4,6 @@ pub(crate) mod level_iter;
 pub(crate) mod version_iter;
 mod merging_iter;
 
-use std::ops::{Deref, DerefMut};
-use std::ptr::NonNull;
 use crate::kernel::Result;
 
 #[derive(Clone, Copy)]
@@ -32,33 +30,5 @@ pub(crate) trait Iter {
 
 /// 向前迭代器
 pub(crate) trait ForwardDiskIter: Iter {
-
     fn prev_err(&mut self) -> Result<Option<Self::Item>>;
-}
-
-pub(crate) struct InnerPtr<T>(NonNull<T>);
-
-unsafe impl<T: Send> Send for InnerPtr<T> { }
-unsafe impl<T: Sync> Sync for InnerPtr<T> { }
-
-impl<T> Clone for InnerPtr<T> {
-    fn clone(&self) -> Self {
-        InnerPtr(self.0)
-    }
-}
-
-impl<T> Copy for InnerPtr<T> { }
-
-impl<T> Deref for InnerPtr<T> {
-    type Target = NonNull<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for InnerPtr<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
 }

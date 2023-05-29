@@ -14,7 +14,6 @@ use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::IoType;
 use crate::kernel::lsm::{block, is_exceeded_then_minor};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
-use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::{Version, VersionStatus};
@@ -89,7 +88,7 @@ impl StoreInner {
         let ver_status = VersionStatus::load_with_path(
             config.clone(),
             mem_table.log_loader_clone()
-        ).await?;
+        )?;
 
         Ok(StoreInner {
             mem_table,
@@ -233,7 +232,7 @@ impl LsmStore {
         &self.inner.mem_table
     }
 
-    async fn current_version(&self) -> Arc<Version> {
+    pub(crate) async fn current_version(&self) -> Arc<Version> {
         self.inner.ver_status.current().await
     }
 
@@ -251,11 +250,6 @@ impl LsmStore {
             seq_id: Sequence::create(),
             writer_buf: SkipMap::new(),
         }
-    }
-
-    #[inline]
-    pub async fn disk_iter(&self) -> Result<VersionIter> {
-        VersionIter::new(self.current_version().await)
     }
 }
 

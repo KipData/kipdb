@@ -1,4 +1,3 @@
-use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::KeyValue;
@@ -10,7 +9,6 @@ const LEVEL_0_SEEK_MESSAGE: &str = "level 0 cannot seek";
 
 pub(crate) struct LevelIter<'a> {
     version: &'a Version,
-    block_cache: &'a BlockCache,
     level: usize,
     level_len: usize,
 
@@ -20,15 +18,14 @@ pub(crate) struct LevelIter<'a> {
 
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
-    pub(crate) fn new(version: &'a Version, level: usize, block_cache: &'a BlockCache) -> Result<LevelIter<'a>> {
+    pub(crate) fn new(version: &'a Version, level: usize) -> Result<LevelIter<'a>> {
         let ss_table = version.get_ss_table(level, 0)
             .ok_or(KernelError::DataEmpty)?;
-        let sst_iter = SSTableIter::new(ss_table, block_cache)?;
+        let sst_iter = SSTableIter::new(ss_table, &version.block_cache)?;
         let level_len = version.level_len(level);
 
         Ok(Self {
             version,
-            block_cache,
             level,
             level_len,
             offset: 0,
@@ -41,7 +38,7 @@ impl<'a> LevelIter<'a> {
         self.offset = offset;
         if self.is_valid() {
             if let Some(ss_table) = self.version.get_ss_table(self.level, offset) {
-                self.sst_iter = SSTableIter::new(ss_table, self.block_cache)?;
+                self.sst_iter = SSTableIter::new(ss_table, &self.version.block_cache)?;
                 return self.sst_iter.seek(seek);
             }
         }
@@ -109,7 +106,6 @@ impl Iter for LevelIter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
@@ -122,7 +118,6 @@ mod tests {
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -141,7 +136,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
 
             let sst_factory = IoFactory::new(
@@ -182,11 +177,6 @@ mod tests {
                 1,
                 IoType::Direct
             )?;
-            let cache = ShardingLruCache::new(
-                config.block_cache_size,
-                16,
-                RandomState::default()
-            )?;
             let vec_edit = vec![
                 // 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
                 VersionEdit::NewFile((vec![scope_1.clone()], 0),0),
@@ -198,7 +188,7 @@ mod tests {
 
             let version = ver_status.current().await;
 
-            let mut iterator = LevelIter::new(&version, 1, &cache)?;
+            let mut iterator = LevelIter::new(&version, 1)?;
             for i in 0..times {
                 assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
             }
@@ -215,7 +205,7 @@ mod tests {
 
             assert_eq!(iterator.seek(Seek::Last)?.unwrap(), vec_data[3999]);
 
-            let mut iterator_level_0 = LevelIter::new(&version, 0, &cache)?;
+            let mut iterator_level_0 = LevelIter::new(&version, 0)?;
 
             assert!(iterator_level_0.seek(Seek::Backward(&vec_data[3333].0)).is_err());
 

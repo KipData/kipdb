@@ -18,10 +18,11 @@ impl<'a> SSTableIter<'a> {
         let mut index_iter = BlockIter::new(
             ss_table.get_index_block(block_cache)?
         );
+        let index = index_iter.next_err()?.ok_or(KernelError::DataEmpty)?.1;
         let data_iter = Self::data_iter_init(
             ss_table,
             block_cache,
-            index_iter.next_err()?.ok_or(KernelError::DataEmpty)?.1
+            index
         )?;
 
         Ok(Self {

@@ -168,7 +168,7 @@ pub(crate) struct Version {
 }
 
 impl VersionStatus {
-    pub(crate) async fn load_with_path(
+    pub(crate) fn load_with_path(
         config: Config,
         wal: LogLoader,
     ) -> Result<Self> {
@@ -282,34 +282,21 @@ impl Version {
         self.meta_data.size_of_disk
     }
 
-    /// 创建一个空的Version
-    fn new(
+    /// 通过一组VersionEdit载入Version
+    fn load_from_log(
+        vec_log: Vec<VersionEdit>,
         ss_table_loader: &Arc<SSTableLoader>,
         block_cache: &Arc<BlockCache>,
-        clean_tx: UnboundedSender<CleanTag>,
-    ) -> Self {
-        Self {
+        clean_tx: UnboundedSender<CleanTag>
+    ) -> Result<Self>{
+        let mut version = Self {
             version_num: 0,
             ss_tables_loader: Arc::clone(ss_table_loader),
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_tx,
-        }
-    }
-
-    /// 通过一组VersionEdit载入Version
-    fn load_from_log(
-        vec_log: Vec<VersionEdit>,
-        ss_table_loader: &Arc<SSTableLoader>,
-        block_cache: &Arc<BlockCache>,
-        tag_tx: UnboundedSender<CleanTag>
-    ) -> Result<Self>{
-        let mut version = Self::new(
-            ss_table_loader,
-            block_cache,
-            tag_tx,
-        );
+        };
 
         version.apply(vec_log)?;
         version_display(&version, "load_from_log");
@@ -554,7 +541,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
 
             let sst_factory = IoFactory::new(
@@ -649,7 +636,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status_1 =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
 
             let sst_factory = IoFactory::new(
@@ -717,7 +704,7 @@ mod tests {
             drop(ver_status_1);
 
             let ver_status_2 =
-                VersionStatus::load_with_path(config, wal.clone()).await?;
+                VersionStatus::load_with_path(config, wal.clone())?;
             let version_2 = ver_status_2.current().await;
 
             assert_eq!(version_1.level_slice, version_2.level_slice);

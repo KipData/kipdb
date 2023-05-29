@@ -1,7 +1,5 @@
-
-use std::sync::Arc;
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::iterator::{Iter, InnerPtr, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::iterator::level_iter::LevelIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
@@ -11,28 +9,21 @@ use crate::kernel::Result;
 ///
 /// Tips: VersionIter与其他迭代器有一个不同点：VersionIter不支持DiskIter
 /// 因为VersionIter中各个层级直接的数据是范围重复的，这导致无法实现Seek以支持良好的range查询
-pub struct VersionIter<'a> {
-    version: InnerPtr<Arc<Version>>,
+#[allow(dead_code)]
+pub(crate) struct VersionIter<'a> {
+    version: &'a Version,
 
     offset: usize,
     level_iter: LevelIter<'a>
 }
 
 impl<'a> VersionIter<'a> {
-    pub(crate) fn new(version: Arc<Version>) -> Result<VersionIter<'a>> {
-        let version: InnerPtr<Arc<Version>> = InnerPtr(
-            Box::leak(Box::new(
-                version
-            )).into()
-        );
-
-        let level_iter = unsafe {
-            LevelIter::new(
-                version.as_ref(),
-                LEVEL_0,
-                &version.0.as_ref().block_cache
-            )?
-        };
+    #[allow(dead_code)]
+    pub(crate) fn new(version: &'a Version) -> Result<VersionIter<'a>> {
+        let level_iter = LevelIter::new(
+            version,
+            LEVEL_0
+        )?;
 
         Ok(Self {
             offset: 0,
@@ -41,43 +32,28 @@ impl<'a> VersionIter<'a> {
         })
     }
 
+    #[allow(dead_code)]
     fn is_valid(&self) -> bool {
         self.offset < 7
     }
 
     fn iter_sync(&mut self, offset: usize, seek: Seek<'_>) -> Result<Option<KeyValue>> {
-        let is_level_eq = self.offset != offset;
-        self.offset = offset;
-
         if !self.is_valid() {
             return Ok(None);
         }
-
-        if is_level_eq {
-            unsafe {
-                let version =  self.version.as_ref();
-                self.level_iter = LevelIter::new(
-                    version,
-                    offset,
-                    &self.version.0.as_ref().block_cache
-                )?;
-            }
+        if self.offset != offset {
+            self.level_iter = LevelIter::new(&self.version, offset)?;
         }
+        self.offset = offset;
         self.level_iter.seek(seek)
     }
 
-    pub fn next(&mut self) -> Result<Option<KeyValue>> {
+    #[allow(dead_code)]
+    pub(crate) fn next(&mut self) -> Result<Option<KeyValue>> {
         match self.level_iter.next_err()? {
             None => self.iter_sync(self.offset + 1, Seek::First),
             Some(item) => Ok(Some(item))
         }
-    }
-}
-
-#[allow(clippy::drop_copy)]
-impl Drop for VersionIter<'_> {
-    fn drop(&mut self) {
-        drop(self.version.as_ptr());
     }
 }
 
@@ -90,6 +66,7 @@ mod tests {
     use tempfile::TempDir;
     use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
     use crate::kernel::{KVStore, Result};
+    use crate::kernel::lsm::iterator::version_iter::VersionIter;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -128,7 +105,9 @@ mod tests {
                 kv_store.flush().await?;
             }
 
-            let mut iterator = kv_store.disk_iter().await?;
+            let version = kv_store.current_version().await;
+
+            let mut iterator = VersionIter::new(&version)?;
 
             for _ in (0..times).rev() {
                 let (key, _) = iterator.next()?.unwrap();
