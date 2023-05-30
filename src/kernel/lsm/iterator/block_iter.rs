@@ -59,8 +59,7 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
     }
 }
 
-#[allow(single_use_lifetimes)]
-impl<V> ForwardDiskIter for BlockIter<'_, V>
+impl<'a, V> ForwardDiskIter<'a> for BlockIter<'a, V>
     where V: Sync + Send + BlockItem
 {
      fn prev_err(&mut self) -> Result<Option<Self::Item>> {
@@ -70,8 +69,7 @@ impl<V> ForwardDiskIter for BlockIter<'_, V>
     }
 }
 
-#[allow(single_use_lifetimes)]
-impl<V> Iter for BlockIter<'_, V>
+impl<'a, V> Iter<'a> for BlockIter<'a, V>
     where V: Sync + Send + BlockItem
 {
     type Item = (Bytes, V);

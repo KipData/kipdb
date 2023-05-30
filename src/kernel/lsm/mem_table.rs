@@ -87,8 +87,7 @@ impl<'a> MemMapIter<'a> {
     }
 }
 
-#[allow(single_use_lifetimes)]
-impl Iter for MemMapIter<'_> {
+impl<'a> Iter<'a> for MemMapIter<'a> {
     type Item = KeyValue;
 
     fn next_err(&mut self) -> Result<Option<Self::Item>> {

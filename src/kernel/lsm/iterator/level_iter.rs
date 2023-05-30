@@ -56,8 +56,7 @@ impl<'a> LevelIter<'a> {
     }
 }
 
-#[allow(single_use_lifetimes)]
-impl ForwardDiskIter for LevelIter<'_> {
+impl<'a> ForwardDiskIter<'a> for LevelIter<'a> {
      fn prev_err(&mut self) -> Result<Option<Self::Item>> {
         match self.sst_iter.prev_err()? {
             None => {
@@ -72,8 +71,7 @@ impl ForwardDiskIter for LevelIter<'_> {
     }
 }
 
-#[allow(single_use_lifetimes)]
-impl Iter for LevelIter<'_> {
+impl<'a> Iter<'a> for LevelIter<'a> {
     type Item = KeyValue;
 
     fn next_err(&mut self) -> Result<Option<Self::Item>> {

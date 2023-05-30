@@ -18,7 +18,7 @@ pub(crate) enum Seek<'s> {
 }
 
 /// 硬盘迭代器
-pub(crate) trait Iter {
+pub(crate) trait Iter<'a> {
     type Item;
 
     fn next_err(&mut self) -> Result<Option<Self::Item>>;
@@ -29,6 +29,6 @@ pub(crate) trait Iter {
 }
 
 /// 向前迭代器
-pub(crate) trait ForwardDiskIter: Iter {
+pub(crate) trait ForwardDiskIter<'a>: Iter<'a> {
     fn prev_err(&mut self) -> Result<Option<Self::Item>>;
 }

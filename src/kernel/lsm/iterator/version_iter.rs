@@ -42,7 +42,7 @@ impl<'a> VersionIter<'a> {
             return Ok(None);
         }
         if self.offset != offset {
-            self.level_iter = LevelIter::new(&self.version, offset)?;
+            self.level_iter = LevelIter::new(self.version, offset)?;
         }
         self.offset = offset;
         self.level_iter.seek(seek)

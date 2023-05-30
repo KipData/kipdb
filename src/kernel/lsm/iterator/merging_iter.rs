@@ -33,13 +33,13 @@ impl Ord for IterKey {
 }
 
 pub(crate) struct MergingIter<'a> {
-    vec_iter: Vec<&'a mut dyn Iter<Item=KeyValue>>,
+    vec_iter: Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>>,
     map_buf: BTreeMap<IterKey, KeyValue>
 }
 
 impl<'a> MergingIter<'a> {
     #[allow(dead_code, clippy::mutable_key_type)]
-    pub(crate) fn new(mut vec_iter: Vec<&'a mut dyn Iter<Item=KeyValue>>) -> Result<Self> {
+    pub(crate) fn new(mut vec_iter: Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>>) -> Result<Self> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {
@@ -52,7 +52,7 @@ impl<'a> MergingIter<'a> {
     }
 }
 
-impl Iter for MergingIter<'_> {
+impl<'a> Iter<'a> for MergingIter<'a> {
     type Item = KeyValue;
 
     fn next_err(&mut self) -> Result<Option<Self::Item>> {
@@ -227,13 +227,13 @@ mod tests {
             RandomState::default()
         )?;
 
-        let mut map_iter = MemMapIter::new(&map);
+        let map_iter = MemMapIter::new(&map);
 
-        let mut sst_iter = SSTableIter::new(&ss_table, &cache)?;
+        let sst_iter = SSTableIter::new(&ss_table, &cache)?;
 
         let mut sequence_iter = sequence.into_iter();
 
-        let mut merging_iter = MergingIter::new(vec![&mut map_iter, &mut sst_iter])?;
+        let mut merging_iter = MergingIter::new(vec![Box::new(map_iter), Box::new(sst_iter)])?;
 
         assert_eq!(
             merging_iter.next_err()?,
