@@ -85,6 +85,11 @@ impl IoFactory {
         })
     }
 
+    #[inline]
+    pub fn get_path(&self) -> &PathBuf {
+        &self.dir_path
+    }
+
     fn load_mem_file(&self, gen: i64) -> MemIoWriter {
         self.mem_files.lock()
             .entry(gen)

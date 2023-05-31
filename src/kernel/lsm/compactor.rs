@@ -158,7 +158,7 @@ impl Compactor {
             } else { break }
         }
         self.ver_status()
-            .log_and_apply(vec_ver_edit).await?;
+            .log_and_apply(vec_ver_edit, self.config().ver_log_snapshot_threshold).await?;
         Ok(())
     }
 
