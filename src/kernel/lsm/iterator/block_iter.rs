@@ -1,11 +1,8 @@
-use core::slice::SlicePattern;
 use std::cmp::min;
-use std::iter::Iterator;
 use bytes::Bytes;
-use itertools::Itertools;
 use async_trait::async_trait;
 use crate::kernel::lsm::iterator::{Seek, DiskIter};
-use crate::kernel::lsm::block::{Block, BlockItem};
+use crate::kernel::lsm::block::{Block, BlockItem, Entry};
 use crate::kernel::Result;
 use crate::KernelError;
 
@@ -36,14 +33,14 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
 
     fn item(&self) -> (Bytes, T) {
         let offset = self.offset - 1;
-        let entry = self.block.get_entry(offset);
+        let Entry{ key, item, .. } = self.block.get_entry(offset);
+        let item_key = if offset % self.block.restart_interval() != 0 {
+            Bytes::from([self.buf_shared_key, &key[..]].concat())
+        } else {
+            key.clone()
+        };
 
-        (if offset % self.block.restart_interval() != 0 {
-            Bytes::from(self.buf_shared_key.iter()
-                .chain(entry.key().as_slice())
-                .copied()
-                .collect_vec())
-        } else { entry.key().clone() }, entry.item().clone())
+        (item_key, item.clone())
     }
 
     fn offset_move(&mut self, offset: usize) -> Result<(Bytes, T)>{
