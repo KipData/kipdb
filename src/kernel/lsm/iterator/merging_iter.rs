@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::ops::Bound::{Included, Unbounded};
 use bytes::Bytes;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
@@ -34,7 +35,8 @@ impl Ord for IterKey {
 
 pub(crate) struct MergingIter<'a> {
     vec_iter: Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>>,
-    map_buf: BTreeMap<IterKey, KeyValue>
+    map_buf: BTreeMap<IterKey, KeyValue>,
+    pre_key: Option<Bytes>
 }
 
 impl<'a> MergingIter<'a> {
@@ -48,7 +50,7 @@ impl<'a> MergingIter<'a> {
             }
         }
 
-        Ok(MergingIter { vec_iter, map_buf })
+        Ok(MergingIter { vec_iter, map_buf, pre_key: None })
     }
 }
 
@@ -56,10 +58,19 @@ impl<'a> Iter<'a> for MergingIter<'a> {
     type Item = KeyValue;
 
     fn next_err(&mut self) -> Result<Option<Self::Item>> {
-        if let Some((IterKey{ num, .. }, old_item)) = self.map_buf.pop_first() {
+        while let Some((IterKey { num, .. }, old_item)) = self.map_buf.pop_first() {
             if let Some(item) = self.vec_iter[num].next_err()? {
                 Self::buf_map_insert(&mut self.map_buf, num, item);
             }
+
+            // 跳过重复元素
+            if let Some(key) = &self.pre_key {
+                if key == &old_item.0 {
+                    continue
+                }
+            }
+            self.pre_key = Some(old_item.0.clone());
+
             return Ok(Some(old_item))
         }
 
@@ -85,7 +96,20 @@ impl<'a> Iter<'a> for MergingIter<'a> {
         if let Seek::Last = seek {
             self.map_buf.clear();
 
-            Ok(seek_map.pop_last().map(|(_, item)| item))
+            // 有点复杂不是么
+            // 先弹出最小的元素
+            // 当多个Iter seek至最尾端后存在最小元素且最小元素的key有重复的情况下，去num（iter序号）最小的元素
+            // 当num为0时，则直接选择该最优先的iter的元素
+            Ok(seek_map.pop_last()
+                .map(|(IterKey{ key, num }, item)| {
+                    (num != 0).then(|| {
+                        seek_map.range((Included(&IterKey { num: 0, key }), Unbounded))
+                            .next()
+                            .map(|(_, range_item)| range_item.clone())
+                    })
+                        .flatten()
+                        .unwrap_or(item)
+                }))
         } else {
             self.map_buf = seek_map;
 
@@ -130,15 +154,15 @@ mod tests {
             (Bytes::from(vec![b'8']), None),
         ];
         let test_sequence = vec![
-            (Bytes::from(vec![b'1']), None),
-            (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
-            (Bytes::from(vec![b'4']), None),
-            (Bytes::from(vec![b'6']), None),
-            (Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1']))),
-            (Bytes::from(vec![b'8']), None),
-            (Bytes::from(vec![b'1']), None),
-            (Bytes::from(vec![b'8']), None),
-            (Bytes::from(vec![b'6']), None)
+            Some((Bytes::from(vec![b'1']), None)),
+            Some((Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0'])))),
+            Some((Bytes::from(vec![b'4']), None)),
+            Some((Bytes::from(vec![b'6']), None)),
+            Some((Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1'])))),
+            Some((Bytes::from(vec![b'8']), None)),
+            Some((Bytes::from(vec![b'1']), None)),
+            Some((Bytes::from(vec![b'8']), None)),
+            Some((Bytes::from(vec![b'6']), None))
         ];
 
         test_with_data(data_1, data_2, test_sequence)
@@ -157,15 +181,15 @@ mod tests {
             (Bytes::from(vec![b'8']), None),
         ];
         let test_sequence = vec![
-            (Bytes::from(vec![b'1']), None),
-            (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
-            (Bytes::from(vec![b'4']), None),
-            (Bytes::from(vec![b'6']), None),
-            (Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1']))),
-            (Bytes::from(vec![b'8']), None),
-            (Bytes::from(vec![b'1']), None),
-            (Bytes::from(vec![b'8']), None),
-            (Bytes::from(vec![b'6']), None)
+            Some((Bytes::from(vec![b'1']), None)),
+            Some((Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0'])))),
+            Some((Bytes::from(vec![b'4']), None)),
+            Some((Bytes::from(vec![b'6']), None)),
+            Some((Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1'])))),
+            Some((Bytes::from(vec![b'8']), None)),
+            Some((Bytes::from(vec![b'1']), None)),
+            Some((Bytes::from(vec![b'8']), None)),
+            Some((Bytes::from(vec![b'6']), None))
         ];
 
         test_with_data(data_1, data_2, test_sequence)
@@ -184,21 +208,21 @@ mod tests {
             (Bytes::from(vec![b'6']), None),
         ];
         let test_sequence = vec![
-            (Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0']))),
-            (Bytes::from(vec![b'4']), None),
-            (Bytes::from(vec![b'5']), None),
-            (Bytes::from(vec![b'5']), Some(Bytes::from(vec![b'1']))),
-            (Bytes::from(vec![b'6']), Some(Bytes::from(vec![b'0']))),
-            (Bytes::from(vec![b'6']), None),
-            (Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0']))),
-            (Bytes::from(vec![b'6']), None),
-            (Bytes::from(vec![b'5']), None)
+            Some((Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0'])))),
+            Some((Bytes::from(vec![b'5']), None)),
+            Some((Bytes::from(vec![b'6']), Some(Bytes::from(vec![b'0'])))),
+            None,
+            None,
+            None,
+            Some((Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0'])))),
+            Some((Bytes::from(vec![b'6']), Some(Bytes::from(vec![b'0'])))),
+            Some((Bytes::from(vec![b'5']), None))
         ];
 
         test_with_data(data_1, data_2, test_sequence)
     }
 
-    fn test_with_data(data_1: Vec<KeyValue>, data_2: Vec<KeyValue>, sequence: Vec<KeyValue>) -> Result<()> {
+    fn test_with_data(data_1: Vec<KeyValue>, data_2: Vec<KeyValue>, sequence: Vec<Option<KeyValue>>) -> Result<()> {
         let map = MemMap::from_iter(
             data_1.into_iter()
                 .map(|(key, value)| (InternalKey::new(key), value))
@@ -237,47 +261,47 @@ mod tests {
 
         assert_eq!(
             merging_iter.next_err()?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.next_err()?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.next_err()?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.next_err()?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.next_err()?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.next_err()?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.seek(Seek::First)?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.seek(Seek::Last)?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         assert_eq!(
             merging_iter.seek(Seek::Backward(&vec![b'5']))?,
-            sequence_iter.next()
+            sequence_iter.next().flatten()
         );
 
         Ok(())
