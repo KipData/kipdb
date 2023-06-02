@@ -20,7 +20,7 @@ use crate::kernel::utils::lru_cache::ShardingLruCache;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
-pub(crate) const DEFAULT_VERSION_LOG_THRESHOLD: usize = 1000;
+pub(crate) const DEFAULT_VERSION_LOG_THRESHOLD: usize = 233;
 
 
 pub(crate) type LevelSlice = [Vec<Scope>; 7];
@@ -272,11 +272,12 @@ impl VersionStatus {
         version_display(&new_version, "log_and_apply");
 
         if self.edit_approximate_count.load(Ordering::Relaxed) >= snapshot_threshold {
-            Self::write_snap_shot(&mut inner, &self.log_factory, &vec_version_edit).await?;
+            Self::write_snap_shot(&mut inner, &self.log_factory).await?;
         } else {
-            let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&vec_version_edit)?)?;
             let _ = self.edit_approximate_count.fetch_add(1, Ordering::Relaxed);
         }
+
+        let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&vec_version_edit)?)?;
 
         new_version.apply(vec_version_edit)?;
         inner.version = Arc::new(new_version);
@@ -284,7 +285,7 @@ impl VersionStatus {
         Ok(())
     }
 
-    async fn write_snap_shot(inner: &mut VersionInner, log_factory: &IoFactory, vec_version_edit: &Vec<VersionEdit>) -> Result<()> {
+    async fn write_snap_shot(inner: &mut VersionInner, log_factory: &IoFactory) -> Result<()> {
         let version = &inner.version;
         info!("[Version: {}][write_snap_shot]: Start Snapshot!", version.version_num);
         let new_gen = Gen::create();
@@ -296,9 +297,9 @@ impl VersionStatus {
 
         old_writer.flush()?;
 
+        // 在快照中 append edit, 防止快照中宕机发生在删除旧 log 之后造成 增量 edit 未写入新log的问题
         let snap_shot_version_edits = version.to_vec_edit();
         let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&snap_shot_version_edits)?)?;
-        let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(vec_version_edit)?)?;
 
         // 删除旧的 version log
         log_factory.clean(old_gen)?;
@@ -420,7 +421,6 @@ impl Version {
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
     pub(crate) fn to_vec_edit(&self) -> Vec<VersionEdit> {
-        // 在快照中 append edit, 防止快照中宕机发生在删除旧 log 之后造成 增量 edit 未写入新log的问题
         self.level_slice.iter()
             .enumerate()
             .filter_map(|(level, vec_scope)| {
@@ -430,7 +430,7 @@ impl Version {
             .collect_vec()
     }
 
-    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<SSTable> {
+    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<&SSTable> {
         self.level_slice[level].get(offset)
             .and_then(|scope| self.ss_tables_loader.get(scope.get_gen()))
     }
