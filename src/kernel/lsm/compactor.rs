@@ -151,14 +151,14 @@ impl Compactor {
                 vec_ver_edit.append(&mut vec![
                     VersionEdit::NewFile((vec_new_scope, level + 1), index),
                     VersionEdit::DeleteFile((del_gens_l, level)),
-                    VersionEdit::DeleteFile((del_gens_ll, level))
+                    VersionEdit::DeleteFile((del_gens_ll, level + 1))
                 ]);
                 info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
                 level += 1;
             } else { break }
         }
         self.ver_status()
-            .log_and_apply(vec_ver_edit).await?;
+            .log_and_apply(vec_ver_edit, self.config().ver_log_snapshot_threshold).await?;
         Ok(())
     }
 

@@ -1,28 +1,31 @@
 use std::collections::hash_map::RandomState;
+use std::mem;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use bytes::Bytes;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::RwLock;
 use tracing::{error, info};
-use crate::kernel::Result;
+use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::SSTableLoader;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
-use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::lsm_kv::{Config, Gen};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
+pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
+pub(crate) const DEFAULT_VERSION_LOG_THRESHOLD: usize = 1000;
 
-pub(crate) const DEFAULT_VERSION_PATH: (&str, Option<i64>) = ("version", Some(0));
 
 pub(crate) type LevelSlice = [Vec<Scope>; 7];
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub(crate) enum VersionEdit {
     DeleteFile((Vec<i64>, usize)),
     // 确保新File的Gen都是比旧Version更大(新鲜)
@@ -35,13 +38,13 @@ pub(crate) enum VersionEdit {
 #[derive(Debug)]
 enum CleanTag {
     Clean(u64),
-    Add(u64, Vec<i64>)
+    Add(u64, Vec<i64>),
 }
 
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 enum EditType {
     Add = 0,
-    Del = 1
+    Del = 1,
 }
 
 /// SSTable的文件删除器
@@ -57,7 +60,7 @@ struct Cleaner {
 impl Cleaner {
     fn new(
         ss_table_loader: &Arc<SSTableLoader>,
-        tag_rx: UnboundedReceiver<CleanTag>
+        tag_rx: UnboundedReceiver<CleanTag>,
     ) -> Self {
         Self {
             ss_table_loader: Arc::clone(ss_table_loader),
@@ -73,9 +76,9 @@ impl Cleaner {
         loop {
             match self.tag_rx.recv().await {
                 Some(CleanTag::Clean(ver_num)) => self.clean(ver_num),
-                Some(CleanTag::Add(ver_num,  vec_gen)) => {
+                Some(CleanTag::Add(ver_num, vec_gen)) => {
                     self.del_gens.push((ver_num, vec_gen));
-                },
+                }
                 // 关闭时对此次运行中的暂存Version全部进行删除
                 None => {
                     let all_ver_num = self.del_gens.iter()
@@ -85,7 +88,7 @@ impl Cleaner {
                     for ver_num in all_ver_num {
                         self.clean(ver_num)
                     }
-                    return
+                    return;
                 }
             }
         }
@@ -131,13 +134,15 @@ impl Cleaner {
 struct VersionInner {
     version: Arc<Version>,
     /// TODO: 日志快照
-    ver_log_writer: LogWriter<Box<dyn IoWriter>>
+    ver_log_writer: (LogWriter<Box<dyn IoWriter>>, i64),
 }
 
 pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
     ss_table_loader: Arc<SSTableLoader>,
     pub(crate) sst_factory: Arc<IoFactory>,
+    pub(crate) log_factory: Arc<IoFactory>,
+    edit_approximate_count: AtomicUsize,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -164,7 +169,7 @@ pub(crate) struct Version {
     meta_data: VersionMeta,
     /// 清除信号发送器
     /// Drop时通知Cleaner进行删除
-    clean_tx: UnboundedSender<CleanTag>
+    clean_tx: UnboundedSender<CleanTag>,
 }
 
 impl VersionStatus {
@@ -177,12 +182,12 @@ impl VersionStatus {
         let block_cache = Arc::new(ShardingLruCache::new(
             config.block_cache_size,
             16,
-            RandomState::default()
+            RandomState::default(),
         )?);
         let sst_factory = Arc::new(
             IoFactory::new(
                 sst_path,
-                FileExtension::SSTable
+                FileExtension::SSTable,
             )?
         );
 
@@ -190,20 +195,29 @@ impl VersionStatus {
             SSTableLoader::new(
                 config.clone(),
                 Arc::clone(&sst_factory),
-                wal
+                wal,
+            )?
+        );
+
+        let log_factory = Arc::new(
+            IoFactory::new(
+                config.path().join(DEFAULT_VERSION_PATH),
+                FileExtension::Log,
             )?
         );
 
         let (ver_log_loader, vec_batch_log, log_gen) = LogLoader::reload(
             config.path(),
-            DEFAULT_VERSION_PATH,
+            (DEFAULT_VERSION_PATH, Some(snapshot_gen(&log_factory)?)),
             IoType::Direct,
-            |bytes| Ok(bincode::deserialize::<Vec<VersionEdit>>(bytes)?)
+            |bytes| Ok(bincode::deserialize::<Vec<VersionEdit>>(bytes)?),
         )?;
 
         let vec_log = vec_batch_log.into_iter()
             .flatten()
             .collect_vec();
+
+        let edit_approximate_count = AtomicUsize::new(vec_log.len());
 
         let (tag_tx, tag_rx) = unbounded_channel();
         let version = Arc::new(
@@ -211,13 +225,13 @@ impl VersionStatus {
                 vec_log,
                 &ss_table_loader,
                 &block_cache,
-                tag_tx
+                tag_tx,
             )?
         );
 
         let mut cleaner = Cleaner::new(
             &ss_table_loader,
-            tag_rx
+            tag_rx,
         );
 
         let _ignore = tokio::spawn(async move {
@@ -227,9 +241,11 @@ impl VersionStatus {
         let ver_log_writer = ver_log_loader.writer(log_gen)?;
 
         Ok(Self {
-            inner: RwLock::new(VersionInner { version, ver_log_writer }),
+            inner: RwLock::new(VersionInner { version, ver_log_writer: ((ver_log_writer), log_gen) }),
             ss_table_loader,
             sst_factory,
+            log_factory,
+            edit_approximate_count,
         })
     }
 
@@ -248,22 +264,64 @@ impl VersionStatus {
     }
 
     /// 对一组VersionEdit持久化并应用
-    pub(crate) async fn log_and_apply(&self, vec_version_edit: Vec<VersionEdit>, ) -> Result<()> {
+    pub(crate) async fn log_and_apply(&self, vec_version_edit: Vec<VersionEdit>, snapshot_threshold: usize) -> Result<()> {
         let mut new_version = Version::clone(
-            self.current().await
-                .as_ref()
+            self.current().await.as_ref()
         );
         let mut inner = self.inner.write().await;
         version_display(&new_version, "log_and_apply");
 
-        let _ = inner.ver_log_writer.add_record(&bincode::serialize(&vec_version_edit)?)?;
+        if self.edit_approximate_count.load(Ordering::Relaxed) >= snapshot_threshold {
+            Self::write_snap_shot(&mut inner, &self.log_factory, &vec_version_edit).await?;
+        } else {
+            let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&vec_version_edit)?)?;
+            let _ = self.edit_approximate_count.fetch_add(1, Ordering::Relaxed);
+        }
 
         new_version.apply(vec_version_edit)?;
         inner.version = Arc::new(new_version);
 
         Ok(())
     }
+
+    async fn write_snap_shot(inner: &mut VersionInner, log_factory: &IoFactory, vec_version_edit: &Vec<VersionEdit>) -> Result<()> {
+        let version = &inner.version;
+        info!("[Version: {}][write_snap_shot]: Start Snapshot!", version.version_num);
+        let new_gen = Gen::create();
+        let new_writer = log_factory.writer(new_gen, IoType::Direct)?;
+        let (mut old_writer, old_gen) = mem::replace(
+            &mut inner.ver_log_writer,
+            (LogWriter::new(new_writer), new_gen)
+        );
+
+        old_writer.flush()?;
+
+        let snap_shot_version_edits = version.to_vec_edit();
+        let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&snap_shot_version_edits)?)?;
+        let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(vec_version_edit)?)?;
+
+        // 删除旧的 version log
+        log_factory.clean(old_gen)?;
+
+        Ok(())
+    }
 }
+
+fn snapshot_gen(factory: &IoFactory) -> Result<i64>{
+    if let Ok(gen_list) = sorted_gen_list(factory.get_path(), FileExtension::Log) {
+        return Ok(match *gen_list.as_slice() {
+            [.., old_snapshot, new_snapshot] => {
+                factory.clean(new_snapshot)?;
+                old_snapshot
+            },
+            [snapshot] => snapshot,
+            _ => Gen::create(),
+        });
+    }
+
+    Ok(Gen::create())
+}
+
 
 impl Version {
     pub(crate) fn get_len(&self) -> usize {
@@ -360,7 +418,19 @@ impl Version {
         [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()]
     }
 
-    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<&SSTable> {
+    /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
+    pub(crate) fn to_vec_edit(&self) -> Vec<VersionEdit> {
+        // 在快照中 append edit, 防止快照中宕机发生在删除旧 log 之后造成 增量 edit 未写入新log的问题
+        self.level_slice.iter()
+            .enumerate()
+            .filter_map(|(level, vec_scope)| {
+                (!vec_scope.is_empty())
+                    .then(|| VersionEdit::NewFile((vec_scope.clone(), level), 0))
+            })
+            .collect_vec()
+    }
+
+    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<SSTable> {
         self.level_slice[level].get(offset)
             .and_then(|scope| self.ss_tables_loader.get(scope.get_gen()))
     }
@@ -368,13 +438,13 @@ impl Version {
     pub(crate) fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
         self.level_slice[level].iter()
             .enumerate()
-            .find(|(_ , scope)| source_gen.eq(&scope.get_gen()))
+            .find(|(_, scope)| source_gen.eq(&scope.get_gen()))
             .map(|(index, _)| index)
     }
 
     pub(crate) fn first_ss_tables(&self, level: usize, size: usize) -> Option<(Vec<&SSTable>, Vec<Scope>)> {
         if self.level_slice[level].is_empty() {
-            return None
+            return None;
         }
 
         Some(self.level_slice[level]
@@ -423,7 +493,7 @@ impl Version {
             if scope.meet_with_key(key) {
                 if let Some(ss_table) = ss_table_loader.get(scope.get_gen()) {
                     if let Some(value) = ss_table.query_with_key(key, block_cache)? {
-                        return Ok(Some(value))
+                        return Ok(Some(value));
                     }
                 }
             }
@@ -460,7 +530,7 @@ impl VersionMeta {
     fn statistical_process(
         &mut self,
         ss_table_loader: &SSTableLoader,
-        vec_statistics_gen: Vec<(EditType, i64)>
+        vec_statistics_gen: Vec<(EditType, i64)>,
     ) -> Result<()> {
         // 优先对新增数据进行统计再统一减去对应的数值避免删除动作聚集在前部分导致数值溢出
         for (event_type, gen) in vec_statistics_gen
@@ -518,9 +588,8 @@ mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::lsm_kv::Config;
-    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::SSTable;
-    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, Version, VersionEdit, VersionStatus};
+    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH, Version, VersionEdit, VersionStatus};
     use crate::kernel::Result;
 
     #[test]
@@ -528,14 +597,13 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {
-
             let config = Config::new(temp_dir.into_path());
 
             let (wal, _, _) = LogLoader::reload(
                 config.path(),
-                (DEFAULT_WAL_PATH, Some(1)),
+                (DEFAULT_VERSION_PATH, Some(1)),
                 IoType::Direct,
-                |_| Ok(())
+                |_| Ok(()),
             )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
@@ -546,7 +614,7 @@ mod tests {
 
             let sst_factory = IoFactory::new(
                 config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-                FileExtension::SSTable
+                FileExtension::SSTable,
             )?;
 
             let (ss_table_1, scope_1) = SSTable::create_for_mem_table(
@@ -555,7 +623,7 @@ mod tests {
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
                 0,
-                IoType::Direct
+                IoType::Direct,
             )?;
 
             let (ss_table_2, scope_2) = SSTable::create_for_mem_table(
@@ -564,26 +632,26 @@ mod tests {
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
                 0,
-                IoType::Direct
+                IoType::Direct,
             )?;
 
             ver_status.insert_vec_ss_table(vec![ss_table_1])?;
             ver_status.insert_vec_ss_table(vec![ss_table_2])?;
 
             let vec_edit_1 = vec![
-                VersionEdit::NewFile((vec![scope_1], 0),0),
+                VersionEdit::NewFile((vec![scope_1], 0), 0),
             ];
 
-            ver_status.log_and_apply(vec_edit_1).await?;
+            ver_status.log_and_apply(vec_edit_1, 2).await?;
 
             let version_1 = Arc::clone(&ver_status.current().await);
 
             let vec_edit_2 = vec![
-                VersionEdit::NewFile((vec![scope_2], 0),0),
+                VersionEdit::NewFile((vec![scope_2.clone()], 0), 0),
                 VersionEdit::DeleteFile((vec![1], 0)),
             ];
 
-            ver_status.log_and_apply(vec_edit_2).await?;
+            ver_status.log_and_apply(vec_edit_2, 2).await?;
 
             let version_2 = Arc::clone(&ver_status.current().await);
 
@@ -592,7 +660,24 @@ mod tests {
             ];
 
             // 用于去除version2的引用计数
-            ver_status.log_and_apply(vec_edit_3).await?;
+            ver_status.log_and_apply(vec_edit_3, 2).await?;
+
+            // 测试对比快照
+            let (_, snapshot, _) = LogLoader::reload(
+                config.path(),
+                (DEFAULT_VERSION_PATH, None),
+                IoType::Direct,
+                |bytes| Ok(bincode::deserialize::<Vec<VersionEdit>>(bytes)?),
+            )?;
+
+            assert_eq!(
+                snapshot,
+                vec![
+                    vec![VersionEdit::NewFile((vec![scope_2], 0), 0)],
+                    vec![VersionEdit::DeleteFile((vec![2], 0)),]
+                ]
+            );
+
 
             assert!(sst_factory.exists(1)?);
             assert!(sst_factory.exists(2)?);
@@ -623,14 +708,13 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {
-
             let config = Config::new(temp_dir.into_path());
 
             let (wal, _, _) = LogLoader::reload(
                 config.path(),
-                (DEFAULT_WAL_PATH, Some(1)),
+                (DEFAULT_VERSION_PATH, Some(1)),
                 IoType::Direct,
-                |_| Ok(())
+                |_| Ok(()),
             )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前
@@ -641,7 +725,7 @@ mod tests {
 
             let sst_factory = IoFactory::new(
                 config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-                FileExtension::SSTable
+                FileExtension::SSTable,
             )?;
 
             let (ss_table_1, scope_1) = SSTable::create_for_mem_table(
@@ -650,7 +734,7 @@ mod tests {
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
                 0,
-                IoType::Direct
+                IoType::Direct,
             )?;
 
             let (ss_table_2, scope_2) = SSTable::create_for_mem_table(
@@ -659,18 +743,18 @@ mod tests {
                 &sst_factory,
                 vec![(Bytes::from_static(b"test"), None)],
                 0,
-                IoType::Direct
+                IoType::Direct,
             )?;
 
             let vec_edit = vec![
-                VersionEdit::NewFile((vec![scope_1], 0),0),
-                VersionEdit::NewFile((vec![scope_2], 0),0),
+                VersionEdit::NewFile((vec![scope_1], 0), 0),
+                VersionEdit::NewFile((vec![scope_2], 0), 0),
                 VersionEdit::DeleteFile((vec![2], 0)),
             ];
 
             ver_status_1.insert_vec_ss_table(vec![ss_table_1])?;
             ver_status_1.insert_vec_ss_table(vec![ss_table_2])?;
-            ver_status_1.log_and_apply(vec_edit).await?;
+            ver_status_1.log_and_apply(vec_edit, 10).await?;
 
             let (ss_table_3, scope_3) = SSTable::create_for_mem_table(
                 &config,
@@ -678,7 +762,7 @@ mod tests {
                 &sst_factory,
                 vec![(Bytes::from_static(b"test3"), None)],
                 0,
-                IoType::Direct
+                IoType::Direct,
             )?;
 
             let (ss_table_4, scope_4) = SSTable::create_for_mem_table(
@@ -687,17 +771,17 @@ mod tests {
                 &sst_factory,
                 vec![(Bytes::from_static(b"test4"), None)],
                 0,
-                IoType::Direct
+                IoType::Direct,
             )?;
 
             let vec_edit2 = vec![
-                VersionEdit::NewFile((vec![scope_3], 0),0),
-                VersionEdit::NewFile((vec![scope_4], 0),0),
+                VersionEdit::NewFile((vec![scope_3], 0), 0),
+                VersionEdit::NewFile((vec![scope_4], 0), 0),
             ];
 
             ver_status_1.insert_vec_ss_table(vec![ss_table_3])?;
             ver_status_1.insert_vec_ss_table(vec![ss_table_4])?;
-            ver_status_1.log_and_apply(vec_edit2).await?;
+            ver_status_1.log_and_apply(vec_edit2, 10).await?;
 
             let version_1 = Version::clone(ver_status_1.current().await.as_ref());
 

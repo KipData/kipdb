@@ -182,7 +182,7 @@ mod tests {
             ];
 
             ver_status.insert_vec_ss_table(vec![ss_table_1, ss_table_2])?;
-            ver_status.log_and_apply(vec_edit).await?;
+            ver_status.log_and_apply(vec_edit, 10).await?;
 
             let version = ver_status.current().await;
 

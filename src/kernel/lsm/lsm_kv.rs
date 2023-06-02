@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 use tracing::{error, info};
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::IoType;
-use crate::kernel::lsm::{block, is_exceeded_then_minor};
+use crate::kernel::lsm::{block, is_exceeded_then_minor, version};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
@@ -289,6 +289,8 @@ pub struct Config {
     pub(crate) data_restart_interval: usize,
     /// IndexBloc的前缀压缩Restart间隔
     pub(crate) index_restart_interval: usize,
+    /// VersionLog触发快照化的运行时计量阈值
+    pub(crate) ver_log_snapshot_threshold: usize,
 }
 
 impl Config {
@@ -309,6 +311,7 @@ impl Config {
             block_size: block::DEFAULT_BLOCK_SIZE,
             data_restart_interval: block::DEFAULT_DATA_RESTART_INTERVAL,
             index_restart_interval: block::DEFAULT_INDEX_RESTART_INTERVAL,
+            ver_log_snapshot_threshold: version::DEFAULT_VERSION_LOG_THRESHOLD,
         }
     }
 
@@ -397,6 +400,12 @@ impl Config {
     #[inline]
     pub fn wal_io_type(mut self, wal_io_type: IoType) -> Self {
         self.wal_io_type = wal_io_type;
+        self
+    }
+
+    #[inline]
+    pub fn ver_log_snapshot_threshold(mut self, ver_log_snapshot_threshold: usize) -> Self {
+        self.ver_log_snapshot_threshold = ver_log_snapshot_threshold;
         self
     }
 }
