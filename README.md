@@ -54,41 +54,41 @@ docker build -t kould/kip-db:v1 .
 docker run kould/kip-db:v1
 ```
 
-### 直接调用
+### 直接调用(基本使用)
 ```rust
 /// 指定文件夹以开启一个KvStore
 let kip_db = LsmStore::open("/welcome/kip_db").await?;
 
 // 插入数据
-kip_db.set(&vec![b'k'], vec![b'v']).await?;
+kip_db.set(&b"https://github.com/KKould/KipDB", Bytes::from(&b"your star plz"[..])).await?;
 // 获取数据
-let key_1 = kip_db.get(&vec![b'k']).await?;
+let six_pence = kip_db.get(&b"my deposit").await?;
 // 已占有硬盘大小
-kip_db.size_of_disk().await?
+let just_lot = kip_db.size_of_disk().await?
 // 已有数据数量
-kip_db.len().await?;
+let how_many_times_you_inserted = kip_db.len().await?;
 // 删除数据
-kip_db.remove(&vec![b'k']).await?;
+kip_db.remove(&b"ex girlfriend").await?;
 
 // 创建事务
 let mut transaction = kip_db.new_transaction().await?;
 // 插入数据至事务中
-transaction.set(&vec![b'k'], vec![b'v']);
+transaction.set(&b"this moment", Bytes::from(&b"hope u like it"[..]));
 // 删除该事务中key对应的value
-transaction.remove(&vec![b'k']).await?;
+transaction.remove(&b"trouble")?;
 // 获取此事务中key对应的value
-let key_2 = transaction.get(&vec![b'k']).await?;
+let ping_cap = transaction.get(&b"dream job")?;
 // 提交事务
-transaction.commit().await?;
+transaction.commit()?;
 
 // 创建持久化数据迭代器
-let mut disk_iter = kip_db.disk_iter().await?;
-// 获取上一个元素
-let data0 = iterator.prev()?;
+let guard = kip_db.iter().await?;
+let mut iterator = guard.iter()?;
+
 // 获取下一个元素
-let data1 = iterator.next()?;
+let hello = iterator.next_err()?;
 // 移动至第一个元素
-let data2 = iterator.seek(Seek::First)?;
+let world = iterator.seek(Seek::Last)?;
 
 // 强制数据刷入硬盘
 kip_db.flush().await?;
@@ -196,6 +196,7 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
     - size_of_disk ✅
     - clear
     - contains_key
+    - iter ✅
     - len ✅
     - is_empty ✅
     - ...
