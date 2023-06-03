@@ -1,10 +1,6 @@
-use std::mem;
-use async_trait::async_trait;
-use crate::kernel::lsm::block::{BlockCache, Value};
-use crate::kernel::lsm::iterator::{DiskIter, InnerPtr, Seek};
+use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -13,100 +9,75 @@ const LEVEL_0_SEEK_MESSAGE: &str = "level 0 cannot seek";
 
 pub(crate) struct LevelIter<'a> {
     version: &'a Version,
-    block_cache: &'a BlockCache,
     level: usize,
     level_len: usize,
 
-    ss_table_ptr: InnerPtr<SSTable>,
     offset: usize,
     sst_iter: SSTableIter<'a>,
 }
 
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
-    pub(crate) async fn new(version: &'a Version, level: usize, block_cache: &'a BlockCache) -> Result<LevelIter<'a>> {
-        let ss_table_ptr: InnerPtr<SSTable> = Self::get_ss_table_ptr(version, level, 0).await?;
-        let sst_iter = unsafe {
-            SSTableIter::new(
-                ss_table_ptr.0.as_ref(),
-                block_cache
-            ).await?
-        };
+    pub(crate) fn new(version: &'a Version, level: usize) -> Result<LevelIter<'a>> {
+        let ss_table = version.get_ss_table(level, 0)
+            .ok_or(KernelError::DataEmpty)?;
+        let sst_iter = SSTableIter::new(ss_table, &version.block_cache)?;
         let level_len = version.level_len(level);
 
         Ok(Self {
             version,
-            block_cache,
             level,
             level_len,
-            ss_table_ptr,
             offset: 0,
             sst_iter,
         })
     }
 
-    async fn get_ss_table_ptr(version: &Version, level: usize, offset: usize) -> Result<InnerPtr<SSTable>> {
-        let ss_table = version.get_ss_table(level, offset)
-            .ok_or(KernelError::DataEmpty)?;
-
-        Ok(InnerPtr(Box::leak(Box::new(ss_table)).into()))
-    }
-
     #[allow(clippy::drop_copy)]
-    async fn sst_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<KeyValue> {
+     fn sst_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
         self.offset = offset;
         if self.is_valid() {
-            // 手动析构旧的ss_table裸指针
-            drop(mem::replace(
-                &mut self.ss_table_ptr,
-                Self::get_ss_table_ptr(self.version, self.level, offset).await?
-            ).as_ptr());
-
-            unsafe {
-                let ss_table = self.ss_table_ptr.as_ref();
-                self.sst_iter = SSTableIter::new(
-                    ss_table,
-                    self.block_cache
-                ).await?;
+            if let Some(ss_table) = self.version.get_ss_table(self.level, offset) {
+                self.sst_iter = SSTableIter::new(ss_table, &self.version.block_cache)?;
+                return self.sst_iter.seek(seek);
             }
-            self.sst_iter.seek(seek).await
-        } else { Err(KernelError::OutOfBounds) }
+        }
+
+        Ok(None)
     }
 
-    async fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> Result<KeyValue> {
+     fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> Result<Option<KeyValue>> {
         let level = self.level;
 
         if level == 0 {
             return Err(KernelError::NotSupport(LEVEL_0_SEEK_MESSAGE));
         }
-        self.sst_iter_seek(seek, self.version.query_meet_index(key, level)).await
+        self.sst_iter_seek(seek, self.version.query_meet_index(key, level))
     }
 }
 
-#[async_trait]
-#[allow(single_use_lifetimes)]
-impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
-    type Item = KeyValue;
-
-    async fn next_err(&mut self) -> Result<Self::Item> {
-        match DiskIter::next_err(&mut self.sst_iter).await {
-            Err(KernelError::OutOfBounds) => {
-                self.sst_iter_seek(Seek::First, self.offset + 1).await
-            }
-            res => res
-        }
-    }
-
-    async fn prev_err(&mut self) -> Result<Self::Item> {
-        match self.sst_iter.prev_err().await {
-            Err(KernelError::OutOfBounds) => {
+impl<'a> ForwardDiskIter<'a> for LevelIter<'a> {
+     fn prev_err(&mut self) -> Result<Option<Self::Item>> {
+        match self.sst_iter.prev_err()? {
+            None => {
                 if self.offset > 0 {
-                    self.sst_iter_seek(Seek::Last, self.offset - 1).await
+                    self.sst_iter_seek(Seek::Last, self.offset - 1)
                 } else {
-                    Err(KernelError::OutOfBounds)
+                    Ok(None)
                 }
             }
-            res => res
+            Some(item) => Ok(Some(item))
+        }
+    }
+}
+
+impl<'a> Iter<'a> for LevelIter<'a> {
+    type Item = KeyValue;
+
+    fn next_err(&mut self) -> Result<Option<Self::Item>> {
+        match self.sst_iter.next_err()? {
+            None => self.sst_iter_seek(Seek::First, self.offset + 1),
+            Some(item) => Ok(Some(item))
         }
     }
 
@@ -116,34 +87,23 @@ impl DiskIter<Vec<u8>, Value> for LevelIter<'_> {
 
     /// Tips: Level 0的LevelIter不支持Seek
     /// 因为Level 0中的SSTable并非有序排列，其中数据范围是可能交错的
-    async fn seek(&mut self, seek: Seek<'_>) -> Result<Self::Item> {
+     fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
         match seek {
             Seek::First => {
-                self.sst_iter_seek(Seek::First, 0).await
+                self.sst_iter_seek(Seek::First, 0)
             }
             Seek::Last => {
-                self.sst_iter_seek(Seek::Last, self.level_len - 1).await
-            }
-            Seek::Forward(key) => {
-                self.seek_ward(key, seek).await
+                self.sst_iter_seek(Seek::Last, self.level_len - 1)
             }
             Seek::Backward(key) => {
-                self.seek_ward(key, seek).await
+                self.seek_ward(key, seek)
             }
         }
     }
 }
 
-#[allow(clippy::drop_copy)]
-impl Drop for LevelIter<'_> {
-    fn drop(&mut self) {
-        drop(self.ss_table_ptr.as_ptr());
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
@@ -152,11 +112,10 @@ mod tests {
     use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{DiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -175,7 +134,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
 
             let sst_factory = IoFactory::new(
@@ -216,11 +175,6 @@ mod tests {
                 1,
                 IoType::Direct
             )?;
-            let cache = ShardingLruCache::new(
-                config.block_cache_size,
-                16,
-                RandomState::default()
-            )?;
             let vec_edit = vec![
                 // 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
                 VersionEdit::NewFile((vec![scope_1.clone()], 0),0),
@@ -232,31 +186,26 @@ mod tests {
 
             let version = ver_status.current().await;
 
-            let mut iterator = LevelIter::new(&version, 1, &cache).await?;
+            let mut iterator = LevelIter::new(&version, 1)?;
             for i in 0..times {
-                assert_eq!(DiskIter::next_err(&mut iterator).await?, vec_data[i]);
+                assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
             }
 
             for i in (0..times - 1).rev() {
-                assert_eq!(DiskIter::prev_err(&mut iterator).await?, vec_data[i]);
+                assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
             }
 
-            assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0)).await?, vec_data[114]);
+            assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(), vec_data[114]);
 
-            assert_eq!(iterator.seek(Seek::Forward(&vec_data[1024].0)).await?, vec_data[1024]);
+            assert_eq!(iterator.seek(Seek::Backward(&vec_data[2048].0))?.unwrap(), vec_data[2048]);
 
-            assert_eq!(iterator.seek(Seek::Forward(&vec_data[3333].0)).await?, vec_data[3333]);
+            assert_eq!(iterator.seek(Seek::First)?.unwrap(), vec_data[0]);
 
-            assert_eq!(iterator.seek(Seek::Backward(&vec_data[2048].0)).await?, vec_data[2048]);
+            assert_eq!(iterator.seek(Seek::Last)?.unwrap(), vec_data[3999]);
 
-            assert_eq!(iterator.seek(Seek::First).await?, vec_data[0]);
+            let mut iterator_level_0 = LevelIter::new(&version, 0)?;
 
-            assert_eq!(iterator.seek(Seek::Last).await?, vec_data[3999]);
-
-            let mut iterator_level_0 = LevelIter::new(&version, 0, &cache).await?;
-
-            assert!(iterator_level_0.seek(Seek::Forward(&vec_data[3333].0)).await.is_err());
-
+            assert!(iterator_level_0.seek(Seek::Backward(&vec_data[3333].0)).is_err());
 
             Ok(())
         })

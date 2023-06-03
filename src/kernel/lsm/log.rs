@@ -253,8 +253,7 @@ impl<R: Read + Seek> LogReader<R> {
 
             let mut buf = vec![0; length];
 
-            self.src
-                .read_exact(&mut buf)?;
+            self.src.read_exact(&mut buf)?;
             self.offset += length;
             dst_offset += length;
 

@@ -1,6 +1,7 @@
 use std::cmp::min;
+use std::collections::Bound;
 use std::io::{Cursor, Read, Write};
-use std::mem;
+use std::{cmp, mem};
 use bytes::{Buf, BufMut, Bytes};
 use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
 use itertools::Itertools;
@@ -483,6 +484,33 @@ impl<T> Block<T> where T: BlockItem {
             })
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<T> {
+        let last_index = self.entry_len();
+        let start_index = match min {
+            Bound::Excluded(key) => self.binary_search(key).map(|index| cmp::min(last_index,index + 1)),
+            Bound::Included(key) => self.binary_search(key),
+            Bound::Unbounded => Ok(0)
+        }.unwrap_or_else(|index| index);
+        let end_index = cmp::min(
+            last_index,
+            match max {
+                Bound::Excluded(key) => self.binary_search(key).map(|index| index.saturating_sub(1)),
+                Bound::Included(key) => self.binary_search(key),
+                Bound::Unbounded => Ok(last_index)
+            }.unwrap_or_else(|index| index) + 1
+        );
+
+        if start_index >= end_index {
+            return Vec::new()
+        }
+
+        self.vec_entry[start_index..end_index].iter()
+            .map(|(_, Entry{ item, .. })| item)
+            .cloned()
+            .collect_vec()
+    }
+
     /// 序列化后进行压缩
     ///
     /// 可选LZ4与不压缩
@@ -612,12 +640,15 @@ fn longest_shared_len<T>(sharding: Vec<&KeyValue<T>>) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::Bound;
+    use std::fmt::Debug;
     use std::io::Cursor;
     use bincode::Options;
     use bytes::Bytes;
     use itertools::Itertools;
+    use rand::Rng;
     use crate::kernel::Result;
-    use crate::kernel::lsm::block::{Block, BlockBuilder, BlockOptions, CompressType, Entry, Index, Value};
+    use crate::kernel::lsm::block::{Block, BlockBuilder, BlockItem, BlockOptions, CompressType, Entry, Index, Value};
     use crate::kernel::utils::lru_cache::LruCache;
 
     #[test]
@@ -692,7 +723,48 @@ mod tests {
         test_block_serialization_(block.clone(), CompressType::None, options.data_restart_interval)?;
         test_block_serialization_(block.clone(), CompressType::LZ4, options.data_restart_interval)?;
 
+        for _ in 0..1000 {
+            test_block_range(&block)?;
+        }
+
         Ok(())
+    }
+
+    fn test_block_range<T: BlockItem + Eq + Debug>(block: &Block<T>) -> Result<()> {
+        let all_item = block.vec_entry.iter()
+            .cloned()
+            .map(|(_, entry)| entry.item)
+            .collect_vec();
+
+        let mut rng = rand::thread_rng();
+        let rand_max_idx: usize = rng.gen_range(2..all_item.len() - 1);
+        let rand_min_idx: usize = rng.gen_range(0..rand_max_idx - 1);
+
+        let min_key = full_key(&block, &block.vec_entry, rand_min_idx);
+        let max_key = full_key(&block, &block.vec_entry, rand_max_idx);
+
+        let excluded_vec = block.range(
+            Bound::Excluded(&min_key),
+            Bound::Excluded(&max_key)
+        );
+
+        let included_vec = block.range(
+            Bound::Included(&min_key),
+            Bound::Included(&max_key)
+        );
+
+        let unbounded_vec = block.range(Bound::Unbounded, Bound::Unbounded);
+
+        assert_eq!(all_item[rand_min_idx + 1..rand_max_idx].to_vec(), excluded_vec);
+        assert_eq!(all_item[rand_min_idx..rand_max_idx + 1].to_vec(), included_vec);
+        assert_eq!(all_item, unbounded_vec);
+
+        Ok(())
+    }
+
+    fn full_key<T: BlockItem + Eq + Debug>(block: &Block<T>, all_entry: &Vec<(usize, Entry<T>)>, index: usize) -> Vec<u8> {
+        let entry = &all_entry[index].1;
+        [block.shared_key_prefix(index, entry.shared_len), &entry.key].concat()
     }
 
     fn test_block_serialization_(block: Block<Value>, compress_type: CompressType, restart_interval: usize) -> Result<()> {

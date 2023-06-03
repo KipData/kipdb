@@ -7,10 +7,11 @@ use std::sync::atomic::Ordering::Acquire;
 use std::vec::IntoIter;
 use bytes::Bytes;
 use itertools::Itertools;
-use parking_lot::Mutex;
-use skiplist::SkipMap;
+use parking_lot::{Mutex, MutexGuard};
+use skiplist::{SkipMap, skipmap};
 use crate::kernel::io::IoWriter;
 use crate::kernel::lsm::block::{Entry, Value};
+use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, Sequence};
@@ -31,7 +32,7 @@ pub(crate) fn key_value_bytes_len(key_value: &KeyValue) -> usize {
     key_value.0.len() + key_value.1.as_ref().map(Bytes::len).unwrap_or(0)
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub(crate) struct InternalKey {
     key: Bytes,
     seq_id: i64,
@@ -68,14 +69,82 @@ impl InternalKey {
     }
 }
 
+pub(crate) struct MemMapIter<'a> {
+    mem_map: &'a MemMap,
+
+    prev_item: Option<(Bytes, Option<Bytes>)>,
+    iter: Option<skipmap::Iter<'a, InternalKey, Option<Bytes>>>
+}
+
+impl<'a> MemMapIter<'a> {
+    #[allow(dead_code)]
+    pub(crate) fn new(mem_map: &'a MemMap) -> Self {
+        Self {
+            mem_map,
+            prev_item: None,
+            iter: Some(mem_map.iter()),
+        }
+    }
+}
+
+impl<'a> Iter<'a> for MemMapIter<'a> {
+    type Item = KeyValue;
+
+    fn next_err(&mut self) -> Result<Option<Self::Item>> {
+        if let Some(iter) = &mut self.iter {
+            for (InternalKey { key, .. }, value) in iter.by_ref() {
+                if let Some(prev_item) = &self.prev_item {
+                    if key != &prev_item.0 {
+                        return Ok(mem::replace(
+                            &mut self.prev_item,
+                            Some((key.clone(), value.clone()))
+                        ))
+                    }
+                }
+                self.prev_item = Some((key.clone(), value.clone()));
+            }
+
+            return Ok(self.prev_item.take());
+        }
+
+        Ok(None)
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+        self.prev_item = None;
+        self.iter = match seek {
+            Seek::First => Some(self.mem_map.iter()),
+            Seek::Last => None,
+            Seek::Backward(seek_key) => {
+                Some(self.mem_map.range(
+                    Bound::Included(&InternalKey::new_with_seq(Bytes::copy_from_slice(seek_key), 0)),
+                    Bound::Unbounded
+                ))
+            }
+        };
+
+        if let Seek::Last = seek {
+            Ok(self.mem_map.iter()
+                .last()
+                .map(|(InternalKey{ key, .. }, value)| (key.clone(), value.clone())))
+        } else {
+            self.next_err()
+        }
+    }
+}
+
 pub(crate) struct MemTable {
     inner: Mutex<TableInner>,
     pub(crate) tx_count: AtomicUsize
 }
 
-struct TableInner {
-    _mem: MemMap,
-    _immut: Option<MemMap>,
+pub(crate) struct TableInner {
+    pub(crate) _mem: MemMap,
+    pub(crate) _immut: Option<MemMap>,
     /// WAL载入器
     ///
     /// 用于异常停机时MemTable的恢复
@@ -230,6 +299,49 @@ impl MemTable {
             })
             .flatten()
     }
+
+    /// 范围读取
+    ///
+    /// MemTable中涉及锁操作，因此若是使用iter进行range操作容易长时间占用锁，因此直接返回范围值并命名为range_scan会比较合适
+    #[allow(dead_code)]
+    pub(crate) fn range_scan(&self, min: Bound<&[u8]>, max: Bound<&[u8]>, option_seq: Option<i64>) -> Vec<KeyValue> {
+        let inner = self.inner.lock();
+
+        inner._immut.as_ref()
+            .map(|mem_map| Self::_range_scan(mem_map, min, max, option_seq))
+            .unwrap_or(vec![])
+            .into_iter()
+            .chain(Self::_range_scan(&inner._mem, min, max, option_seq))
+            .rev()
+            .unique_by(|(key, _)| key.clone())
+            .collect_vec()
+    }
+
+    pub(crate) fn inner_with_lock(&self) -> MutexGuard<TableInner> {
+        self.inner.lock()
+    }
+
+    /// Tips: 返回的数据为倒序
+    fn _range_scan(mem_map: &MemMap, min: Bound<&[u8]>, max: Bound<&[u8]>, option_seq: Option<i64>) -> Vec<KeyValue> {
+        fn to_internal_key(bound: &Bound<&[u8]>, included: i64, excluded: i64) -> Bound<InternalKey> {
+            bound.map(|key| InternalKey::new_with_seq(
+                Bytes::copy_from_slice(key),
+                if let Bound::Included(_) = &bound { included } else { excluded }
+            ))
+        }
+
+        let min_key = to_internal_key(&min, i64::MIN, i64::MAX);
+        let max_key = to_internal_key(&max, i64::MAX, i64::MIN);
+
+        mem_map.range(min_key.as_ref(), max_key.as_ref())
+            .rev()
+            .filter(|(InternalKey { seq_id, .. }, _)| {
+                option_seq.map_or(true, |current_seq| &current_seq >= seq_id)
+            })
+            .unique_by(|(internal_key, _)| &internal_key.key)
+            .map(|(key, value)| (key.key.clone(), value.clone()))
+            .collect_vec()
+    }
 }
 
 pub(crate) fn logs_decode(log_bytes: Vec<Vec<u8>>) -> Result<IntoIter<(Bytes, Option<Bytes>)>> {
@@ -254,11 +366,29 @@ pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::Bound;
     use bytes::Bytes;
     use tempfile::TempDir;
+    use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::lsm_kv::{Config, Sequence};
     use crate::kernel::Result;
-    use crate::kernel::lsm::mem_table::MemTable;
+    use crate::kernel::lsm::mem_table::{data_to_bytes, InternalKey, KeyValue, MemMap, MemMapIter, MemTable};
+
+    impl MemTable {
+        pub(crate) fn insert_data_with_seq(
+            &self,
+            data: KeyValue,
+            seq: i64,
+        ) -> Result<usize> {
+            let (key, value) = data.clone();
+            let mut inner = self.inner.lock();
+
+            let _ = inner.log_writer.0.add_record(&data_to_bytes(data)?)?;
+            let _ = inner._mem.insert(InternalKey::new_with_seq(key, seq), value);
+
+            Ok(inner._mem.len())
+        }
+    }
 
     #[test]
     fn test_mem_table_find() -> Result<()> {
@@ -299,10 +429,114 @@ mod tests {
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))?, 3);
         assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?, 4);
 
-        let (_, mut vec_unique_sort_with_cmd_key) = mem_table.swap()?.unwrap();
+        let (_, mut vec) = mem_table.swap()?.unwrap();
 
-        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
-        assert_eq!(vec_unique_sort_with_cmd_key.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mem_table_range_scan() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
+
+        let key1 = vec![b'k', b'1'];
+        let bytes_key1 = Bytes::copy_from_slice(&key1);
+
+        let key2 = vec![b'k', b'2'];
+        let bytes_key2 = Bytes::copy_from_slice(&key2);
+
+        let key3 = vec![b'k', b'3'];
+        let bytes_key3 = Bytes::copy_from_slice(&key3);
+
+        assert_eq!(mem_table.insert_data_with_seq((bytes_key1.clone(), Some(Bytes::from(vec![b'1']))), 1)?, 1);
+        assert_eq!(mem_table.insert_data_with_seq((bytes_key1.clone(), Some(Bytes::from(vec![b'2']))), 2)?, 2);
+        assert_eq!(mem_table.insert_data_with_seq((bytes_key2.clone(), Some(Bytes::from(vec![b'1']))), 3)?, 3);
+        assert_eq!(mem_table.insert_data_with_seq((bytes_key2.clone(), Some(Bytes::from(vec![b'2']))), 4)?, 4);
+        assert_eq!(mem_table.insert_data_with_seq((bytes_key3.clone(), Some(Bytes::from(vec![b'1']))), 5)?, 5);
+        assert_eq!(mem_table.insert_data_with_seq((bytes_key3.clone(), Some(Bytes::from(vec![b'2']))), 6)?, 6);
+
+        let mut vec1 = mem_table.range_scan(Bound::Included(&key1), Bound::Included(&key2), None);
+        assert_eq!(vec1.len(), 2);
+        assert_eq!(vec1.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec1.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+
+        let mut vec2 = mem_table.range_scan(Bound::Excluded(&key1), Bound::Excluded(&key3), None);
+        assert_eq!(vec2.len(), 1);
+        assert_eq!(vec2.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+
+        let mut vec3 = mem_table.range_scan(Bound::Unbounded, Bound::Unbounded, None);
+        assert_eq!(vec3.len(), 3);
+        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'3']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+
+        let mut vec4 = mem_table.range_scan(Bound::Unbounded, Bound::Unbounded, Some(3));
+        assert_eq!(vec4.len(), 2);
+        assert_eq!(vec4.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1'])))));
+        assert_eq!(vec4.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mem_map_iter() -> Result<()> {
+        let mut map = MemMap::new();
+
+        let key_1_1 = InternalKey::new(Bytes::from(vec![b'1']));
+        let key_1_2 = InternalKey::new(Bytes::from(vec![b'1']));
+        let key_2_1 = InternalKey::new(Bytes::from(vec![b'2']));
+        let key_2_2 = InternalKey::new(Bytes::from(vec![b'2']));
+        let key_4_1 = InternalKey::new(Bytes::from(vec![b'4']));
+        let key_4_2 = InternalKey::new(Bytes::from(vec![b'4']));
+
+        let _ = map.insert(key_1_1.clone(), Some(Bytes::new()));
+        let _ = map.insert(key_1_2.clone(), None);
+        let _ = map.insert(key_2_1.clone(), Some(Bytes::new()));
+        let _ = map.insert(key_2_2.clone(), None);
+        let _ = map.insert(key_4_1.clone(), Some(Bytes::new()));
+        let _ = map.insert(key_4_2.clone(), None);
+
+        let mut iter = MemMapIter::new(&map);
+
+        assert_eq!(
+            iter.next_err()?,
+            Some((key_1_2.key.clone(), None))
+        );
+
+        assert_eq!(
+            iter.next_err()?,
+            Some((key_2_2.key.clone(), None))
+        );
+
+        assert_eq!(
+            iter.next_err()?,
+            Some((key_4_2.key.clone(), None))
+        );
+
+        assert_eq!(
+            iter.seek(Seek::First)?,
+            Some((key_1_2.key.clone(), None))
+        );
+
+        assert_eq!(
+            iter.seek(Seek::Last)?,
+            Some((key_4_2.key.clone(), None))
+        );
+
+        assert_eq!(
+            iter.next_err()?,
+            None
+        );
+
+        assert_eq!(
+            iter.seek(Seek::Backward(&vec![b'3']))?,
+            Some((key_4_2.key.clone(), None))
+        );
 
         Ok(())
     }

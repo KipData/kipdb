@@ -20,7 +20,7 @@ use crate::kernel::utils::lru_cache::ShardingLruCache;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
-pub(crate) const DEFAULT_VERSION_LOG_THRESHOLD: usize = 1000;
+pub(crate) const DEFAULT_VERSION_LOG_THRESHOLD: usize = 233;
 
 
 pub(crate) type LevelSlice = [Vec<Scope>; 7];
@@ -173,8 +173,7 @@ pub(crate) struct Version {
 }
 
 impl VersionStatus {
-    // recover
-    pub(crate) async fn load_with_path(
+    pub(crate) fn load_with_path(
         config: Config,
         wal: LogLoader,
     ) -> Result<Self> {
@@ -273,11 +272,12 @@ impl VersionStatus {
         version_display(&new_version, "log_and_apply");
 
         if self.edit_approximate_count.load(Ordering::Relaxed) >= snapshot_threshold {
-            Self::write_snap_shot(&mut inner, &self.log_factory, &vec_version_edit).await?;
+            Self::write_snap_shot(&mut inner, &self.log_factory).await?;
         } else {
-            let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&vec_version_edit)?)?;
             let _ = self.edit_approximate_count.fetch_add(1, Ordering::Relaxed);
         }
+
+        let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&vec_version_edit)?)?;
 
         new_version.apply(vec_version_edit)?;
         inner.version = Arc::new(new_version);
@@ -285,7 +285,7 @@ impl VersionStatus {
         Ok(())
     }
 
-    async fn write_snap_shot(inner: &mut VersionInner, log_factory: &IoFactory, vec_version_edit: &Vec<VersionEdit>) -> Result<()> {
+    async fn write_snap_shot(inner: &mut VersionInner, log_factory: &IoFactory) -> Result<()> {
         let version = &inner.version;
         info!("[Version: {}][write_snap_shot]: Start Snapshot!", version.version_num);
         let new_gen = Gen::create();
@@ -297,9 +297,9 @@ impl VersionStatus {
 
         old_writer.flush()?;
 
+        // 在快照中 append edit, 防止快照中宕机发生在删除旧 log 之后造成 增量 edit 未写入新log的问题
         let snap_shot_version_edits = version.to_vec_edit();
         let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(&snap_shot_version_edits)?)?;
-        let _ = inner.ver_log_writer.0.add_record(&bincode::serialize(vec_version_edit)?)?;
 
         // 删除旧的 version log
         log_factory.clean(old_gen)?;
@@ -341,34 +341,21 @@ impl Version {
         self.meta_data.size_of_disk
     }
 
-    /// 创建一个空的Version
-    fn new(
+    /// 通过一组VersionEdit载入Version
+    fn load_from_log(
+        vec_log: Vec<VersionEdit>,
         ss_table_loader: &Arc<SSTableLoader>,
         block_cache: &Arc<BlockCache>,
-        clean_tx: UnboundedSender<CleanTag>,
-    ) -> Self {
-        Self {
+        clean_tx: UnboundedSender<CleanTag>
+    ) -> Result<Self>{
+        let mut version = Self {
             version_num: 0,
             ss_tables_loader: Arc::clone(ss_table_loader),
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
             meta_data: VersionMeta { size_of_disk: 0, len: 0 },
             clean_tx,
-        }
-    }
-
-    /// 通过一组VersionEdit载入Version
-    fn load_from_log(
-        vec_log: Vec<VersionEdit>,
-        ss_table_loader: &Arc<SSTableLoader>,
-        block_cache: &Arc<BlockCache>,
-        tag_tx: UnboundedSender<CleanTag>,
-    ) -> Result<Self> {
-        let mut version = Self::new(
-            ss_table_loader,
-            block_cache,
-            tag_tx,
-        );
+        };
 
         version.apply(vec_log)?;
         version_display(&version, "load_from_log");
@@ -434,7 +421,6 @@ impl Version {
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
     pub(crate) fn to_vec_edit(&self) -> Vec<VersionEdit> {
-        // 在快照中 append edit, 防止快照中宕机发生在删除旧 log 之后造成 增量 edit 未写入新log的问题
         self.level_slice.iter()
             .enumerate()
             .filter_map(|(level, vec_scope)| {
@@ -444,9 +430,18 @@ impl Version {
             .collect_vec()
     }
 
-    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<SSTable> {
+    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<&SSTable> {
         self.level_slice[level].get(offset)
             .and_then(|scope| self.ss_tables_loader.get(scope.get_gen()))
+    }
+
+    /// 只限定获取Level 0的SSTable
+    ///
+    /// Tips：不鼓励全量获取其他Level
+    pub(crate) fn get_ss_tables_with_level_0(&self) -> Vec<&SSTable> {
+        self.level_slice[LEVEL_0].iter()
+            .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
+            .collect_vec()
     }
 
     pub(crate) fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
@@ -456,7 +451,7 @@ impl Version {
             .map(|(index, _)| index)
     }
 
-    pub(crate) fn first_ss_tables(&self, level: usize, size: usize) -> Option<(Vec<SSTable>, Vec<Scope>)> {
+    pub(crate) fn first_ss_tables(&self, level: usize, size: usize) -> Option<(Vec<&SSTable>, Vec<Scope>)> {
         if self.level_slice[level].is_empty() {
             return None;
         }
@@ -473,7 +468,7 @@ impl Version {
     }
 
     /// 获取指定level中与scope冲突的SSTables和Scopes
-    pub(crate) fn get_meet_scope_ss_tables_with_scopes(&self, level: usize, target_scope: &Scope) -> (Vec<SSTable>, Vec<Scope>) {
+    pub(crate) fn get_meet_scope_ss_tables_with_scopes(&self, level: usize, target_scope: &Scope) -> (Vec<&SSTable>, Vec<Scope>) {
         self.level_slice[level].iter()
             .filter(|scope| scope.meet(target_scope))
             .filter_map(|scope| {
@@ -485,9 +480,11 @@ impl Version {
     }
 
     /// 获取指定level中与scope冲突的SSTables
-    pub(crate) fn get_meet_scope_ss_tables(&self, level: usize, target_scope: &Scope) -> Vec<SSTable> {
+    pub(crate) fn get_meet_scope_ss_tables<F>(&self, level: usize, fn_meet: F) -> Vec<&SSTable>
+        where F: Fn(&Scope) -> bool
+    {
         self.level_slice[level].iter()
-            .filter(|scope| scope.meet(target_scope))
+            .filter(|scope| fn_meet(scope))
             .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
             .collect_vec()
     }
@@ -621,7 +618,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
 
             let sst_factory = IoFactory::new(
@@ -732,7 +729,7 @@ mod tests {
             // 注意：将ss_table的创建防止VersionStatus的创建前
             // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
             let ver_status_1 =
-                VersionStatus::load_with_path(config.clone(), wal.clone()).await?;
+                VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
 
             let sst_factory = IoFactory::new(
@@ -800,7 +797,7 @@ mod tests {
             drop(ver_status_1);
 
             let ver_status_2 =
-                VersionStatus::load_with_path(config, wal.clone()).await?;
+                VersionStatus::load_with_path(config, wal.clone())?;
             let version_2 = ver_status_2.current().await;
 
             assert_eq!(version_1.level_slice, version_2.level_slice);

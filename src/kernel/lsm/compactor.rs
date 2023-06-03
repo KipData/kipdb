@@ -12,7 +12,7 @@ use crate::kernel::Result;
 use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::lsm_kv::{Config, StoreInner};
 use crate::kernel::lsm::data_sharding;
-use crate::kernel::lsm::iterator::DiskIter;
+use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
@@ -182,7 +182,7 @@ impl Compactor {
             // 获取下一级中有重复键值范围的SSTable
             let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l);
             let index = SSTable::find_index_with_level(
-                ss_tables_ll.first().map(SSTable::get_gen),
+                ss_tables_ll.first().map(|sst| sst.get_gen()),
                 &version,
                 next_level
             );
@@ -190,7 +190,7 @@ impl Compactor {
             // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
             if level == LEVEL_0 {
                 ss_tables_l.append(
-                    &mut version.get_meet_scope_ss_tables(level, &scope_l)
+                    &mut version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_l))
                 )
             }
 
@@ -201,10 +201,10 @@ impl Compactor {
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
             let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, &scope_ll),
+                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_ll)),
                 Err(_) => ss_tables_l
             }.into_iter()
-                .unique_by(SSTable::get_gen)
+                .unique_by(|sst| sst.get_gen())
                 .collect_vec();
 
             // 数据合并并切片
@@ -233,15 +233,15 @@ impl Compactor {
     /// 3. 并行对Level ll的SSTables_ll通过KeySet进行迭代同时过滤数据
     /// 4. 组合SSTables_l和SSTables_ll的数据合并并进行唯一，排序处理
     async fn data_merge_and_sharding(
-        ss_tables_l: Vec<SSTable>,
-        ss_tables_ll: Vec<SSTable>,
+        ss_tables_l: Vec<&SSTable>,
+        ss_tables_ll: Vec<&SSTable>,
         block_cache: &BlockCache,
         sst_file_size: usize
     ) -> Result<MergeShardingVec> {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
         let map_futures_l = ss_tables_l.iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(|ss_table| Self::ss_table_load_data(block_cache, ss_table, |_| true));
+            .map(|ss_table| async { Self::ss_table_load_data(block_cache, ss_table, |_| true) });
 
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
@@ -255,9 +255,9 @@ impl Compactor {
         // 并行: 因为即使l为0时，此时的ll(Level 1)仍然保证SSTable数据之间排列有序且不冲突，因此并行迭代不会导致数据冲突
         // 过滤: 基于l进行数据过滤避免冗余的数据迭代导致占用大量内存占用
         let sharding_ll = future::try_join_all(ss_tables_ll.iter()
-                .map(|ss_table| Self::ss_table_load_data(
-                    block_cache, ss_table, |key| !filter_set_l.contains(key))
-                )).await?;
+                .map(|ss_table| async {
+                    Self::ss_table_load_data(block_cache, ss_table, |key| !filter_set_l.contains(key))
+                })).await?;
 
         // 使用sharding_ll来链接sharding_l以保持数据倒序的顺序是由新->旧
         let vec_cmd_data = sharding_ll
@@ -271,16 +271,14 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, sst_file_size))
     }
 
-    async fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
+    fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
         where F: Fn(&Bytes) -> bool
     {
-        let mut iter = SSTableIter::new(ss_table, block_cache).await?;
+        let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
-        loop {
-            match iter.next_err().await {
-                Ok(item) => { if fn_is_filter(&item.0) { vec_cmd.push(item) } }
-                Err(KernelError::OutOfBounds) => break,
-                Err(e) => { return Err(e) }
+        while let Some(item) = iter.next_err()? {
+            if fn_is_filter(&item.0) {
+                vec_cmd.push(item)
             }
         }
         Ok(vec_cmd)
@@ -375,8 +373,8 @@ mod tests {
 
         let (_, vec_data) = &tokio_test::block_on(async move {
             Compactor::data_merge_and_sharding(
-                vec![ss_table_1, ss_table_2],
-                vec![ss_table_3, ss_table_4],
+                vec![&ss_table_1, &ss_table_2],
+                vec![&ss_table_3, &ss_table_4],
                 &cache,
                 config.sst_file_size
             ).await
