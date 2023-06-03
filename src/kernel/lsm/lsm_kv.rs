@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
 use fslock::LockFile;
+use parking_lot::MutexGuard;
 use skiplist::SkipMap;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::oneshot;
@@ -14,7 +15,8 @@ use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::IoType;
 use crate::kernel::lsm::{block, is_exceeded_then_minor, version};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
-use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
+use crate::kernel::lsm::iterator::full_iter::FullIter;
+use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
@@ -250,6 +252,28 @@ impl LsmStore {
             seq_id: Sequence::create(),
             writer_buf: SkipMap::new(),
         }
+    }
+
+    #[inline]
+    pub async fn guard(&self) -> Result<Guard> {
+        let version = self.current_version().await;
+
+        Ok(Guard {
+            _inner: self.mem_table().inner_with_lock(),
+            _version: version
+        })
+    }
+}
+
+pub struct Guard<'a> {
+    _inner: MutexGuard<'a, TableInner>,
+    _version: Arc<Version>
+}
+
+impl<'a> Guard<'a> {
+    #[inline]
+    pub fn iter(&'a self) -> Result<FullIter<'a>> {
+        FullIter::new(&self._inner, &self._version)
     }
 }
 

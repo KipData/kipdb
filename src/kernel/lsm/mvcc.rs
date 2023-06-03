@@ -6,6 +6,7 @@ use skiplist::SkipMap;
 use tokio::sync::mpsc::UnboundedSender;
 use crate::kernel::lsm::compactor::CompactTask;
 use crate::kernel::lsm::is_exceeded_then_minor;
+use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Sequence, StoreInner};
 use crate::kernel::lsm::mem_table::MemTable;
@@ -72,6 +73,10 @@ impl Transaction {
         is_exceeded_then_minor(data_len, &self.compactor_tx, self.config())?;
 
         Ok(())
+    }
+
+    pub fn disk_iter(&self) -> Result<VersionIter> {
+        VersionIter::new(&self.version)
     }
 
     fn mem_table(&self) -> &MemTable {

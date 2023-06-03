@@ -1,8 +1,9 @@
 pub(crate) mod block_iter;
 pub(crate) mod ss_table_iter;
 pub(crate) mod level_iter;
+pub(crate) mod merging_iter;
 pub(crate) mod version_iter;
-mod merging_iter;
+pub(crate) mod full_iter;
 
 use crate::kernel::Result;
 

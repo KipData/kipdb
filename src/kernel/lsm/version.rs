@@ -435,6 +435,15 @@ impl Version {
             .and_then(|scope| self.ss_tables_loader.get(scope.get_gen()))
     }
 
+    /// 只限定获取Level 0的SSTable
+    ///
+    /// Tips：不鼓励全量获取其他Level
+    pub(crate) fn get_ss_tables_with_level_0(&self) -> Vec<&SSTable> {
+        self.level_slice[LEVEL_0].iter()
+            .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
+            .collect_vec()
+    }
+
     pub(crate) fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
         self.level_slice[level].iter()
             .enumerate()

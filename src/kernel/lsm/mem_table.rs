@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering::Acquire;
 use std::vec::IntoIter;
 use bytes::Bytes;
 use itertools::Itertools;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use skiplist::{SkipMap, skipmap};
 use crate::kernel::io::IoWriter;
 use crate::kernel::lsm::block::{Entry, Value};
@@ -142,9 +142,9 @@ pub(crate) struct MemTable {
     pub(crate) tx_count: AtomicUsize
 }
 
-struct TableInner {
-    _mem: MemMap,
-    _immut: Option<MemMap>,
+pub(crate) struct TableInner {
+    pub(crate) _mem: MemMap,
+    pub(crate) _immut: Option<MemMap>,
     /// WAL载入器
     ///
     /// 用于异常停机时MemTable的恢复
@@ -315,6 +315,10 @@ impl MemTable {
             .rev()
             .unique_by(|(key, _)| key.clone())
             .collect_vec()
+    }
+
+    pub(crate) fn inner_with_lock(&self) -> MutexGuard<TableInner> {
+        self.inner.lock()
     }
 
     /// Tips: 返回的数据为倒序
