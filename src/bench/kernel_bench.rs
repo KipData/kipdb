@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
-use kip_db::kernel::{KVStore, hash_kv::HashStore};
+use kip_db::kernel::KVStore;
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
 use kip_db::kernel::sled_kv::SledStore;
 use kip_db::kernel::Result;
@@ -67,7 +67,6 @@ fn kv_benchmark_with_store<T: KVStore>(c: &mut Criterion) {
 }
 
 fn kv_benchmark(c: &mut Criterion) {
-    kv_benchmark_with_store::<HashStore>(c);
     kv_benchmark_with_store::<LsmStore>(c);
     kv_benchmark_with_store::<SledStore>(c);
 }

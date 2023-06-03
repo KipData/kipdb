@@ -103,7 +103,6 @@ pub mod net;
 pub mod cmd;
 pub mod proto;
 
-pub use crate::kernel::hash_kv::HashStore;
 pub use error::KernelError;
 
 pub const DEFAULT_PORT: u16 = 6333;

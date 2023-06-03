@@ -2,7 +2,6 @@ use std::{path::PathBuf, fs};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
-use std::io::SeekFrom;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,11 +10,10 @@ use futures::future;
 use itertools::Itertools;
 use tokio::time;
 
-use crate::kernel::io::{FileExtension, IoReader, IoWriter};
+use crate::kernel::io::FileExtension;
 use crate::KernelError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
-pub mod hash_kv;
 pub mod sled_kv;
 pub mod lsm;
 pub mod io;
@@ -65,92 +63,12 @@ pub trait KVStore: Send + Sync + 'static + Sized {
     async fn is_empty(&self) -> bool;
 }
 
-/// 用于包装Command交予持久化核心实现使用的操作类
-#[derive(Debug)]
-pub(crate) struct CommandPackage {
-    cmd: CommandData,
-    pos: u64,
-    len: usize
-}
-
-/// CommandPos Command磁盘指针
-/// 用于标记对应Command的位置
-/// gen 文件序号
-/// pos 开头指针
-/// len 命令长度
-#[derive(Debug, Copy, Clone)]
-struct CommandPos {
-    gen: i64,
-    pos: u64,
-    len: usize,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, Hash, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommandData {
     Set { key: Vec<u8>, value: Vec<u8> },
     Remove { key: Vec<u8> },
     Get { key: Vec<u8> }
-}
-
-impl CommandPos {
-    /// 重写自身数据
-    pub(crate) fn change(&mut self, file_gen: i64, pos: u64, len: usize) {
-        self.gen = file_gen;
-        self.pos = pos;
-        self.len = len;
-    }
-}
-
-impl CommandPackage {
-
-    /// 实例化一个Command
-    pub(crate) fn new(cmd: CommandData, pos: u64, len: usize) -> Self {
-        CommandPackage{ cmd, pos, len }
-    }
-
-    /// 写入一个Command
-    /// 写入完成后该cmd的去除len位置的写入起始位置与长度
-    pub(crate) fn write(writer: &mut dyn IoWriter, cmd: &CommandData) -> Result<(u64, usize)> {
-        let start = writer.current_pos()?;
-        let len =  writer.write(&ByteUtils::tag_with_head(bincode::serialize(cmd)?))?;
-        Ok((start + 4, len - 4))
-    }
-
-    /// IOHandler的对应Gen，以起始位置与长度使用的单个Command，不进行CommandPackage包装
-    pub(crate) fn from_pos_unpack(reader: &mut dyn IoReader, start: u64, len: usize) -> Result<Option<CommandData>> {
-        let mut buf = vec![0; len];
-
-        let _ = reader.seek(SeekFrom::Start(start))?;
-        reader.read_exact(&mut buf)?;
-
-        Ok(bincode::deserialize(&buf).ok())
-    }
-
-    /// 获取reader之中所有的CommandPackage
-    pub(crate) fn from_read_to_vec(reader: &mut dyn IoReader) -> Result<Vec<CommandPackage>> {
-        let mut buf = Vec::new();
-
-        reader.rewind()?;
-        let _ = reader.read_to_end(&mut buf)?;
-
-        Self::from_bytes_to_vec(&buf)
-    }
-
-    /// 获取bytes之中所有的CommandPackage
-    pub(crate) fn from_bytes_to_vec(bytes: &[u8]) -> Result<Vec<CommandPackage>> {
-        let mut pos = 4;
-        Ok(ByteUtils::sharding_tag_bytes(bytes).into_iter()
-            .filter_map(|cmd_u8| {
-                let len = cmd_u8.len();
-                let option = bincode::deserialize::<CommandData>(cmd_u8).ok()
-                    .map(|cmd_data| CommandPackage::new(cmd_data, pos, len));
-                // 对pos进行长度自增并对占位符进行跳过
-                pos += len as u64 + 4;
-                option
-            })
-            .collect_vec())
-    }
 }
 
 pub(crate) struct ByteUtils;

@@ -2,7 +2,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use bytes::Bytes;
 use tempfile::TempDir;
 use walkdir::WalkDir;
-use kip_db::kernel::hash_kv::HashStore;
 use kip_db::kernel::io::{FileExtension, IoFactory, IoType};
 use kip_db::kernel::KVStore;
 use kip_db::kernel::lsm::lsm_kv::LsmStore;
@@ -11,7 +10,6 @@ use kip_db::kernel::sled_kv::SledStore;
 
 #[test]
 fn get_stored_value() -> Result<()> {
-    get_stored_value_with_kv_store::<HashStore>()?;
     get_stored_value_with_kv_store::<SledStore>()?;
     get_stored_value_with_kv_store::<LsmStore>()?;
     Ok(())
@@ -47,7 +45,6 @@ fn get_stored_value_with_kv_store<T: KVStore>() -> Result<()> {
 // Should overwrite existent value.
 #[test]
 fn overwrite_value() -> Result<()> {
-    overwrite_value_with_kv_store::<HashStore>()?;
     overwrite_value_with_kv_store::<SledStore>()?;
     overwrite_value_with_kv_store::<LsmStore>()?;
 
@@ -85,7 +82,6 @@ fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
 // Should get `None` when getting a non-existent key.
 #[test]
 fn get_non_existent_value() -> Result<()> {
-    get_non_existent_value_with_kv_store::<HashStore>()?;
     get_non_existent_value_with_kv_store::<SledStore>()?;
     get_non_existent_value_with_kv_store::<LsmStore>()?;
 
@@ -116,7 +112,6 @@ fn get_non_existent_value_with_kv_store<T: KVStore>() -> Result<()> {
 
 #[test]
 fn remove_non_existent_key() -> Result<()> {
-    remove_non_existent_key_with_kv_store::<HashStore>()?;
     remove_non_existent_key_with_kv_store::<SledStore>()?;
     remove_non_existent_key_with_kv_store::<LsmStore>()?;
 
@@ -136,7 +131,6 @@ fn remove_non_existent_key_with_kv_store<T: KVStore>() -> Result<()> {
 
 #[test]
 fn remove_key() -> Result<()> {
-    remove_key_with_kv_store::<HashStore>()?;
     remove_key_with_kv_store::<SledStore>()?;
     remove_key_with_kv_store::<LsmStore>()?;
 
@@ -162,7 +156,6 @@ fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
 // Test data correctness after compaction.
 #[test]
 fn compaction() -> Result<()> {
-    compaction_with_kv_store::<HashStore>()?;
     compaction_with_kv_store::<SledStore>()?;
     compaction_with_kv_store::<LsmStore>()?;
 
