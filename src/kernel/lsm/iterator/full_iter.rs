@@ -118,7 +118,7 @@ mod tests {
             let guard = kv_store.guard().await?;
             let mut full_iter = guard.iter()?;
 
-            for (i, (test_key, test_value)) in temp.into_iter().enumerate() {
+            for (test_key, test_value) in temp {
                 let (key, value) = full_iter.next_err()?.unwrap();
                 assert_eq!(key, Bytes::from(test_key));
                 assert_eq!(value, Some(Bytes::from(test_value)))

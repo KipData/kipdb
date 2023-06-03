@@ -1,3 +1,4 @@
+use std::collections::Bound;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use bytes::Bytes;
@@ -9,7 +10,7 @@ use crate::kernel::lsm::is_exceeded_then_minor;
 use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Sequence, StoreInner};
-use crate::kernel::lsm::mem_table::MemTable;
+use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::version::Version;
 use crate::KernelError;
 
@@ -73,6 +74,10 @@ impl Transaction {
         is_exceeded_then_minor(data_len, &self.compactor_tx, self.config())?;
 
         Ok(())
+    }
+
+    pub fn mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<KeyValue> {
+        self.mem_table().range_scan(min, max, Some(self.seq_id))
     }
 
     pub fn disk_iter(&self) -> Result<VersionIter> {
