@@ -141,8 +141,8 @@ impl Compactor {
                             )
                         }
                     });
-                let (vec_new_ss_table, vec_new_scope): (Vec<SSTable>, Vec<Scope>) =
-                        (future::try_join_all(ss_table_futures).await?: Vec<(SSTable, Scope)>)
+                let vec_ss_table_and_scope: Vec<(SSTable, Scope)> = future::try_join_all(ss_table_futures).await?;
+                let (vec_new_ss_table, vec_new_scope): (Vec<SSTable>, Vec<Scope>) = vec_ss_table_and_scope
                     .into_iter()
                     .unzip();
 
@@ -232,6 +232,7 @@ impl Compactor {
     /// 2. 基于SSTables_l获取唯一KeySet用于迭代过滤
     /// 3. 并行对Level ll的SSTables_ll通过KeySet进行迭代同时过滤数据
     /// 4. 组合SSTables_l和SSTables_ll的数据合并并进行唯一，排序处理
+    #[allow(clippy::mutable_key_type)]
     async fn data_merge_and_sharding(
         ss_tables_l: Vec<&SSTable>,
         ss_tables_ll: Vec<&SSTable>,

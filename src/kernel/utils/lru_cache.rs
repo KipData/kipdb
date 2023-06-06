@@ -381,12 +381,11 @@ impl<'a, K, V> Iterator for LruCacheIter<'a, K, V> {
 }
 
 impl<K, V> Drop for LruCache<K, V> {
-    #[allow(clippy::drop_copy)]
     fn drop(&mut self) {
         while let Some(node) = self.head.take(){
             unsafe {
                 self.head = node.as_ref().next;
-                drop(node.as_ptr());
+                drop(Box::from_raw(node.as_ptr()))
             }
         }
     }

@@ -33,7 +33,6 @@ impl<'a> LevelIter<'a> {
         })
     }
 
-    #[allow(clippy::drop_copy)]
      fn sst_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
         self.offset = offset;
         if self.is_valid() {
