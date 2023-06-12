@@ -109,7 +109,7 @@ mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
-    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
+    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, SSTableMeta, VersionEdit, VersionStatus};
     use crate::kernel::Result;
     use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
@@ -176,8 +176,8 @@ mod tests {
             )?;
             let vec_edit = vec![
                 // 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
-                VersionEdit::NewFile((vec![scope_1.clone()], 0),0),
-                VersionEdit::NewFile((vec![scope_1, scope_2], 1),0)
+                VersionEdit::NewFile((vec![scope_1.clone()], 0),0,SSTableMeta::new(1, 1)),
+                VersionEdit::NewFile((vec![scope_1, scope_2], 1),0,SSTableMeta::new(1, 1))
             ];
 
             ver_status.insert_vec_ss_table(vec![ss_table_1, ss_table_2])?;

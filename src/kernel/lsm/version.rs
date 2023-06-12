@@ -27,13 +27,30 @@ pub(crate) type LevelSlice = [Vec<Scope>; 7];
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub(crate) enum VersionEdit {
-    DeleteFile((Vec<i64>, usize)),
+    /// ((Vec(gen), Level, SSTableMeta)
+    DeleteFile((Vec<i64>, usize), SSTableMeta),
     // 确保新File的Gen都是比旧Version更大(新鲜)
     // Level 0则请忽略第二位的index参数，默认会放至最尾
-    NewFile((Vec<Scope>, usize), usize),
+    /// ((Vec(scope), Level), Index, SSTableMeta)
+    NewFile((Vec<Scope>, usize), usize, SSTableMeta),
     // // Level and SSTable Gen List
     // CompactPoint(usize, Vec<i64>),
 }
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
+pub(crate) struct SSTableMeta {
+    pub(crate) size_of_disk: u64,
+    pub(crate) len: usize,
+}
+
+impl SSTableMeta {
+    pub(crate) fn new(size_of_disk: u64, len: usize) -> Self {
+        Self {
+            size_of_disk,
+            len,
+        }
+    }
+}
+
 
 #[derive(Debug)]
 enum CleanTag {
@@ -133,7 +150,6 @@ impl Cleaner {
 /// 用于切换Version的封装Inner
 struct VersionInner {
     version: Arc<Version>,
-    /// TODO: 日志快照
     ver_log_writer: (LogWriter<Box<dyn IoWriter>>, i64),
 }
 
@@ -292,7 +308,7 @@ impl VersionStatus {
         let new_writer = log_factory.writer(new_gen, IoType::Direct)?;
         let (mut old_writer, old_gen) = mem::replace(
             &mut inner.ver_log_writer,
-            (LogWriter::new(new_writer), new_gen)
+            (LogWriter::new(new_writer), new_gen),
         );
 
         old_writer.flush()?;
@@ -308,7 +324,7 @@ impl VersionStatus {
     }
 }
 
-fn snapshot_gen(factory: &IoFactory) -> Result<i64>{
+fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
     if let Ok(gen_list) = sorted_gen_list(factory.get_path(), FileExtension::Log) {
         return Ok(match *gen_list.as_slice() {
             [.., old_snapshot, new_snapshot] => {
@@ -346,8 +362,8 @@ impl Version {
         vec_log: Vec<VersionEdit>,
         ss_table_loader: &Arc<SSTableLoader>,
         block_cache: &Arc<BlockCache>,
-        clean_tx: UnboundedSender<CleanTag>
-    ) -> Result<Self>{
+        clean_tx: UnboundedSender<CleanTag>,
+    ) -> Result<Self> {
         let mut version = Self {
             version_num: 0,
             ss_tables_loader: Arc::clone(ss_table_loader),
@@ -374,22 +390,22 @@ impl Version {
         let mut del_gens = Vec::new();
         // 避免日志重溯时对最终状态不存在的SSTable进行数据统计处理
         // 导致SSTableMap不存在此SSTable而抛出`KvsError::SSTableLostError`
-        let mut vec_statistics_gen = Vec::new();
+        let mut vec_statistics_sst_meta = Vec::new();
 
         for version_edit in vec_version_edit {
             match version_edit {
-                VersionEdit::DeleteFile((mut vec_gen, level)) => {
-                    for gen in vec_gen.clone() {
-                        vec_statistics_gen.push((EditType::Del, gen));
-                    }
+                VersionEdit::DeleteFile((mut vec_gen, level), sst_meta) => {
+
+                    vec_statistics_sst_meta.push((EditType::Del, sst_meta.size_of_disk, sst_meta.len));
+
                     self.level_slice[level]
                         .retain(|scope| !vec_gen.contains(&scope.get_gen()));
                     del_gens.append(&mut vec_gen);
                 }
-                VersionEdit::NewFile((vec_scope, level), index) => {
-                    for gen in vec_scope.iter().map(Scope::get_gen) {
-                        vec_statistics_gen.push((EditType::Add, gen));
-                    }
+                VersionEdit::NewFile((vec_scope, level), index, sst_meta) => {
+
+                    vec_statistics_sst_meta.push((EditType::Add, sst_meta.size_of_disk, sst_meta.len));
+
                     // Level 0中的SSTable绝对是以gen为优先级
                     // Level N中则不以gen为顺序，此处对gen排序是因为单次NewFile中的gen肯定是有序的
                     let scope_iter = vec_scope
@@ -408,7 +424,7 @@ impl Version {
             }
         }
 
-        self.meta_data.statistical_process(&self.ss_tables_loader, vec_statistics_gen)?;
+        self.meta_data.statistical_process(vec_statistics_sst_meta)?;
         self.version_num += 1;
         self.clean_tx.send(CleanTag::Add(self.version_num, del_gens))?;
 
@@ -425,7 +441,10 @@ impl Version {
             .enumerate()
             .filter_map(|(level, vec_scope)| {
                 (!vec_scope.is_empty())
-                    .then(|| VersionEdit::NewFile((vec_scope.clone(), level), 0))
+                    .then(|| VersionEdit::NewFile((vec_scope.clone(), level), 0, SSTableMeta {
+                        size_of_disk: self.get_size_of_disk(),
+                        len: self.get_len(),
+                    }))
             })
             .collect_vec()
     }
@@ -538,27 +557,21 @@ impl VersionMeta {
     // MetaData对SSTable统计数据处理
     fn statistical_process(
         &mut self,
-        ss_table_loader: &SSTableLoader,
-        vec_statistics_gen: Vec<(EditType, i64)>,
+        vec_statistics_sst_meta: Vec<(EditType, u64, usize)>,
     ) -> Result<()> {
         // 优先对新增数据进行统计再统一减去对应的数值避免删除动作聚集在前部分导致数值溢出
-        for (event_type, gen) in vec_statistics_gen
+        for (event_type, smeta_size_of_disk, smeta_len) in vec_statistics_sst_meta
             .into_iter()
-            .sorted_by_key(|(edit_type, _)| *edit_type)
+            .sorted_by_key(|(edit_type,_,_)| *edit_type)
         {
-            // FIXME: 此处通过读取SSTable获取其统计信息，这会导致若是Cleaner删除SSTable后会丢失此统计数据
-            if let Some((size_of_disk, len)) = ss_table_loader.get(gen)
-                .map(|ss_table| (ss_table.get_size_of_disk(), ss_table.len()))
-            {
-                match event_type {
-                    EditType::Add => {
-                        self.size_of_disk += size_of_disk;
-                        self.len += len;
-                    }
-                    EditType::Del => {
-                        self.size_of_disk -= size_of_disk;
-                        self.len -= len;
-                    }
+            match event_type {
+                EditType::Add => {
+                    self.size_of_disk += smeta_size_of_disk;
+                    self.len += smeta_len;
+                }
+                EditType::Del => {
+                    self.size_of_disk -= smeta_size_of_disk;
+                    self.len -= smeta_len;
                 }
             }
         }
@@ -598,7 +611,7 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
-    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH, Version, VersionEdit, VersionStatus};
+    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH, SSTableMeta, Version, VersionEdit, VersionStatus};
     use crate::kernel::Result;
 
     #[test]
@@ -648,7 +661,7 @@ mod tests {
             ver_status.insert_vec_ss_table(vec![ss_table_2])?;
 
             let vec_edit_1 = vec![
-                VersionEdit::NewFile((vec![scope_1], 0), 0),
+                VersionEdit::NewFile((vec![scope_1], 0), 0, SSTableMeta::new(1, 1)),
             ];
 
             ver_status.log_and_apply(vec_edit_1, 2).await?;
@@ -656,8 +669,8 @@ mod tests {
             let version_1 = Arc::clone(&ver_status.current().await);
 
             let vec_edit_2 = vec![
-                VersionEdit::NewFile((vec![scope_2.clone()], 0), 0),
-                VersionEdit::DeleteFile((vec![1], 0)),
+                VersionEdit::NewFile((vec![scope_2.clone()], 0), 0,SSTableMeta::new(1, 1)),
+                VersionEdit::DeleteFile((vec![1], 0),SSTableMeta::new(1, 1)),
             ];
 
             ver_status.log_and_apply(vec_edit_2, 2).await?;
@@ -665,7 +678,7 @@ mod tests {
             let version_2 = Arc::clone(&ver_status.current().await);
 
             let vec_edit_3 = vec![
-                VersionEdit::DeleteFile((vec![2], 0)),
+                VersionEdit::DeleteFile((vec![2], 0),SSTableMeta::new(1, 1)),
             ];
 
             // 用于去除version2的引用计数
@@ -682,8 +695,8 @@ mod tests {
             assert_eq!(
                 snapshot,
                 vec![
-                    vec![VersionEdit::NewFile((vec![scope_2], 0), 0)],
-                    vec![VersionEdit::DeleteFile((vec![2], 0)),]
+                    vec![VersionEdit::NewFile((vec![scope_2], 0), 0, SSTableMeta::new(1, 1))],
+                    vec![VersionEdit::DeleteFile((vec![2], 0), SSTableMeta::new(1, 1))],
                 ]
             );
 
@@ -756,9 +769,9 @@ mod tests {
             )?;
 
             let vec_edit = vec![
-                VersionEdit::NewFile((vec![scope_1], 0), 0),
-                VersionEdit::NewFile((vec![scope_2], 0), 0),
-                VersionEdit::DeleteFile((vec![2], 0)),
+                VersionEdit::NewFile((vec![scope_1], 0), 0, SSTableMeta::new(1, 1)),
+                VersionEdit::NewFile((vec![scope_2], 0), 0, SSTableMeta::new(1, 1)),
+                VersionEdit::DeleteFile((vec![2], 0), SSTableMeta::new(1, 0)),
             ];
 
             ver_status_1.insert_vec_ss_table(vec![ss_table_1])?;
@@ -784,8 +797,8 @@ mod tests {
             )?;
 
             let vec_edit2 = vec![
-                VersionEdit::NewFile((vec![scope_3], 0), 0),
-                VersionEdit::NewFile((vec![scope_4], 0), 0),
+                VersionEdit::NewFile((vec![scope_3], 0), 0,SSTableMeta::new(1, 1)),
+                VersionEdit::NewFile((vec![scope_4], 0), 0,SSTableMeta::new(1, 1)),
             ];
 
             ver_status_1.insert_vec_ss_table(vec![ss_table_3])?;

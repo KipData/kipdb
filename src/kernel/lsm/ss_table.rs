@@ -278,6 +278,20 @@ impl SSTable {
             .collect())
     }
 
+    /// 通过一组SSTable收集对应的len
+    pub(crate) fn collect_len(vec_ss_table: &[&SSTable]) -> Result<usize> {
+        Ok(vec_ss_table.iter()
+            .map(|sst| sst.len())
+            .sum())
+    }
+
+    /// 通过一组SSTable收集对应的磁盘大小
+    pub(crate) fn collect_disk_size(vec_ss_table: &[&SSTable]) -> Result<u64> {
+        Ok(vec_ss_table.iter()
+            .map(|sst| sst.get_size_of_disk())
+            .sum())
+    }
+
     /// 获取指定SSTable索引位置
     pub(crate) fn find_index_with_level(option_first: Option<i64>, version: &Version, level: usize) -> usize {
         option_first.and_then(|gen| version.get_index(level, gen))
