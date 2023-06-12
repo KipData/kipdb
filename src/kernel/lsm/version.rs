@@ -15,7 +15,7 @@ use crate::kernel::lsm::block::BlockCache;
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::lsm::lsm_kv::{Config, Gen};
-use crate::kernel::lsm::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::ss_table::{Scope, SSTable, SSTableMeta};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
@@ -36,21 +36,6 @@ pub(crate) enum VersionEdit {
     // // Level and SSTable Gen List
     // CompactPoint(usize, Vec<i64>),
 }
-#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
-pub(crate) struct SSTableMeta {
-    pub(crate) size_of_disk: u64,
-    pub(crate) len: usize,
-}
-
-impl SSTableMeta {
-    pub(crate) fn new(size_of_disk: u64, len: usize) -> Self {
-        Self {
-            size_of_disk,
-            len,
-        }
-    }
-}
-
 
 #[derive(Debug)]
 enum CleanTag {
@@ -657,11 +642,14 @@ mod tests {
                 IoType::Direct,
             )?;
 
+            let meta_1 = SSTableMeta::from(&ss_table_1);
+            let meta_2 = SSTableMeta::from(&ss_table_2);
+
             ver_status.insert_vec_ss_table(vec![ss_table_1])?;
             ver_status.insert_vec_ss_table(vec![ss_table_2])?;
 
             let vec_edit_1 = vec![
-                VersionEdit::NewFile((vec![scope_1], 0), 0, SSTableMeta::new(1, 1)),
+                VersionEdit::NewFile((vec![scope_1], 0), 0, meta_1),
             ];
 
             ver_status.log_and_apply(vec_edit_1, 2).await?;
@@ -669,8 +657,8 @@ mod tests {
             let version_1 = Arc::clone(&ver_status.current().await);
 
             let vec_edit_2 = vec![
-                VersionEdit::NewFile((vec![scope_2.clone()], 0), 0,SSTableMeta::new(1, 1)),
-                VersionEdit::DeleteFile((vec![1], 0),SSTableMeta::new(1, 1)),
+                VersionEdit::NewFile((vec![scope_2.clone()], 0), 0,meta_2),
+                VersionEdit::DeleteFile((vec![1], 0),meta_1),
             ];
 
             ver_status.log_and_apply(vec_edit_2, 2).await?;
@@ -678,7 +666,7 @@ mod tests {
             let version_2 = Arc::clone(&ver_status.current().await);
 
             let vec_edit_3 = vec![
-                VersionEdit::DeleteFile((vec![2], 0),SSTableMeta::new(1, 1)),
+                VersionEdit::DeleteFile((vec![2], 0),meta_2),
             ];
 
             // 用于去除version2的引用计数
@@ -695,8 +683,8 @@ mod tests {
             assert_eq!(
                 snapshot,
                 vec![
-                    vec![VersionEdit::NewFile((vec![scope_2], 0), 0, SSTableMeta::new(1, 1))],
-                    vec![VersionEdit::DeleteFile((vec![2], 0), SSTableMeta::new(1, 1))],
+                    vec![VersionEdit::NewFile((vec![scope_2], 0), 0, meta_2)],
+                    vec![VersionEdit::DeleteFile((vec![2], 0), meta_2)],
                 ]
             );
 
@@ -769,9 +757,9 @@ mod tests {
             )?;
 
             let vec_edit = vec![
-                VersionEdit::NewFile((vec![scope_1], 0), 0, SSTableMeta::new(1, 1)),
-                VersionEdit::NewFile((vec![scope_2], 0), 0, SSTableMeta::new(1, 1)),
-                VersionEdit::DeleteFile((vec![2], 0), SSTableMeta::new(1, 0)),
+                VersionEdit::NewFile((vec![scope_1], 0), 0, SSTableMeta::from(&ss_table_1)),
+                VersionEdit::NewFile((vec![scope_2], 0), 0, SSTableMeta::from(&ss_table_2)),
+                VersionEdit::DeleteFile((vec![2], 0), SSTableMeta::from(&ss_table_2)),
             ];
 
             ver_status_1.insert_vec_ss_table(vec![ss_table_1])?;
@@ -797,8 +785,8 @@ mod tests {
             )?;
 
             let vec_edit2 = vec![
-                VersionEdit::NewFile((vec![scope_3], 0), 0,SSTableMeta::new(1, 1)),
-                VersionEdit::NewFile((vec![scope_4], 0), 0,SSTableMeta::new(1, 1)),
+                VersionEdit::NewFile((vec![scope_3], 0), 0,SSTableMeta::from(&ss_table_3)),
+                VersionEdit::NewFile((vec![scope_4], 0), 0,SSTableMeta::from(&ss_table_4)),
             ];
 
             ver_status_1.insert_vec_ss_table(vec![ss_table_3])?;

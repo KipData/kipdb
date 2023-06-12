@@ -108,8 +108,8 @@ mod tests {
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::lsm_kv::Config;
-    use crate::kernel::lsm::ss_table::SSTable;
-    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, SSTableMeta, VersionEdit, VersionStatus};
+    use crate::kernel::lsm::ss_table::{SSTable, SSTableMeta};
+    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
     use crate::kernel::Result;
     use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
@@ -174,13 +174,16 @@ mod tests {
                 1,
                 IoType::Direct
             )?;
+            let meta_1 = SSTableMeta::from(&ss_table_1);
+
+            let vec_ss_table = vec![ss_table_1, ss_table_2];
             let vec_edit = vec![
                 // 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
-                VersionEdit::NewFile((vec![scope_1.clone()], 0),0,SSTableMeta::new(1, 1)),
-                VersionEdit::NewFile((vec![scope_1, scope_2], 1),0,SSTableMeta::new(1, 1))
+                VersionEdit::NewFile((vec![scope_1.clone()], 0),0, meta_1),
+                VersionEdit::NewFile((vec![scope_1, scope_2], 1),0, SSTableMeta::from(vec_ss_table.as_slice()))
             ];
 
-            ver_status.insert_vec_ss_table(vec![ss_table_1, ss_table_2])?;
+            ver_status.insert_vec_ss_table(vec_ss_table)?;
             ver_status.log_and_apply(vec_edit, 10).await?;
 
             let version = ver_status.current().await;
