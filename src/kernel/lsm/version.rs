@@ -326,19 +326,19 @@ fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
 
 
 impl Version {
-    pub(crate) fn get_len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.meta_data.len
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.get_len() == 0
+        self.len() == 0
     }
 
     pub(crate) fn level_len(&self, level: usize) -> usize {
         self.level_slice[level].len()
     }
 
-    pub(crate) fn get_size_of_disk(&self) -> u64 {
+    pub(crate) fn size_of_disk(&self) -> u64 {
         self.meta_data.size_of_disk
     }
 
@@ -422,14 +422,21 @@ impl Version {
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
     pub(crate) fn to_vec_edit(&self) -> Vec<VersionEdit> {
+        fn sst_meta_with_level(level: usize, size_of_disk: u64, len: usize) -> SSTableMeta {
+            (LEVEL_0 == level)
+                .then(|| SSTableMeta { size_of_disk, len })
+                .unwrap_or(SSTableMeta::default())
+        }
+
         self.level_slice.iter()
             .enumerate()
             .filter_map(|(level, vec_scope)| {
                 (!vec_scope.is_empty())
-                    .then(|| VersionEdit::NewFile((vec_scope.clone(), level), 0, SSTableMeta {
-                        size_of_disk: self.get_size_of_disk(),
-                        len: self.get_len(),
-                    }))
+                    .then(|| VersionEdit::NewFile(
+                        (vec_scope.clone(), level),
+                        0,
+                        sst_meta_with_level(level, self.size_of_disk(), self.len())
+                    ))
             })
             .collect_vec()
     }
@@ -580,8 +587,8 @@ fn version_display(new_version: &Version, method: &str) {
             "[Version: {}]: version_num: {}, len: {}, size_of_disk: {}",
             method,
             new_version.version_num,
-            new_version.get_len(),
-            new_version.get_size_of_disk(),
+            new_version.len(),
+            new_version.size_of_disk(),
         );
 }
 

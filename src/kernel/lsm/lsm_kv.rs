@@ -155,14 +155,12 @@ impl KVStore for LsmStore {
 
     #[inline]
     async fn size_of_disk(&self) -> Result<u64> {
-        Ok(self.current_version().await
-            .get_size_of_disk())
+        Ok(self.current_version().await.size_of_disk())
     }
 
     #[inline]
     async fn len(&self) -> Result<usize> {
-        Ok(self.current_version().await.get_len()
-            + self.mem_table().len())
+        Ok(self.current_version().await.len() + self.mem_table().len())
     }
 
     #[inline]

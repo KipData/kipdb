@@ -45,7 +45,7 @@ pub(crate) struct SSTableInner {
     meta: MetaBlock,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub(crate) struct SSTableMeta {
     pub(crate) size_of_disk: u64,
     pub(crate) len: usize,
