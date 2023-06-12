@@ -15,7 +15,7 @@ use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
-use crate::kernel::lsm::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::ss_table::{Scope, SSTable, SSTableMeta};
 use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
 
 pub(crate) const LEVEL_0: usize = 0;
@@ -23,9 +23,9 @@ pub(crate) const LEVEL_0: usize = 0;
 /// 数据分片集
 /// 包含对应分片的Gen与数据
 pub(crate) type MergeShardingVec = Vec<(i64, Vec<KeyValue>)>;
-
+pub(crate) type DelNode = (Vec<i64>, SSTableMeta);
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
-pub(crate) type DelGenVec = (Vec<i64>, Vec<i64>);
+pub(crate) type DelNodeTuple = (DelNode, DelNode);
 
 /// Store与Compactor的交互信息
 #[derive(Debug)]
@@ -89,13 +89,14 @@ impl Compactor {
                 LEVEL_0,
                 IoType::Direct
             )?;
+            let new_meta = SSTableMeta::from(&ss_table);
 
             self.ver_status().insert_vec_ss_table(vec![ss_table])?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
                 LEVEL_0,
-                vec![VersionEdit::NewFile((vec![scope], 0), 0)]
+                vec![VersionEdit::NewFile((vec![scope], 0), 0, new_meta)]
             ).await?;
         }
         Ok(())
@@ -122,7 +123,7 @@ impl Compactor {
         }
 
         while level < 7 {
-            if let Some((index, (del_gens_l, del_gens_ll), vec_sharding)) =
+            if let Some((index, ((del_gens_l, del_meta_l), (del_gens_ll, del_meta_ll)), vec_sharding)) =
                 self.data_loading_with_level(level).await?
             {
 
@@ -145,14 +146,15 @@ impl Compactor {
                 let (vec_new_ss_table, vec_new_scope): (Vec<SSTable>, Vec<Scope>) = vec_ss_table_and_scope
                     .into_iter()
                     .unzip();
+                let new_meta = SSTableMeta::from(vec_new_ss_table.as_slice());
 
+                vec_ver_edit.append(&mut vec![
+                    VersionEdit::NewFile((vec_new_scope, level + 1), index, new_meta),
+                    VersionEdit::DeleteFile((del_gens_l, level), del_meta_l),
+                    VersionEdit::DeleteFile((del_gens_ll, level + 1), del_meta_ll)
+                ]);
                 self.ver_status()
                     .insert_vec_ss_table(vec_new_ss_table)?;
-                vec_ver_edit.append(&mut vec![
-                    VersionEdit::NewFile((vec_new_scope, level + 1), index),
-                    VersionEdit::DeleteFile((del_gens_l, level)),
-                    VersionEdit::DeleteFile((del_gens_ll, level + 1))
-                ]);
                 info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
                 level += 1;
             } else { break }
@@ -163,7 +165,7 @@ impl Compactor {
     }
 
     /// 通过Level进行归并数据加载
-    async fn data_loading_with_level(&self, level: usize) -> Result<Option<(usize, DelGenVec, MergeShardingVec)>> {
+    async fn data_loading_with_level(&self, level: usize) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
         let version = self.ver_status().current().await;
         let config = self.config();
         let major_select_file_size = config.major_select_file_size;

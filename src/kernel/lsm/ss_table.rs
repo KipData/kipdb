@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::Bound;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -42,6 +43,34 @@ pub(crate) struct SSTableInner {
     gen: i64,
     // 统计信息存储Block
     meta: MetaBlock,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct SSTableMeta {
+    pub(crate) size_of_disk: u64,
+    pub(crate) len: usize,
+}
+
+impl From<&SSTable> for SSTableMeta {
+    fn from(value: &SSTable) -> Self {
+        SSTableMeta {
+            size_of_disk: value.size_of_disk(),
+            len: value.len(),
+        }
+    }
+}
+
+impl<T> From<&[T]> for SSTableMeta where T: Borrow<SSTable> {
+    fn from(value: &[T]) -> Self {
+        let mut sst_meta = SSTableMeta { size_of_disk: 0, len: 0 };
+
+        for sst in value.iter().map(T::borrow).unique_by(|sst| sst.get_gen()) {
+            sst_meta.len += sst.len();
+            sst_meta.size_of_disk += sst.size_of_disk();
+        }
+
+        sst_meta
+    }
 }
 
 /// 数据范围索引
@@ -144,7 +173,7 @@ impl SSTable {
         self.inner.gen
     }
 
-    pub(crate) fn get_size_of_disk(&self) -> u64 {
+    pub(crate) fn size_of_disk(&self) -> u64 {
         self.inner.footer.size_of_disk as u64
     }
 
@@ -271,11 +300,13 @@ impl SSTable {
     }
 
     /// 通过一组SSTable收集对应的Gen
-    pub(crate) fn collect_gen(vec_ss_table: &[&SSTable]) -> Result<Vec<i64>> {
-        Ok(vec_ss_table.iter()
-            .map(|sst| sst.get_gen())
-            .unique()
-            .collect())
+    pub(crate) fn collect_gen(vec_ss_table: &[&SSTable]) -> Result<(Vec<i64>, SSTableMeta)> {
+        let meta = SSTableMeta::from(vec_ss_table);
+
+        Ok((vec_ss_table.iter()
+                .map(|sst| sst.get_gen())
+                .unique()
+                .collect_vec(), meta))
     }
 
     /// 获取指定SSTable索引位置
