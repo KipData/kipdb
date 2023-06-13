@@ -6,10 +6,9 @@ use itertools::Itertools;
 use skiplist::SkipMap;
 use tokio::sync::mpsc::UnboundedSender;
 use crate::kernel::lsm::compactor::CompactTask;
-use crate::kernel::lsm::is_exceeded_then_minor;
 use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::Result;
-use crate::kernel::lsm::lsm_kv::{Config, Sequence, StoreInner};
+use crate::kernel::lsm::lsm_kv::{Sequence, StoreInner};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::version::Version;
 use crate::KernelError;
@@ -66,12 +65,14 @@ impl Transaction {
             .collect_vec();
 
         let mem_table = self.mem_table();
-        let data_len = mem_table.insert_batch_data(batch_data, Sequence::create())?;
+        if mem_table.insert_batch_data(batch_data, Sequence::create())? {
+            self.compactor_tx
+                .send(CompactTask::Flush(None))
+                .map_err(|_| KernelError::ChannelClose)?;
+        }
 
         let _ = mem_table.tx_count
             .fetch_sub(1, Ordering::Release);
-
-        is_exceeded_then_minor(data_len, &self.compactor_tx, self.config())?;
 
         Ok(())
     }
@@ -86,10 +87,6 @@ impl Transaction {
 
     fn mem_table(&self) -> &MemTable {
         &self.store_inner.mem_table
-    }
-
-    fn config(&self) -> &Config {
-        &self.store_inner.config
     }
 }
 
@@ -114,7 +111,6 @@ mod tests {
             there with a sign.";
 
             let config = Config::new(temp_dir.into_path())
-                .minor_threshold_with_len(1000)
                 .major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;
 

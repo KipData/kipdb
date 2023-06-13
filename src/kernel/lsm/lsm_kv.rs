@@ -13,11 +13,12 @@ use tokio::sync::oneshot;
 use tracing::{error, info};
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
 use crate::kernel::io::IoType;
-use crate::kernel::lsm::{block, is_exceeded_then_minor, version};
+use crate::kernel::lsm::{block, version};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
+use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version::{Version, VersionStatus};
 use crate::kernel::Result;
 use crate::KernelError;
@@ -36,7 +37,7 @@ pub(crate) const BANNER: &str = "
                    ▒▒▒▒▒
 Version: 0.1.0-beta.1";
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_LEN: usize = 2333;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM: usize = 3 * 1024 * 1024;
 
 pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
@@ -183,13 +184,11 @@ impl LsmStore {
 
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
-        let data_len = self.mem_table().insert_data(data)?;
-
-        is_exceeded_then_minor(
-            data_len,
-            &self.compactor_tx,
-            self.config()
-        )?;
+        if self.mem_table().insert_data(data)? {
+            self.compactor_tx
+                .send(CompactTask::Flush(None))
+                .map_err(|_| KernelError::ChannelClose)?;
+        }
 
         Ok(())
     }
@@ -222,10 +221,6 @@ impl LsmStore {
         });
 
         Ok(LsmStore { inner, lock_file, compactor_tx: task_tx })
-    }
-
-    pub(crate) fn config(&self) -> &Config {
-        &self.inner.config
     }
 
     fn mem_table(&self) -> &MemTable {
@@ -283,8 +278,8 @@ pub struct Config {
     pub(crate) wal_threshold: usize,
     /// SSTable文件大小
     pub(crate) sst_file_size: usize,
-    /// Minor触发数据长度
-    pub(crate) minor_threshold_with_len: usize,
+    /// Minor触发器与阈值
+    pub(crate) minor_trigger_with_threshold: (TriggerType, usize),
     /// Major压缩触发阈值
     pub(crate) major_threshold_with_sst_size: usize,
     /// Major压缩选定文件数
@@ -320,9 +315,9 @@ impl Config {
     pub fn new(path: impl Into<PathBuf> + Send) -> Config {
         Config {
             dir_path: path.into(),
-            minor_threshold_with_len: DEFAULT_MINOR_THRESHOLD_WITH_LEN,
             wal_threshold: DEFAULT_WAL_THRESHOLD,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
+            minor_trigger_with_threshold: (TriggerType::SizeOfMem, DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM),
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
@@ -348,8 +343,8 @@ impl Config {
     }
 
     #[inline]
-    pub fn minor_threshold_with_len(mut self, minor_threshold_with_len: usize) -> Self {
-        self.minor_threshold_with_len = minor_threshold_with_len;
+    pub fn minor_trigger_with_threshold(mut self, trigger_type: TriggerType, threshold: usize) -> Self {
+        self.minor_trigger_with_threshold = (trigger_type, threshold);
         self
     }
 
@@ -516,7 +511,6 @@ mod tests {
             there with a sign.";
 
             let config = Config::new(temp_dir.path().to_str().unwrap())
-                .minor_threshold_with_len(1000)
                 .major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;
             let mut vec_kv = Vec::new();

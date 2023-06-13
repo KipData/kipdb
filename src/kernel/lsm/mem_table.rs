@@ -15,6 +15,7 @@ use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::Result;
 use crate::kernel::lsm::lsm_kv::{Config, Gen, Sequence};
+use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
@@ -151,6 +152,7 @@ pub(crate) struct TableInner {
     /// 同时当Level 0的SSTable异常时，可以尝试恢复
     log_loader: LogLoader,
     log_writer: (LogWriter<Box<dyn IoWriter>>, i64),
+    trigger: Box<dyn Trigger + Send>,
 }
 
 impl MemTable {
@@ -169,6 +171,7 @@ impl MemTable {
             logs_decode(log_bytes)?
                 .map(|(key, value)| (InternalKey::new_with_seq(key, 0), value))
         );
+        let (trigger_type, threshold) = config.minor_trigger_with_threshold.clone();
 
         Ok(MemTable {
             inner: Mutex::new(TableInner {
@@ -176,6 +179,7 @@ impl MemTable {
                 _immut: None,
                 log_loader,
                 log_writer,
+                trigger: TriggerFactory::create(trigger_type, threshold),
             }),
             tx_count: AtomicUsize::new(0),
         })
@@ -187,14 +191,16 @@ impl MemTable {
     pub(crate) fn insert_data(
         &self,
         data: KeyValue,
-    ) -> Result<usize> {
+    ) -> Result<bool> {
         let (key, value) = data.clone();
         let mut inner = self.inner.lock();
+
+        inner.trigger.item_process(&data);
 
         let _ = inner.log_writer.0.add_record(&data_to_bytes(data)?)?;
         let _ = inner._mem.insert(InternalKey::new(key), value);
 
-        Ok(inner._mem.len())
+        Ok(inner.trigger.is_exceeded())
     }
 
     /// Tips: 当数据在插入mem_table中停机，则不会存入日志中
@@ -202,17 +208,20 @@ impl MemTable {
         &self,
         vec_data: Vec<KeyValue>,
         seq_id: i64
-    ) -> Result<usize> {
+    ) -> Result<bool> {
         let mut inner = self.inner.lock();
 
         let mut buf = Vec::new();
-        for (key, value) in vec_data {
-            buf.append(&mut data_to_bytes((key.clone(), value.clone()))?);
+        for item in vec_data {
+            let (key, value) = item.clone();
+            inner.trigger.item_process(&item);
+
             let _ = inner._mem.insert(InternalKey::new_with_seq(key, seq_id), value);
+            buf.append(&mut data_to_bytes(item)?);
         }
         let _ = inner.log_writer.0.add_record(&buf)?;
 
-        Ok(inner._mem.len())
+        Ok(inner.trigger.is_exceeded())
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -399,13 +408,13 @@ mod tests {
         let data_1 = (Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'1'])));
         let data_2 = (Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'2'])));
 
-        assert_eq!(mem_table.insert_data(data_1)?, 1);
+        let _ = mem_table.insert_data(data_1)?;
 
         let old_seq_id = Sequence::create();
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(Bytes::from(vec![b'1'])));
 
-        assert_eq!(mem_table.insert_data(data_2)?, 2);
+        let _ = mem_table.insert_data(data_2)?;
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(Bytes::from(vec![b'2'])));
 
@@ -424,10 +433,10 @@ mod tests {
 
         let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
 
-        assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'1']))))?, 1);
-        assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))?, 2);
-        assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))?, 3);
-        assert_eq!(mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?, 4);
+        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'1']))))?;
+        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))?;
+        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))?;
+        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?;
 
         let (_, mut vec) = mem_table.swap()?.unwrap();
 
