@@ -1,3 +1,4 @@
+use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
 use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::KeyValue;
@@ -48,7 +49,7 @@ impl<'a> LevelIter<'a> {
      fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> Result<Option<KeyValue>> {
         let level = self.level;
 
-        if level == 0 {
+        if level == LEVEL_0 {
             return Err(KernelError::NotSupport(LEVEL_0_SEEK_MESSAGE));
         }
         self.sst_iter_seek(seek, self.version.query_meet_index(key, level))
