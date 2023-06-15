@@ -8,7 +8,8 @@ use chrono::Local;
 use fslock::LockFile;
 use parking_lot::MutexGuard;
 use skiplist::SkipMap;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::oneshot;
 use tracing::{error, info};
 use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
@@ -37,7 +38,7 @@ pub(crate) const BANNER: &str = "
                    ▒▒▒▒▒
 Version: 0.1.0-beta.1";
 
-pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM: usize = 3 * 1024 * 1024;
+pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM: usize = 2 * 1024 * 1024;
 
 pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
@@ -69,7 +70,7 @@ pub struct LsmStore {
     /// 避免多进程进行数据读写
     lock_file: LockFile,
     /// Compactor 通信器
-    compactor_tx: UnboundedSender<CompactTask>
+    compactor_tx: Sender<CompactTask>
 }
 
 pub(crate) struct StoreInner {
@@ -117,7 +118,7 @@ impl KVStore for LsmStore {
     async fn flush(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
 
-        self.compactor_tx.send(CompactTask::Flush(Some(tx)))?;
+        self.compactor_tx.send(CompactTask::Flush(Some(tx))).await?;
 
         rx.await.map_err(|_| KernelError::ChannelClose)?;
 
@@ -185,9 +186,9 @@ impl LsmStore {
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         if self.mem_table().insert_data(data)? {
-            self.compactor_tx
-                .send(CompactTask::Flush(None))
-                .map_err(|_| KernelError::ChannelClose)?;
+            if let Err(TrySendError::Closed(_)) = self.compactor_tx
+                .try_send(CompactTask::Flush(None))
+            { return Err(KernelError::ChannelClose); }
         }
 
         Ok(())
@@ -210,7 +211,7 @@ impl LsmStore {
             Arc::clone(&inner),
         );
 
-        let (task_tx, mut task_rx) = unbounded_channel();
+        let (task_tx, mut task_rx) = channel(1);
 
         let _ignore = tokio::spawn(async move {
             while let Some(CompactTask::Flush(option_tx)) = task_rx.recv().await {
@@ -531,7 +532,7 @@ mod tests {
             }
             println!("[set_for][Time: {:?}]", start.elapsed());
 
-            kv_store.flush().await?;
+            kv_store.flush().await.unwrap();
 
             let start = Instant::now();
             for i in 0..times {

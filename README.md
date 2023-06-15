@@ -79,7 +79,7 @@ transaction.remove(&b"trouble")?;
 // 获取此事务中key对应的value
 let ping_cap = transaction.get(&b"dream job")?;
 // 提交事务
-transaction.commit()?;
+transaction.commit().await?;
 
 // 创建持久化数据迭代器
 let guard = kip_db.iter().await?;
