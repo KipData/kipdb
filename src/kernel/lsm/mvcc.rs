@@ -4,7 +4,8 @@ use std::sync::atomic::Ordering;
 use bytes::Bytes;
 use itertools::Itertools;
 use skiplist::SkipMap;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::Sender;
 use crate::kernel::lsm::compactor::CompactTask;
 use crate::kernel::lsm::iterator::version_iter::VersionIter;
 use crate::kernel::Result;
@@ -15,7 +16,7 @@ use crate::KernelError;
 
 pub struct Transaction {
     pub(crate) store_inner: Arc<StoreInner>,
-    pub(crate) compactor_tx: UnboundedSender<CompactTask>,
+    pub(crate) compactor_tx: Sender<CompactTask>,
 
     pub(crate) version: Arc<Version>,
     pub(crate) writer_buf: SkipMap<Bytes, Option<Bytes>>,
@@ -59,16 +60,16 @@ impl Transaction {
         Ok(())
     }
 
-    pub fn commit(self) -> Result<()> {
+    pub async fn commit(self) -> Result<()> {
         let batch_data = self.writer_buf.iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect_vec();
 
         let mem_table = self.mem_table();
         if mem_table.insert_batch_data(batch_data, Sequence::create())? {
-            self.compactor_tx
-                .send(CompactTask::Flush(None))
-                .map_err(|_| KernelError::ChannelClose)?;
+            if let Err(TrySendError::Closed(_)) = self.compactor_tx
+                .try_send(CompactTask::Flush(None))
+            { return Err(KernelError::ChannelClose); }
         }
 
         let _ = mem_table.tx_count
@@ -145,7 +146,7 @@ mod tests {
                 assert_eq!(kv_store.get(&vec_kv[i].0).await?, None);
             }
 
-            transaction.commit()?;
+            transaction.commit().await?;
 
             for i in 0..times - 1 {
                 assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));

@@ -77,10 +77,13 @@ fn bulk_load<T: KVStore>(c: &mut Criterion) {
                 })
             },
         );
+        rt.block_on(async {
+            db.flush().await.unwrap();
+        });
     };
 
     for key_len in &[10_usize, 128, 256, 512] {
-        for val_len in &[0_usize, 10, 128, 256, 512, 1024, 2048, 4096, 8192] {
+        for val_len in &[0_usize, 10, 128, 256, 512, 1024, 2048] {
             bench(*key_len, *val_len);
         }
     }
