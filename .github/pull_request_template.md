@@ -2,7 +2,7 @@
 
 Add corresponding issue link with summary if exists -->
 
-JIRA issue link:
+Issue link:
 
 ### What is changed and how it works?
 
