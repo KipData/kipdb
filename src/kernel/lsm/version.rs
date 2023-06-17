@@ -423,9 +423,11 @@ impl Version {
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
     pub(crate) fn to_vec_edit(&self) -> Vec<VersionEdit> {
         fn sst_meta_with_level(level: usize, size_of_disk: u64, len: usize) -> SSTableMeta {
-            (LEVEL_0 == level)
-                .then(|| SSTableMeta { size_of_disk, len })
-                .unwrap_or(SSTableMeta::default())
+            if LEVEL_0 == level {
+                SSTableMeta { size_of_disk, len }
+            } else {
+                SSTableMeta::default()
+            }
         }
 
         self.level_slice.iter()

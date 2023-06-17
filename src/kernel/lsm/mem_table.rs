@@ -171,7 +171,7 @@ impl MemTable {
             logs_decode(log_bytes)?
                 .map(|(key, value)| (InternalKey::new_with_seq(key, 0), value))
         );
-        let (trigger_type, threshold) = config.minor_trigger_with_threshold.clone();
+        let (trigger_type, threshold) = config.minor_trigger_with_threshold;
 
         Ok(MemTable {
             inner: Mutex::new(TableInner {
