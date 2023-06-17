@@ -30,7 +30,7 @@ pub(crate) struct SizeOfMemTrigger {
 
 impl Trigger for SizeOfMemTrigger {
     fn item_process(&mut self, item: &KeyValue) {
-        self.size_of_mem += key_value_bytes_len(&item);
+        self.size_of_mem += key_value_bytes_len(item);
     }
 
     fn is_exceeded(&self) -> bool {
