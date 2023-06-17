@@ -1,6 +1,6 @@
 [package]
 name = "kip_db"
-version = "0.1.0-beta.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["Kould <kould2333@gmail.com>"]
 description = "轻量级、异步 基于LSM Leveled Compaction K-V数据库"
