@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sled::Db;
 use async_trait::async_trait;
 use bytes::Bytes;
-use crate::kernel::KVStore;
+use crate::kernel::Storage;
 use crate::KernelError;
 
 #[derive(Debug)]
@@ -12,7 +12,7 @@ pub struct SledStore {
 }
 
 #[async_trait]
-impl KVStore for SledStore {
+impl Storage for SledStore {
 
     #[inline]
     fn name() -> &'static str where Self: Sized {

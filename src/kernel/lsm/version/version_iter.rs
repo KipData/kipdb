@@ -1,19 +1,17 @@
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::iterator::level_iter::LevelIter;
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 
 /// Version键值对迭代器
-#[allow(dead_code)]
 pub struct VersionIter<'a> {
     merge_iter: MergingIter<'a>
 }
 
 impl<'a> VersionIter<'a> {
-    #[allow(dead_code)]
     pub(crate) fn new(version: &'a Version) -> Result<VersionIter<'a>> {
         let vec_iter = Self::merging_with_version(version)?;
 

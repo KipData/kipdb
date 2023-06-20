@@ -1,6 +1,6 @@
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-use crate::kernel::lsm::iterator::version_iter::VersionIter;
+use crate::kernel::lsm::version::version_iter::VersionIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemMapIter, TableInner};
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
@@ -50,10 +50,10 @@ mod tests {
     use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
-    use crate::kernel::{KVStore, Result};
+    use crate::kernel::{Storage, Result};
     use crate::kernel::lsm::iterator::Iter;
-    use crate::kernel::lsm::iterator::version_iter::VersionIter;
+    use crate::kernel::lsm::storage::{Config, LsmStore};
+    use crate::kernel::lsm::version::version_iter::VersionIter;
 
     #[test]
     fn test_iterator() -> Result<()> {

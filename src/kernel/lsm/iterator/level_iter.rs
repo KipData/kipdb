@@ -1,7 +1,7 @@
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
-use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
+use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -56,7 +56,7 @@ impl<'a> LevelIter<'a> {
     }
 }
 
-impl<'a> ForwardDiskIter<'a> for LevelIter<'a> {
+impl<'a> ForwardIter<'a> for LevelIter<'a> {
      fn prev_err(&mut self) -> Result<Option<Self::Item>> {
         match self.sst_iter.prev_err()? {
             None => {
@@ -108,14 +108,17 @@ mod tests {
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::lsm_kv::Config;
-    use crate::kernel::lsm::ss_table::{SSTable, SSTableMeta};
-    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
+    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::ss_table::sst_meta::SSTableMeta;
+    use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
+    use crate::kernel::lsm::version::version_edit::VersionEdit;
+    use crate::kernel::lsm::version::version_status::VersionStatus;
 
     #[test]
     fn test_iterator() -> Result<()> {

@@ -133,10 +133,10 @@ mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-    use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
-    use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemMapIter};
     use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
+    use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
     use crate::kernel::utils::lru_cache::ShardingLruCache;

@@ -1,7 +1,7 @@
-use crate::kernel::lsm::block::{BlockCache, Index, Value};
-use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
-use crate::kernel::lsm::iterator::block_iter::BlockIter;
+use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::ss_table::block::{BlockCache, Index, Value};
+use crate::kernel::lsm::ss_table::block_iter::BlockIter;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -51,7 +51,7 @@ impl<'a> SSTableIter<'a> {
     }
 }
 
-impl<'a> ForwardDiskIter<'a> for SSTableIter<'a> {
+impl<'a> ForwardIter<'a> for SSTableIter<'a> {
     fn prev_err(&mut self) -> Result<Option<Self::Item>> {
         match self.data_iter.prev_err()? {
             None => {
@@ -98,12 +98,12 @@ mod tests {
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::lsm_kv::Config;
-    use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
-    use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
+    use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
+    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
+    use crate::kernel::lsm::storage::Config;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]

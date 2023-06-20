@@ -10,11 +10,11 @@ use itertools::Itertools;
 use parking_lot::{Mutex, MutexGuard};
 use skiplist::{SkipMap, skipmap};
 use crate::kernel::io::IoWriter;
-use crate::kernel::lsm::block::{Entry, Value};
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
+use crate::kernel::lsm::ss_table::block::{Entry, Value};
 use crate::kernel::Result;
-use crate::kernel::lsm::lsm_kv::{Config, Gen, Sequence};
+use crate::kernel::lsm::storage::{Config, Gen, Sequence};
 use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
@@ -379,9 +379,9 @@ mod tests {
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::lsm::iterator::{Iter, Seek};
-    use crate::kernel::lsm::lsm_kv::{Config, Sequence};
     use crate::kernel::Result;
     use crate::kernel::lsm::mem_table::{data_to_bytes, InternalKey, KeyValue, MemMap, MemMapIter, MemTable};
+    use crate::kernel::lsm::storage::{Config, Sequence};
 
     impl MemTable {
         pub(crate) fn insert_data_with_seq(

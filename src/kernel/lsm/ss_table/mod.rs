@@ -1,6 +1,5 @@
-use std::borrow::Borrow;
 use std::collections::Bound;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::SeekFrom;
 use std::sync::Arc;
 use bytes::Bytes;
 use growable_bloom_filter::GrowableBloom;
@@ -9,13 +8,54 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use crate::kernel::io::{IoFactory, IoReader, IoType};
-use crate::kernel::lsm::{MetaBlock, Footer, TABLE_FOOTER_SIZE};
-use crate::kernel::lsm::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index, Value};
-use crate::kernel::lsm::lsm_kv::Config;
 use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::ss_table::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index, Value};
+use crate::kernel::lsm::ss_table::sst_meta::SSTableMeta;
+use crate::kernel::lsm::storage::Config;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
+
+pub(crate) mod sst_loader;
+pub(crate) mod block;
+pub(crate) mod block_iter;
+pub(crate) mod ss_table_iter;
+pub(crate) mod sst_meta;
+
+/// Footer序列化长度定长
+/// 注意Footer序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致Footer在不同数据时，长度不一致
+pub(crate) const TABLE_FOOTER_SIZE: usize = 21;
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[repr(C, align(32))]
+struct Footer {
+    level: u8,
+    index_offset: u32,
+    index_len: u32,
+    meta_offset: u32,
+    meta_len: u32,
+    size_of_disk: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MetaBlock {
+    filter: GrowableBloom,
+    len: usize,
+    index_restart_interval: usize,
+    data_restart_interval: usize,
+}
+
+impl Footer {
+    /// 从对应文件的IOHandler中将Footer读取出来
+    fn read_to_file(reader: &mut dyn IoReader) -> Result<Self> {
+        let mut buf = [0; TABLE_FOOTER_SIZE];
+
+        let _ = reader.seek(SeekFrom::End( -(TABLE_FOOTER_SIZE as i64)))?;
+        let _ = reader.read(&mut buf)?;
+
+        Ok(bincode::deserialize(&buf)?)
+    }
+}
 
 pub(crate) struct SSTable {
     inner: Arc<SSTableInner>
@@ -43,34 +83,6 @@ pub(crate) struct SSTableInner {
     gen: i64,
     // 统计信息存储Block
     meta: MetaBlock,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq, Default)]
-pub(crate) struct SSTableMeta {
-    pub(crate) size_of_disk: u64,
-    pub(crate) len: usize,
-}
-
-impl From<&SSTable> for SSTableMeta {
-    fn from(value: &SSTable) -> Self {
-        SSTableMeta {
-            size_of_disk: value.size_of_disk(),
-            len: value.len(),
-        }
-    }
-}
-
-impl<T> From<&[T]> for SSTableMeta where T: Borrow<SSTable> {
-    fn from(value: &[T]) -> Self {
-        let mut sst_meta = SSTableMeta { size_of_disk: 0, len: 0 };
-
-        for sst in value.iter().map(T::borrow).unique_by(|sst| sst.get_gen()) {
-            sst_meta.len += sst.len();
-            sst_meta.size_of_disk += sst.size_of_disk();
-        }
-
-        sst_meta
-    }
 }
 
 /// 数据范围索引
@@ -389,17 +401,33 @@ impl SSTable {
 
 #[cfg(test)]
 mod tests {
-
     use std::collections::hash_map::RandomState;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::lsm_kv::Config;
-    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::ss_table::{Footer, SSTable, TABLE_FOOTER_SIZE};
+    use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::Result;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
+    use crate::kernel::Result;
+
+    #[test]
+    fn test_footer() -> Result<()> {
+        let info = Footer {
+            level: 0,
+            index_offset: 0,
+            index_len: 0,
+            meta_offset: 0,
+            meta_len: 0,
+            size_of_disk: 0,
+        };
+
+
+        assert_eq!(bincode::serialize(&info)?.len(), TABLE_FOOTER_SIZE);
+
+        Ok(())
+    }
 
     #[test]
     fn test_ss_table() -> Result<()> {

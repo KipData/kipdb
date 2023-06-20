@@ -1,8 +1,5 @@
-pub(crate) mod block_iter;
-pub(crate) mod ss_table_iter;
 pub(crate) mod level_iter;
 pub(crate) mod merging_iter;
-pub(crate) mod version_iter;
 pub(crate) mod full_iter;
 
 use crate::kernel::Result;
@@ -30,6 +27,6 @@ pub(crate) trait Iter<'a> {
 }
 
 /// 向前迭代器
-pub(crate) trait ForwardDiskIter<'a>: Iter<'a> {
+pub(crate) trait ForwardIter<'a>: Iter<'a> {
     fn prev_err(&mut self) -> Result<Option<Self::Item>>;
 }

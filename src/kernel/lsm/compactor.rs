@@ -9,14 +9,16 @@ use tracing::info;
 use crate::KernelError;
 use crate::kernel::io::{IoFactory, IoType};
 use crate::kernel::Result;
-use crate::kernel::lsm::block::BlockCache;
-use crate::kernel::lsm::lsm_kv::{Config, StoreInner};
+use crate::kernel::lsm::storage::{Config, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::Iter;
-use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
-use crate::kernel::lsm::ss_table::{Scope, SSTable, SSTableMeta};
-use crate::kernel::lsm::version::{VersionEdit, VersionStatus};
+use crate::kernel::lsm::ss_table::block::BlockCache;
+use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
+use crate::kernel::lsm::ss_table::sst_meta::SSTableMeta;
+use crate::kernel::lsm::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::version::version_edit::VersionEdit;
+use crate::kernel::lsm::version::version_status::VersionStatus;
 
 pub(crate) const LEVEL_0: usize = 0;
 
@@ -307,8 +309,8 @@ mod tests {
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::Compactor;
-    use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
