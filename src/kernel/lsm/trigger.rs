@@ -4,6 +4,8 @@ pub(crate) trait Trigger {
     fn item_process(&mut self, item: &KeyValue);
 
     fn is_exceeded(&self) -> bool;
+
+    fn reset(&mut self);
 }
 
 #[derive(Copy, Clone)]
@@ -20,6 +22,10 @@ impl Trigger for CountTrigger {
     fn is_exceeded(&self) -> bool {
         self.item_count >= self.threshold
     }
+
+    fn reset(&mut self) {
+        self.item_count = 0;
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -35,6 +41,10 @@ impl Trigger for SizeOfMemTrigger {
 
     fn is_exceeded(&self) -> bool {
         self.size_of_mem >= self.threshold
+    }
+
+    fn reset(&mut self) {
+        self.size_of_mem = 0;
     }
 }
 
