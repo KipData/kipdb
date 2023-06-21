@@ -8,12 +8,12 @@ use tokio::sync::RwLock;
 use tracing::info;
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
-use crate::kernel::lsm::ss_table::sst_loader::SSTableLoader;
+use crate::kernel::lsm::ss_table::loader::SSTableLoader;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH, snapshot_gen, Version, version_display};
 use crate::kernel::lsm::version::cleaner::Cleaner;
-use crate::kernel::lsm::version::version_edit::VersionEdit;
+use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::Result;
 

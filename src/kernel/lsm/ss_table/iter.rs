@@ -102,7 +102,7 @@ mod tests {
     use crate::kernel::Result;
     use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
     use crate::kernel::lsm::ss_table::SSTable;
-    use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
+    use crate::kernel::lsm::ss_table::iter::SSTableIter;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 

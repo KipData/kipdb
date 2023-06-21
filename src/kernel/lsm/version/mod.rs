@@ -7,21 +7,21 @@ use crate::kernel::io::{FileExtension, IoFactory};
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::ss_table::block::BlockCache;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
-use crate::kernel::lsm::ss_table::sst_loader::SSTableLoader;
-use crate::kernel::lsm::ss_table::sst_meta::SSTableMeta;
+use crate::kernel::lsm::ss_table::loader::SSTableLoader;
+use crate::kernel::lsm::ss_table::meta::SSTableMeta;
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::version::cleaner::CleanTag;
-use crate::kernel::lsm::version::version_edit::{EditType, VersionEdit};
-use crate::kernel::lsm::version::version_meta::VersionMeta;
+use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
+use crate::kernel::lsm::version::meta::VersionMeta;
 use crate::kernel::{Result, sorted_gen_list};
 
 mod cleaner;
-pub(crate) mod version_status;
-mod version_meta;
-pub(crate) mod version_edit;
+pub(crate) mod status;
+mod meta;
+pub(crate) mod edit;
 #[cfg(test)]
 mod test;
-pub(crate) mod version_iter;
+pub(crate) mod iter;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
@@ -119,16 +119,14 @@ impl Version {
         for version_edit in vec_version_edit {
             match version_edit {
                 VersionEdit::DeleteFile((mut vec_gen, level), sst_meta) => {
-
-                    vec_statistics_sst_meta.push((EditType::Del, sst_meta.size_of_disk, sst_meta.len));
+                    vec_statistics_sst_meta.push(EditType::Del(sst_meta));
 
                     self.level_slice[level]
                         .retain(|scope| !vec_gen.contains(&scope.get_gen()));
                     del_gens.append(&mut vec_gen);
                 }
                 VersionEdit::NewFile((vec_scope, level), index, sst_meta) => {
-
-                    vec_statistics_sst_meta.push((EditType::Add, sst_meta.size_of_disk, sst_meta.len));
+                    vec_statistics_sst_meta.push(EditType::Add(sst_meta));
 
                     // Level 0中的SSTable绝对是以gen为优先级
                     // Level N中则不以gen为顺序，此处对gen排序是因为单次NewFile中的gen肯定是有序的
@@ -150,7 +148,10 @@ impl Version {
 
         self.meta_data.statistical_process(vec_statistics_sst_meta)?;
         self.version_num += 1;
-        self.clean_tx.send(CleanTag::Add(self.version_num, del_gens))?;
+        self.clean_tx.send(CleanTag::Add{
+            version: self.version_num,
+            gens: del_gens,
+        })?;
 
         Ok(())
     }

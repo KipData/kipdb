@@ -14,11 +14,11 @@ use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::block::BlockCache;
-use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
-use crate::kernel::lsm::ss_table::sst_meta::SSTableMeta;
+use crate::kernel::lsm::ss_table::iter::SSTableIter;
+use crate::kernel::lsm::ss_table::meta::SSTableMeta;
 use crate::kernel::lsm::ss_table::{Scope, SSTable};
-use crate::kernel::lsm::version::version_edit::VersionEdit;
-use crate::kernel::lsm::version::version_status::VersionStatus;
+use crate::kernel::lsm::version::edit::VersionEdit;
+use crate::kernel::lsm::version::status::VersionStatus;
 
 pub(crate) const LEVEL_0: usize = 0;
 

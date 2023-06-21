@@ -6,12 +6,12 @@ use tokio::time;
 use crate::kernel::io::{FileExtension, IoFactory, IoType};
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::ss_table::SSTable;
-use crate::kernel::lsm::ss_table::sst_meta::SSTableMeta;
+use crate::kernel::lsm::ss_table::meta::SSTableMeta;
 use crate::kernel::lsm::storage::Config;
 use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH};
 use crate::kernel::lsm::version::Version;
-use crate::kernel::lsm::version::version_edit::VersionEdit;
-use crate::kernel::lsm::version::version_status::VersionStatus;
+use crate::kernel::lsm::version::edit::VersionEdit;
+use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::Result;
 
 #[test]

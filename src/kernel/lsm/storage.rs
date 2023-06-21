@@ -22,7 +22,7 @@ use crate::kernel::lsm::ss_table::block;
 use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version;
 use crate::kernel::lsm::version::Version;
-use crate::kernel::lsm::version::version_status::VersionStatus;
+use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::Result;
 use crate::KernelError;
 
@@ -38,7 +38,7 @@ pub(crate) const BANNER: &str = "
                     ▒███
                     █████
                    ▒▒▒▒▒
-Version: 0.1.0-beta.1";
+Version: 0.1.1-alpha.0";
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM: usize = 2 * 1024 * 1024;
 

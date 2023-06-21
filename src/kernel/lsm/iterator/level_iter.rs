@@ -1,7 +1,7 @@
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::ss_table_iter::SSTableIter;
+use crate::kernel::lsm::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -114,11 +114,11 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::SSTable;
-    use crate::kernel::lsm::ss_table::sst_meta::SSTableMeta;
+    use crate::kernel::lsm::ss_table::meta::SSTableMeta;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::lsm::version::version_edit::VersionEdit;
-    use crate::kernel::lsm::version::version_status::VersionStatus;
+    use crate::kernel::lsm::version::edit::VersionEdit;
+    use crate::kernel::lsm::version::status::VersionStatus;
 
     #[test]
     fn test_iterator() -> Result<()> {

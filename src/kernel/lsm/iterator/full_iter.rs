@@ -1,6 +1,6 @@
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-use crate::kernel::lsm::version::version_iter::VersionIter;
+use crate::kernel::lsm::version::iter::VersionIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemMapIter, TableInner};
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
@@ -53,7 +53,7 @@ mod tests {
     use crate::kernel::{Storage, Result};
     use crate::kernel::lsm::iterator::Iter;
     use crate::kernel::lsm::storage::{Config, LsmStore};
-    use crate::kernel::lsm::version::version_iter::VersionIter;
+    use crate::kernel::lsm::version::iter::VersionIter;
 
     #[test]
     fn test_iterator() -> Result<()> {

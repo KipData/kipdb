@@ -77,7 +77,9 @@ impl SSTableLoader {
     pub(crate) fn clean(&self, gen: i64) -> Result<()> {
         let _ = self.remove(&gen);
         self.clean_only_sst(gen)?;
-        self.clean_only_wal(gen)
+        self.clean_only_wal(gen)?;
+
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -101,7 +103,7 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::{data_to_bytes, DEFAULT_WAL_PATH};
     use crate::kernel::lsm::ss_table::SSTable;
-    use crate::kernel::lsm::ss_table::sst_loader::SSTableLoader;
+    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;

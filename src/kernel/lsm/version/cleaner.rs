@@ -2,12 +2,15 @@ use std::sync::Arc;
 use itertools::Itertools;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::error;
-use crate::kernel::lsm::ss_table::sst_loader::SSTableLoader;
+use crate::kernel::lsm::ss_table::loader::SSTableLoader;
 
 #[derive(Debug)]
 pub(crate) enum CleanTag {
     Clean(u64),
-    Add(u64, Vec<i64>),
+    Add {
+        version: u64,
+        gens: Vec<i64>
+    }
 }
 
 /// SSTable的文件删除器
@@ -39,8 +42,8 @@ impl Cleaner {
         loop {
             match self.tag_rx.recv().await {
                 Some(CleanTag::Clean(ver_num)) => self.clean(ver_num),
-                Some(CleanTag::Add(ver_num, vec_gen)) => {
-                    self.del_gens.push((ver_num, vec_gen));
+                Some(CleanTag::Add { version, gens }) => {
+                    self.del_gens.push((version, gens));
                 }
                 // 关闭时对此次运行中的暂存Version全部进行删除
                 None => {

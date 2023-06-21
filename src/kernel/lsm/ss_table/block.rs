@@ -3,6 +3,8 @@ use std::collections::Bound;
 use std::io::{Cursor, Read, Write};
 use std::{cmp, mem};
 use bytes::{Buf, BufMut, Bytes};
+use growable_bloom_filter::GrowableBloom;
+use serde::{Deserialize, Serialize};
 use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
 use itertools::Itertools;
 use lz4::Decoder;
@@ -195,6 +197,14 @@ impl BlockItem for Index {
 pub(crate) enum CompressType {
     None,
     LZ4
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct MetaBlock {
+    pub(crate) filter: GrowableBloom,
+    pub(crate) len: usize,
+    pub(crate) index_restart_interval: usize,
+    pub(crate) data_restart_interval: usize,
 }
 
 /// Block SSTable最小的存储单位
