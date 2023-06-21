@@ -250,6 +250,8 @@ impl MemTable {
                     continue
                 }
                 return if !inner._mem.is_empty() {
+                    inner.trigger.reset();
+                    
                     let mut vec_data = inner._mem.iter()
                         .map(|(k, v)| (k.key.clone(), v.clone()))
                         // rev以使用最后(最新)的key
