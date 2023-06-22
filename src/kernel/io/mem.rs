@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -7,8 +7,7 @@ use crate::kernel::io::{IoReader, IoType, IoWriter};
 
 pub(crate) struct MemIoReader {
     gen: i64,
-    bytes: Bytes,
-    pos: usize,
+    inner: Cursor<Bytes>
 }
 
 pub(crate) struct MemIoWriter {
@@ -20,9 +19,10 @@ struct MemIoWriterInner {
     pos: u64
 }
 
+
 impl MemIoReader {
     pub(crate) fn new(gen: i64, bytes: Bytes) -> Self {
-        MemIoReader { gen, bytes, pos: 0 }
+        MemIoReader { gen, inner: Cursor::new(bytes) }
     }
 }
 
@@ -40,22 +40,13 @@ impl MemIoWriter {
 
 impl Read for MemIoReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let last_pos = self.pos;
-        let len = (&self.bytes[last_pos..]).read(buf)?;
-        self.pos += len;
-        Ok(len)
+        self.inner.read(buf)
     }
 }
 
 impl Seek for MemIoReader {
     fn seek(&mut self, seek: SeekFrom) -> std::io::Result<u64> {
-        match seek {
-            SeekFrom::Start(pos) => self.pos = pos as usize,
-            SeekFrom::End(pos) => self.pos = (self.bytes.len() as i64 + pos) as usize,
-            SeekFrom::Current(pos) => self.pos = (self.pos as i64 + pos) as usize,
-        }
-
-        Ok(self.pos as u64)
+        self.inner.seek(seek)
     }
 }
 
@@ -69,7 +60,7 @@ impl IoReader for MemIoReader {
     }
 
     fn file_size(&self) -> crate::kernel::Result<u64> {
-        Ok(self.bytes.len() as u64)
+        Ok(self.inner.get_ref().len() as u64)
     }
 
     fn get_type(&self) -> IoType {

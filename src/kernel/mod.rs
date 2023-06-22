@@ -14,7 +14,7 @@ use crate::kernel::io::FileExtension;
 use crate::KernelError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
 
-pub mod sled_kv;
+pub mod sled_storage;
 pub mod lsm;
 pub mod io;
 pub mod utils;
@@ -25,7 +25,7 @@ pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
 
 /// KV持久化内核 操作定义
 #[async_trait]
-pub trait KVStore: Send + Sync + 'static + Sized {
+pub trait Storage: Send + Sync + 'static + Sized {
     /// 获取内核名
     fn name() -> &'static str where Self: Sized;
 
@@ -180,7 +180,7 @@ impl CommandData {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
     #[inline]
-    pub async fn apply<K: KVStore>(self, kv_store: &K) -> Result<CommandOption>{
+    pub async fn apply<K: Storage>(self, kv_store: &K) -> Result<CommandOption>{
         match self {
             CommandData::Set { key, value } => {
                 kv_store.set(&key, Bytes::from(value)).await.map(|_| options_none())

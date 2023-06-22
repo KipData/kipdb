@@ -1,7 +1,7 @@
-use crate::kernel::lsm::block::{BlockCache, Index, Value};
-use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
-use crate::kernel::lsm::iterator::block_iter::BlockIter;
+use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::ss_table::block::{BlockCache, Index, Value};
+use crate::kernel::lsm::ss_table::block_iter::BlockIter;
 use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -51,7 +51,7 @@ impl<'a> SSTableIter<'a> {
     }
 }
 
-impl<'a> ForwardDiskIter<'a> for SSTableIter<'a> {
+impl<'a> ForwardIter<'a> for SSTableIter<'a> {
     fn prev_err(&mut self) -> Result<Option<Self::Item>> {
         match self.data_iter.prev_err()? {
             None => {
@@ -94,16 +94,19 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::lsm_kv::Config;
-    use crate::kernel::lsm::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
-    use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
+    use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
+    use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
+    use crate::kernel::lsm::ss_table::iter::SSTableIter;
+    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
+    use crate::kernel::lsm::storage::Config;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
@@ -116,6 +119,13 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable
         )?;
+        let (log_loader, _, _) = LogLoader::reload(
+            config.path(),
+            (DEFAULT_WAL_PATH, Some(1)),
+            IoType::Buf,
+            |_| Ok(())
+        )?;
+        let sst_loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), log_loader)?;
 
         let value = Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
         let mut vec_data = Vec::new();
@@ -133,21 +143,17 @@ mod tests {
             );
         }
 
-        let (ss_table, _) = SSTable::create_for_mem_table(
-            &config,
-            1,
-            &sst_factory,
-            vec_data.clone(),
-            0,
-            IoType::Direct
-        )?;
+        let _ = sst_loader.create(1, vec_data.clone(), 0)?;
+
+        let ss_table = sst_loader.get(1).unwrap();
+
         let cache = ShardingLruCache::new(
             config.block_cache_size,
             16,
             RandomState::default()
         )?;
 
-        let mut iterator = SSTableIter::new(&ss_table, &cache)?;
+        let mut iterator = SSTableIter::new(ss_table, &cache)?;
 
         for i in 0..times {
             assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);

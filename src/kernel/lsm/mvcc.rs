@@ -9,9 +9,9 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
 use crate::kernel::lsm::compactor::CompactTask;
 use crate::kernel::lsm::iterator::{Iter, Seek};
-use crate::kernel::lsm::iterator::version_iter::VersionIter;
+use crate::kernel::lsm::version::iter::VersionIter;
 use crate::kernel::Result;
-use crate::kernel::lsm::lsm_kv::{Sequence, StoreInner};
+use crate::kernel::lsm::storage::{Sequence, StoreInner};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::version::Version;
 use crate::KernelError;
@@ -166,8 +166,8 @@ mod tests {
     use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::{Config, LsmStore};
-    use crate::kernel::{KVStore, Result};
+    use crate::kernel::{Storage, Result};
+    use crate::kernel::lsm::storage::{Config, LsmStore};
 
     #[test]
     fn test_transaction() -> Result<()> {

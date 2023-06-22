@@ -3,10 +3,10 @@ use bytes::Bytes;
 use tempfile::TempDir;
 use walkdir::WalkDir;
 use kip_db::kernel::io::{FileExtension, IoFactory, IoType};
-use kip_db::kernel::KVStore;
-use kip_db::kernel::lsm::lsm_kv::LsmStore;
+use kip_db::kernel::lsm::storage::LsmStore;
+use kip_db::kernel::Storage;
 use kip_db::kernel::Result;
-use kip_db::kernel::sled_kv::SledStore;
+use kip_db::kernel::sled_storage::SledStore;
 
 #[test]
 fn get_stored_value() -> Result<()> {
@@ -15,7 +15,7 @@ fn get_stored_value() -> Result<()> {
     Ok(())
 }
 
-fn get_stored_value_with_kv_store<T: KVStore>() -> Result<()> {
+fn get_stored_value_with_kv_store<T: Storage>() -> Result<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let key2: Vec<u8> = encode_key("key2")?;
@@ -51,7 +51,7 @@ fn overwrite_value() -> Result<()> {
     Ok(())
 }
 
-fn overwrite_value_with_kv_store<T: KVStore>() -> Result<()> {
+fn overwrite_value_with_kv_store<T: Storage>() -> Result<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let value1: Vec<u8> = encode_key("value1")?;
@@ -88,7 +88,7 @@ fn get_non_existent_value() -> Result<()> {
     Ok(())
 }
 
-fn get_non_existent_value_with_kv_store<T: KVStore>() -> Result<()> {
+fn get_non_existent_value_with_kv_store<T: Storage>() -> Result<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let key2: Vec<u8> = encode_key("key2")?;
@@ -117,7 +117,7 @@ fn remove_non_existent_key() -> Result<()> {
 
     Ok(())
 }
-fn remove_non_existent_key_with_kv_store<T: KVStore>() -> Result<()> {
+fn remove_non_existent_key_with_kv_store<T: Storage>() -> Result<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
 
@@ -137,7 +137,7 @@ fn remove_key() -> Result<()> {
     Ok(())
 }
 
-fn remove_key_with_kv_store<T: KVStore>() -> Result<()> {
+fn remove_key_with_kv_store<T: Storage>() -> Result<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let value1: Vec<u8> = encode_key("value1")?;
@@ -163,7 +163,7 @@ fn compaction() -> Result<()> {
 }
 
 // 如果此处出现异常，可以尝试降低压缩阈值或者提高检测时间
-fn compaction_with_kv_store<T: KVStore>() -> Result<()> {
+fn compaction_with_kv_store<T: Storage>() -> Result<()> {
     tokio_test::block_on(async move {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let kv_store = T::open(temp_dir.path()).await?;

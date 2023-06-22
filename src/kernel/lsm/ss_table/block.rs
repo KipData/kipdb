@@ -3,12 +3,14 @@ use std::collections::Bound;
 use std::io::{Cursor, Read, Write};
 use std::{cmp, mem};
 use bytes::{Buf, BufMut, Bytes};
+use growable_bloom_filter::GrowableBloom;
+use serde::{Deserialize, Serialize};
 use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
 use itertools::Itertools;
 use lz4::Decoder;
-use crate::kernel::Result;
-use crate::kernel::lsm::lsm_kv::Config;
+use crate::kernel::lsm::storage::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
+use crate::kernel::Result;
 use crate::KernelError;
 
 /// BlockCache类型 可同时缓存两种类型
@@ -195,6 +197,14 @@ impl BlockItem for Index {
 pub(crate) enum CompressType {
     None,
     LZ4
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct MetaBlock {
+    pub(crate) filter: GrowableBloom,
+    pub(crate) len: usize,
+    pub(crate) index_restart_interval: usize,
+    pub(crate) data_restart_interval: usize,
 }
 
 /// Block SSTable最小的存储单位
@@ -648,7 +658,7 @@ mod tests {
     use itertools::Itertools;
     use rand::Rng;
     use crate::kernel::Result;
-    use crate::kernel::lsm::block::{Block, BlockBuilder, BlockItem, BlockOptions, CompressType, Entry, Index, Value};
+    use crate::kernel::lsm::ss_table::block::{Block, BlockBuilder, BlockItem, BlockOptions, CompressType, Entry, Index, Value};
     use crate::kernel::utils::lru_cache::LruCache;
 
     #[test]
@@ -709,14 +719,14 @@ mod tests {
             let data_block = cache.get_or_insert(
                 index_block.find_with_upper(key),
                 |index| {
-                let &Index { offset, len } = index;
-                let target_block = Block::<Value>::decode(
-                    block_bytes[offset as usize..offset as usize + len].to_vec(),
-                    options.compress_type,
-                    options.data_restart_interval
-                )?;
-                Ok(target_block)
-            })?;
+                    let &Index { offset, len } = index;
+                    let target_block = Block::<Value>::decode(
+                        block_bytes[offset as usize..offset as usize + len].to_vec(),
+                        options.compress_type,
+                        options.data_restart_interval
+                    )?;
+                    Ok(target_block)
+                })?;
             assert_eq!(data_block.find(key), Some(value.clone()))
         }
 

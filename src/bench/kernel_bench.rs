@@ -6,9 +6,9 @@ use bytes::Bytes;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use kip_db::kernel::KVStore;
-use kip_db::kernel::lsm::lsm_kv::LsmStore;
-use kip_db::kernel::sled_kv::SledStore;
+use kip_db::kernel::Storage;
+use kip_db::kernel::lsm::storage::LsmStore;
+use kip_db::kernel::sled_storage::SledStore;
 
 fn counter() -> usize {
     use std::sync::atomic::AtomicUsize;
@@ -45,7 +45,7 @@ fn random(n: u32) -> u32 {
     })
 }
 
-fn bulk_load<T: KVStore>(c: &mut Criterion) {
+fn bulk_load<T: Storage>(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -89,7 +89,7 @@ fn bulk_load<T: KVStore>(c: &mut Criterion) {
     }
 }
 
-fn monotonic_crud<T: KVStore>(c: &mut Criterion) {
+fn monotonic_crud<T: Storage>(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -131,7 +131,7 @@ fn monotonic_crud<T: KVStore>(c: &mut Criterion) {
     });
 }
 
-fn random_crud<T: KVStore>(c: &mut Criterion) {
+fn random_crud<T: Storage>(c: &mut Criterion) {
     const SIZE: u32 = 65536;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -170,7 +170,7 @@ fn random_crud<T: KVStore>(c: &mut Criterion) {
     });
 }
 
-fn empty_opens<T: KVStore>(c: &mut Criterion) {
+fn empty_opens<T: Storage>(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

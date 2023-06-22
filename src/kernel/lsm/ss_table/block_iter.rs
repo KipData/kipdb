@@ -1,6 +1,6 @@
 use bytes::Bytes;
-use crate::kernel::lsm::iterator::{Seek, Iter, ForwardDiskIter};
-use crate::kernel::lsm::block::{Block, BlockItem, Entry};
+use crate::kernel::lsm::iterator::{Seek, Iter, ForwardIter};
+use crate::kernel::lsm::ss_table::block::{Block, BlockItem, Entry};
 use crate::kernel::Result;
 
 /// Block迭代器
@@ -59,7 +59,7 @@ impl<'a, T> BlockIter<'a, T> where T: BlockItem {
     }
 }
 
-impl<'a, V> ForwardDiskIter<'a> for BlockIter<'a, V>
+impl<'a, V> ForwardIter<'a> for BlockIter<'a, V>
     where V: Sync + Send + BlockItem
 {
      fn prev_err(&mut self) -> Result<Option<Self::Item>> {
@@ -103,9 +103,9 @@ mod tests {
     use std::vec;
     use bincode::Options;
     use bytes::Bytes;
-    use crate::kernel::lsm::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
-    use crate::kernel::lsm::iterator::block_iter::BlockIter;
-    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
+    use crate::kernel::lsm::ss_table::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
+    use crate::kernel::lsm::ss_table::block_iter::BlockIter;
     use crate::kernel::Result;
 
     #[test]

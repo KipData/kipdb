@@ -1,7 +1,7 @@
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
-use crate::kernel::lsm::iterator::ss_table_iter::SSTableIter;
+use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -56,7 +56,7 @@ impl<'a> LevelIter<'a> {
     }
 }
 
-impl<'a> ForwardDiskIter<'a> for LevelIter<'a> {
+impl<'a> ForwardIter<'a> for LevelIter<'a> {
      fn prev_err(&mut self) -> Result<Option<Self::Item>> {
         match self.sst_iter.prev_err()? {
             None => {
@@ -107,15 +107,16 @@ mod tests {
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
-    use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::lsm_kv::Config;
-    use crate::kernel::lsm::ss_table::{SSTable, SSTableMeta};
-    use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, VersionEdit, VersionStatus};
+    use crate::kernel::io::IoType;
     use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{Iter, ForwardDiskIter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
+    use crate::kernel::lsm::ss_table::meta::SSTableMeta;
+    use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::version::edit::VersionEdit;
+    use crate::kernel::lsm::version::status::VersionStatus;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -136,12 +137,6 @@ mod tests {
             let ver_status =
                 VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
-
-            let sst_factory = IoFactory::new(
-                config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-                FileExtension::SSTable
-            )?;
-
             let value = Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
             let mut vec_data = Vec::new();
 
@@ -159,32 +154,20 @@ mod tests {
             }
             let (slice_1, slice_2) = vec_data.split_at(2000);
 
-            let (ss_table_1, scope_1) = SSTable::create_for_mem_table(
-                &config,
-                1,
-                &sst_factory,
-                slice_1.to_vec(),
-                1,
-                IoType::Direct
-            )?;
-            let (ss_table_2, scope_2) = SSTable::create_for_mem_table(
-                &config,
-                2,
-                &sst_factory,
-                slice_2.to_vec(),
-                1,
-                IoType::Direct
-            )?;
-            let meta_1 = SSTableMeta::from(&ss_table_1);
+            let (scope_1, meta_1) = ver_status
+                .loader()
+                .create(1, slice_1.to_vec(), 1)?;
+            let (scope_2, meta_2) = ver_status
+                .loader()
+                .create(2, slice_2.to_vec(), 1)?;
+            let fusion_meta = SSTableMeta::fusion(&vec![meta_1, meta_2]);
 
-            let vec_ss_table = vec![ss_table_1, ss_table_2];
             let vec_edit = vec![
-                // 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
-                VersionEdit::NewFile((vec![scope_1.clone()], 0),0, meta_1),
-                VersionEdit::NewFile((vec![scope_1, scope_2], 1),0, SSTableMeta::from(vec_ss_table.as_slice()))
+                // Tips: 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
+                VersionEdit::NewFile((vec![scope_1.clone()], 0),0, SSTableMeta { size_of_disk: 0, len: 0 }),
+                VersionEdit::NewFile((vec![scope_1, scope_2], 1),0, fusion_meta)
             ];
 
-            ver_status.insert_vec_ss_table(vec_ss_table)?;
             ver_status.log_and_apply(vec_edit, 10).await?;
 
             let version = ver_status.current().await;

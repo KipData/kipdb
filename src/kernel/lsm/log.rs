@@ -9,7 +9,7 @@ use std::sync::Arc;
 use integer_encoding::FixedInt;
 use crate::kernel::{Result, sorted_gen_list};
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
-use crate::kernel::lsm::lsm_kv::Gen;
+use crate::kernel::lsm::storage::Gen;
 use crate::KernelError;
 
 const BLOCK_SIZE: usize = 32 * 1024;
@@ -274,12 +274,13 @@ impl<R: Read + Seek> LogReader<R> {
 mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::Cursor;
+    use std::mem;
     use tempfile::TempDir;
     use crate::kernel::io::IoType;
     use crate::kernel::lsm::log::{HEADER_SIZE, LogLoader, LogReader, LogWriter};
     use crate::kernel::Result;
-    use crate::kernel::lsm::lsm_kv::Config;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
+    use crate::kernel::lsm::storage::Config;
 
     #[test]
     fn test_writer() {
@@ -406,7 +407,7 @@ mod tests {
             |bytes| Ok(bytes.clone())
         )?;
 
-        let reload_data_2 = wal.load(1, |bytes| Ok(bytes.clone()))?;
+        let reload_data_2 = wal.load(1, |bytes| Ok(mem::take(bytes)))?;
 
         assert_eq!(log_gen, 1);
         assert_eq!(reload_data_1, vec![b"kip_key_1", b"kip_key_2"]);

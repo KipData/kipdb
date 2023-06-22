@@ -12,15 +12,17 @@ use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::oneshot;
 use tracing::{error, info};
-use crate::kernel::{DEFAULT_LOCK_FILE, KVStore, lock_or_time_out};
+use crate::kernel::{DEFAULT_LOCK_FILE, Storage, lock_or_time_out};
 use crate::kernel::io::IoType;
-use crate::kernel::lsm::{block, version};
 use crate::kernel::lsm::compactor::{Compactor, CompactTask};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
+use crate::kernel::lsm::ss_table::block;
 use crate::kernel::lsm::trigger::TriggerType;
-use crate::kernel::lsm::version::{Version, VersionStatus};
+use crate::kernel::lsm::version;
+use crate::kernel::lsm::version::Version;
+use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::Result;
 use crate::KernelError;
 
@@ -36,7 +38,7 @@ pub(crate) const BANNER: &str = "
                     ▒███
                     █████
                    ▒▒▒▒▒
-Version: 0.1.0-beta.1";
+Version: 0.1.1-alpha.0";
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM: usize = 2 * 1024 * 1024;
 
@@ -103,7 +105,7 @@ impl StoreInner {
 }
 
 #[async_trait]
-impl KVStore for LsmStore {
+impl Storage for LsmStore {
     #[inline]
     fn name() -> &'static str where Self: Sized {
         "LSMStore made in Kould"
@@ -463,8 +465,8 @@ mod tests {
     use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::lsm::lsm_kv::{Config, Gen, LsmStore, Sequence};
-    use crate::kernel::{KVStore, Result};
+    use crate::kernel::{Storage, Result};
+    use crate::kernel::lsm::storage::{Config, Gen, LsmStore, Sequence};
 
     #[test]
     fn test_seq_create() {
