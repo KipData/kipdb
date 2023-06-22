@@ -131,6 +131,10 @@ impl SSTableLoader {
         self.inner.get_or_insert(gen, |gen| {
             let sst_factory = &self.factory;
 
+            // Tips: 此处虽然写死使用`IoType::Direct`,
+            // 但是若该SSTable为Level 0,那么在创建时会使用`IoType::Mem`进行创建使其不会被持久化，
+            // 因此此处创建reader时并无法使用`SSTable::load_from_file`进行加载，
+            // 使其尝试使用WAL进行加载而恢复Level 0的SSTable以保证数据在停机后不会丢失
             let ss_table = match sst_factory.reader(*gen, IoType::Direct)
                 .and_then(SSTable::load_from_file)
             {
