@@ -43,7 +43,7 @@ impl SSTableLoader {
         vec_data: Vec<KeyValue>,
         level: usize
     ) -> Result<SSTable> {
-        fn io_type_with_level(level: usize) -> IoType {
+        fn io_type_by_level(level: usize) -> IoType {
             if LEVEL_0 == level {
                 IoType::Mem
             } else {
@@ -51,7 +51,7 @@ impl SSTableLoader {
             }
         }
 
-        let io_type = io_type_with_level(level);
+        let io_type = io_type_by_level(level);
         let io_factory = &self.factory;
         let config = &self.config;
         let len = vec_data.len();
