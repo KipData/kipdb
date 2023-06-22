@@ -7,7 +7,6 @@ use itertools::Itertools;
 use tokio::sync::oneshot;
 use tracing::info;
 use crate::KernelError;
-use crate::kernel::io::{IoFactory, IoType};
 use crate::kernel::Result;
 use crate::kernel::lsm::storage::{Config, StoreInner};
 use crate::kernel::lsm::data_sharding;
@@ -48,10 +47,6 @@ impl Compactor {
         Compactor { store_inner }
     }
 
-    fn sst_factory(&self) -> &IoFactory {
-        &self.store_inner.ver_status.sst_factory
-    }
-
     /// 检查并进行压缩 （默认为 异步、被动 的Lazy压缩）
     ///
     /// 默认为try检测是否超出阈值，主要思路为以被动定时检测的机制使
@@ -82,23 +77,14 @@ impl Compactor {
     /// 请注意：vec_values必须是依照key值有序的
     pub(crate) async fn minor_compaction(&self, gen: i64, values: Vec<KeyValue>) -> Result<()> {
         if !values.is_empty() {
-            // 从内存表中将数据持久化为ss_table
-            let (ss_table, scope) = SSTable::create_for_mem_table(
-                self.config(),
-                gen,
-                self.sst_factory(),
-                values,
-                LEVEL_0,
-                IoType::Direct
-            )?;
-            let new_meta = SSTableMeta::from(&ss_table);
-
-            self.ver_status().insert_vec_ss_table(vec![ss_table])?;
+            let (scope, meta) = self.ver_status()
+                .loader()
+                .create(gen, values, LEVEL_0)?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
                 LEVEL_0,
-                vec![VersionEdit::NewFile((vec![scope], 0), 0, new_meta)]
+                vec![VersionEdit::NewFile((vec![scope], 0), 0, meta)]
             ).await?;
         }
         Ok(())
@@ -134,29 +120,22 @@ impl Compactor {
                 let ss_table_futures = vec_sharding.into_iter()
                     .map(|(gen, sharding)| {
                         async move {
-                            SSTable::create_for_mem_table(
-                                self.config(),
-                                gen,
-                                self.sst_factory(),
-                                sharding,
-                                level + 1,
-                                IoType::Direct
-                            )
+                            self.ver_status()
+                                .loader()
+                                .create(gen, sharding, level + 1)
                         }
                     });
-                let vec_ss_table_and_scope: Vec<(SSTable, Scope)> = future::try_join_all(ss_table_futures).await?;
-                let (vec_new_ss_table, vec_new_scope): (Vec<SSTable>, Vec<Scope>) = vec_ss_table_and_scope
+                let vec_ss_table_and_scope: Vec<(Scope, SSTableMeta)> = future::try_join_all(ss_table_futures).await?;
+                let (new_scopes, new_metas): (Vec<Scope>, Vec<SSTableMeta>) = vec_ss_table_and_scope
                     .into_iter()
                     .unzip();
-                let new_meta = SSTableMeta::from(vec_new_ss_table.as_slice());
+                let fusion_meta = SSTableMeta::fusion(&new_metas);
 
                 vec_ver_edit.append(&mut vec![
-                    VersionEdit::NewFile((vec_new_scope, level + 1), index, new_meta),
+                    VersionEdit::NewFile((new_scopes, level + 1), index, fusion_meta),
                     VersionEdit::DeleteFile((del_gens_l, level), del_meta_l),
                     VersionEdit::DeleteFile((del_gens_ll, level + 1), del_meta_ll)
                 ]);
-                self.ver_status()
-                    .insert_vec_ss_table(vec_new_ss_table)?;
                 info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
                 level += 1;
             } else { break }
@@ -305,11 +284,14 @@ impl Compactor {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::Compactor;
-    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
+    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
@@ -329,52 +311,53 @@ mod tests {
             16,
             RandomState::default()
         )?;
-        let (ss_table_1, _) = SSTable::create_for_mem_table(
-            &config,
+        let (log_loader, _, _) = LogLoader::reload(
+            config.path(),
+            (DEFAULT_WAL_PATH, Some(1)),
+            IoType::Buf,
+            |_| Ok(())
+        )?;
+        let sst_loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), log_loader)?;
+
+        let _ = sst_loader.create(
             1,
-            &sst_factory,
             vec![
                 (Bytes::from_static(b"1"), Some(Bytes::from_static(b"1"))),
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"2"))),
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"31")))
             ],
-            0,
-            IoType::Direct
+            0
         )?;
-        let (ss_table_2, _) = SSTable::create_for_mem_table(
-            &config,
+        let _ = sst_loader.create(
             2,
-            &sst_factory,
             vec![
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"3"))),
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4")))
             ],
-            0,
-            IoType::Direct
+            0
         )?;
-        let (ss_table_3, _) = SSTable::create_for_mem_table(
-            &config,
+        let _ = sst_loader.create(
             3,
-            &sst_factory,
             vec![
                 (Bytes::from_static(b"1"), Some(Bytes::from_static(b"11"))),
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"21")))
             ],
-            1,
-            IoType::Direct
+            1
         )?;
-        let (ss_table_4, _) = SSTable::create_for_mem_table(
-            &config,
+        let _ = sst_loader.create(
             4,
-            &sst_factory,
             vec![
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"32"))),
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"41"))),
                 (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5")))
             ],
-            1,
-            IoType::Direct
+            1
         )?;
+
+        let ss_table_1 = sst_loader.get(1).unwrap();
+        let ss_table_2 = sst_loader.get(2).unwrap();
+        let ss_table_3 = sst_loader.get(3).unwrap();
+        let ss_table_4 = sst_loader.get(4).unwrap();
 
         let (_, vec_data) = &tokio_test::block_on(async move {
             Compactor::data_merge_and_sharding(

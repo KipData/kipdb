@@ -9,7 +9,6 @@ use tracing::info;
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::lsm::ss_table::loader::SSTableLoader;
-use crate::kernel::lsm::ss_table::SSTable;
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::version::{DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH, snapshot_gen, Version, version_display};
 use crate::kernel::lsm::version::cleaner::Cleaner;
@@ -26,8 +25,7 @@ struct VersionInner {
 pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
     ss_table_loader: Arc<SSTableLoader>,
-    pub(crate) sst_factory: Arc<IoFactory>,
-    pub(crate) log_factory: Arc<IoFactory>,
+    log_factory: Arc<IoFactory>,
     edit_approximate_count: AtomicUsize,
 }
 
@@ -102,7 +100,6 @@ impl VersionStatus {
         Ok(Self {
             inner: RwLock::new(VersionInner { version, ver_log_writer: ((ver_log_writer), log_gen) }),
             ss_table_loader,
-            sst_factory,
             log_factory,
             edit_approximate_count,
         })
@@ -112,14 +109,6 @@ impl VersionStatus {
         Arc::clone(
             &self.inner.read().await.version
         )
-    }
-
-    pub(crate) fn insert_vec_ss_table(&self, vec_ss_table: Vec<SSTable>) -> Result<()> {
-        for ss_table in vec_ss_table {
-            let _ = self.ss_table_loader.insert(ss_table);
-        }
-
-        Ok(())
     }
 
     /// 对一组VersionEdit持久化并应用
@@ -164,5 +153,9 @@ impl VersionStatus {
         log_factory.clean(old_gen)?;
 
         Ok(())
+    }
+
+    pub(crate) fn loader(&self) -> &SSTableLoader {
+        &self.ss_table_loader
     }
 }

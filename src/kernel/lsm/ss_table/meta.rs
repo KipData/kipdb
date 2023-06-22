@@ -9,6 +9,19 @@ pub(crate) struct SSTableMeta {
     pub(crate) len: usize,
 }
 
+impl SSTableMeta {
+    pub(crate) fn fusion(metas: &[SSTableMeta]) -> Self {
+        let mut meta = SSTableMeta { size_of_disk: 0, len: 0 };
+
+        for SSTableMeta { size_of_disk, len } in metas {
+            meta.len += len;
+            meta.size_of_disk += size_of_disk;
+        }
+
+        meta
+    }
+}
+
 impl From<&SSTable> for SSTableMeta {
     fn from(value: &SSTable) -> Self {
         SSTableMeta {

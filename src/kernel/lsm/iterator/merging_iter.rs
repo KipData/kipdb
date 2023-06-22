@@ -128,14 +128,16 @@ impl MergingIter<'_> {
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
     use bytes::Bytes;
     use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-    use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemMapIter};
-    use crate::kernel::lsm::ss_table::SSTable;
+    use crate::kernel::lsm::log::LogLoader;
+    use crate::kernel::lsm::mem_table::{DEFAULT_WAL_PATH, InternalKey, KeyValue, MemMap, MemMapIter};
     use crate::kernel::lsm::ss_table::iter::SSTableIter;
+    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
@@ -236,15 +238,18 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable
         )?;
-
-        let (ss_table, _) = SSTable::create_for_mem_table(
-            &config,
-            1,
-            &sst_factory,
-            data_2,
-            0,
-            IoType::Direct
+        let (wal, _, _) = LogLoader::reload(
+            config.path(),
+            (DEFAULT_WAL_PATH, Some(1)),
+            IoType::Direct,
+            |_| Ok(())
         )?;
+        let loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), wal)?;
+
+        let _ = loader.create(1, data_2, 0)?;
+
+        let ss_table = loader.get(1).unwrap();
+
         let cache = ShardingLruCache::new(
             config.block_cache_size,
             16,

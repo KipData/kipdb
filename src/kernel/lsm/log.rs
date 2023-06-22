@@ -274,6 +274,7 @@ impl<R: Read + Seek> LogReader<R> {
 mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::Cursor;
+    use std::mem;
     use tempfile::TempDir;
     use crate::kernel::io::IoType;
     use crate::kernel::lsm::log::{HEADER_SIZE, LogLoader, LogReader, LogWriter};
@@ -406,7 +407,7 @@ mod tests {
             |bytes| Ok(bytes.clone())
         )?;
 
-        let reload_data_2 = wal.load(1, |bytes| Ok(bytes.clone()))?;
+        let reload_data_2 = wal.load(1, |bytes| Ok(mem::take(bytes)))?;
 
         assert_eq!(log_gen, 1);
         assert_eq!(reload_data_1, vec![b"kip_key_1", b"kip_key_2"]);
