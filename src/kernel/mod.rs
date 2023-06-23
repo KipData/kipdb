@@ -1,22 +1,22 @@
-use std::{path::PathBuf, fs};
-use std::ffi::OsStr;
-use std::path::Path;
-use std::time::Duration;
-use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use bytes::Bytes;
 use fslock::LockFile;
 use futures::future;
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
+use std::path::Path;
+use std::time::Duration;
+use std::{fs, path::PathBuf};
 use tokio::time;
 
 use crate::kernel::io::FileExtension;
-use crate::KernelError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
+use crate::KernelError;
 
-pub mod sled_storage;
-pub mod lsm;
 pub mod io;
+pub mod lsm;
+pub mod sled_storage;
 pub mod utils;
 
 pub type Result<T> = std::result::Result<T, KernelError>;
@@ -27,7 +27,9 @@ pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
 #[async_trait]
 pub trait Storage: Send + Sync + 'static + Sized {
     /// 获取内核名
-    fn name() -> &'static str where Self: Sized;
+    fn name() -> &'static str
+    where
+        Self: Sized;
 
     /// 通过数据目录路径开启数据库
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self>;
@@ -47,8 +49,7 @@ pub trait Storage: Send + Sync + 'static + Sized {
     /// 并行批量执行
     #[inline]
     async fn batch(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
-        let map_cmd = vec_cmd.into_iter()
-            .map(|cmd| cmd.apply(self));
+        let map_cmd = vec_cmd.into_iter().map(|cmd| cmd.apply(self));
         Ok(future::try_join_all(map_cmd)
             .await?
             .into_iter()
@@ -68,7 +69,7 @@ pub trait Storage: Send + Sync + 'static + Sized {
 pub enum CommandData {
     Set { key: Vec<u8>, value: Vec<u8> },
     Remove { key: Vec<u8> },
-    Get { key: Vec<u8> }
+    Get { key: Vec<u8> },
 }
 
 pub(crate) struct ByteUtils;
@@ -96,12 +97,12 @@ impl ByteUtils {
         loop {
             let pos = last_pos + 4;
             if pos >= bytes.len() {
-                break
+                break;
             }
             let len_u8 = &bytes[last_pos..pos];
             let len = Self::from_4_bit_with_start(len_u8);
             if len < 1 || len > bytes.len() {
-                break
+                break;
             }
 
             last_pos += len + 4;
@@ -114,23 +115,19 @@ impl ByteUtils {
     /// 标记bytes以支持'ByteUtils::sharding_tag_bytes'方法
     pub(crate) fn tag_with_head(mut bytes: Vec<u8>) -> Vec<u8> {
         let i = bytes.len();
-        let mut vec_head = vec![(i >> 24) as u8,
-                                (i >> 16) as u8,
-                                (i >> 8) as u8,
-                                i as u8];
+        let mut vec_head = vec![(i >> 24) as u8, (i >> 16) as u8, (i >> 8) as u8, i as u8];
         vec_head.append(&mut bytes);
         vec_head
     }
 }
 
 impl CommandData {
-
     #[inline]
     pub fn get_key(&self) -> &Vec<u8> {
         match self {
-            CommandData::Set { key, .. } => { key }
-            CommandData::Remove { key } => { key }
-            CommandData::Get { key } => { key }
+            CommandData::Set { key, .. } => key,
+            CommandData::Remove { key } => key,
+            CommandData::Get { key } => key,
         }
     }
 
@@ -142,25 +139,25 @@ impl CommandData {
     #[inline]
     pub fn get_key_owner(self) -> Vec<u8> {
         match self {
-            CommandData::Set { key, .. } => { key }
-            CommandData::Remove { key } => { key }
-            CommandData::Get { key } => { key }
+            CommandData::Set { key, .. } => key,
+            CommandData::Remove { key } => key,
+            CommandData::Get { key } => key,
         }
     }
 
     #[inline]
     pub fn get_value(&self) -> Option<&Vec<u8>> {
         match self {
-            CommandData::Set { value, .. } => { Some(value) }
-            CommandData::Remove{ .. } | CommandData::Get{ .. } => { None }
+            CommandData::Set { value, .. } => Some(value),
+            CommandData::Remove { .. } | CommandData::Get { .. } => None,
         }
     }
 
     #[inline]
     pub fn get_value_clone(&self) -> Option<Vec<u8>> {
         match self {
-            CommandData::Set { value, .. } => { Some(Vec::clone(value)) }
-            CommandData::Remove{ .. } | CommandData::Get{ .. } => { None }
+            CommandData::Set { value, .. } => Some(Vec::clone(value)),
+            CommandData::Remove { .. } | CommandData::Get { .. } => None,
         }
     }
 
@@ -169,9 +166,9 @@ impl CommandData {
         self.get_key().len()
             + self.get_value().map_or(0, Vec::len)
             + match self {
-                CommandData::Set { .. } => { 20 }
-                CommandData::Remove { .. } => { 12 }
-                CommandData::Get { .. } => { 12 }
+                CommandData::Set { .. } => 20,
+                CommandData::Remove { .. } => 12,
+                CommandData::Get { .. } => 12,
             }
     }
 
@@ -180,17 +177,14 @@ impl CommandData {
     /// Command对象通过调用这个方法调用持久化内核进行命令交互
     /// 内部对该类型进行模式匹配而进行不同命令的相应操作
     #[inline]
-    pub async fn apply<K: Storage>(self, kv_store: &K) -> Result<CommandOption>{
+    pub async fn apply<K: Storage>(self, kv_store: &K) -> Result<CommandOption> {
         match self {
-            CommandData::Set { key, value } => {
-                kv_store.set(&key, Bytes::from(value)).await.map(|_| options_none())
-            }
-            CommandData::Remove { key } => {
-                kv_store.remove(&key).await.map(|_| options_none())
-            }
-            CommandData::Get { key } => {
-                kv_store.get(&key).await.map(CommandOption::from)
-            }
+            CommandData::Set { key, value } => kv_store
+                .set(&key, Bytes::from(value))
+                .await
+                .map(|_| options_none()),
+            CommandData::Remove { key } => kv_store.remove(&key).await.map(|_| options_none()),
+            CommandData::Get { key } => kv_store.get(&key).await.map(CommandOption::from),
         }
     }
 
@@ -211,7 +205,11 @@ impl CommandData {
 }
 
 pub(crate) fn options_none() -> CommandOption {
-    CommandOption { r#type: 7, bytes: vec![], value: 0 }
+    CommandOption {
+        r#type: 7,
+        bytes: vec![],
+        value: 0,
+    }
 }
 
 impl From<KeyValue> for CommandData {
@@ -221,7 +219,7 @@ impl From<KeyValue> for CommandData {
         match r#type {
             0 => CommandData::Get { key },
             2 => CommandData::Remove { key },
-            _ => CommandData::Set { key, value }
+            _ => CommandData::Set { key, value },
         }
     }
 }
@@ -262,8 +260,12 @@ impl From<Option<Vec<u8>>> for CommandOption {
     #[inline]
     fn from(item: Option<Vec<u8>>) -> Self {
         match item {
-            Some(bytes) => CommandOption { r#type: 2, bytes, value: 0 },
-            None => options_none()
+            Some(bytes) => CommandOption {
+                r#type: 2,
+                bytes,
+                value: 0,
+            },
+            None => options_none(),
         }
     }
 }
@@ -272,8 +274,12 @@ impl From<Option<Bytes>> for CommandOption {
     #[inline]
     fn from(item: Option<Bytes>) -> Self {
         match item {
-            Some(bytes) => CommandOption { r#type: 2, bytes: bytes.to_vec(), value: 0 },
-            None => options_none()
+            Some(bytes) => CommandOption {
+                r#type: 2,
+                bytes: bytes.to_vec(),
+                value: 0,
+            },
+            None => options_none(),
         }
     }
 }
@@ -282,14 +288,17 @@ impl From<Option<Bytes>> for CommandOption {
 fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64>> {
     let mut gen_list: Vec<i64> = fs::read_dir(file_path)?
         .flat_map(|res| -> Result<_> { Ok(res?.path()) })
-        .filter(|path| path.is_file() && path.extension() == Some(extension.extension_str().as_ref()))
+        .filter(|path| {
+            path.is_file() && path.extension() == Some(extension.extension_str().as_ref())
+        })
         .flat_map(|path| {
             path.file_name()
                 .and_then(OsStr::to_str)
                 .map(|s| s.trim_end_matches(format!(".{}", extension.extension_str()).as_str()))
                 .map(str::parse::<i64>)
         })
-        .flatten().collect();
+        .flatten()
+        .collect();
     // 对序号进行排序
     gen_list.sort_unstable();
     // 返回排序好的Vec
@@ -304,7 +313,7 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
 
     loop {
         if lock_file.try_lock()? {
-            return Ok(lock_file)
+            return Ok(lock_file);
         } else if backoff > 4 {
             return Err(KernelError::ProcessExists);
         } else {
@@ -312,5 +321,5 @@ async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
 
             backoff *= 2;
         }
-    };
+    }
 }

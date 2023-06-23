@@ -1,22 +1,25 @@
-use std::collections::Bound;
-use std::iter::Map;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use crate::kernel::lsm::compactor::CompactTask;
+use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
+use crate::kernel::lsm::storage::{Sequence, StoreInner};
+use crate::kernel::lsm::version::iter::VersionIter;
+use crate::kernel::lsm::version::Version;
+use crate::kernel::Result;
+use crate::KernelError;
 use bytes::Bytes;
 use itertools::Itertools;
 use skiplist::SkipMap;
+use std::collections::Bound;
+use std::iter::Map;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
-use crate::kernel::lsm::compactor::CompactTask;
-use crate::kernel::lsm::iterator::{Iter, Seek};
-use crate::kernel::lsm::version::iter::VersionIter;
-use crate::kernel::Result;
-use crate::kernel::lsm::storage::{Sequence, StoreInner};
-use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
-use crate::kernel::lsm::version::Version;
-use crate::KernelError;
 
-type MapIter<'a> = Map<skiplist::skipmap::Iter<'a, Bytes, Option<Bytes>>, fn((&Bytes, &Option<Bytes>)) -> (Bytes, Option<Bytes>)>;
+type MapIter<'a> = Map<
+    skiplist::skipmap::Iter<'a, Bytes, Option<Bytes>>,
+    fn((&Bytes, &Option<Bytes>)) -> (Bytes, Option<Bytes>),
+>;
 
 pub struct Transaction {
     pub(crate) store_inner: Arc<StoreInner>,
@@ -28,7 +31,6 @@ pub struct Transaction {
 }
 
 impl Transaction {
-
     /// 通过Key获取对应的Value
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
@@ -49,28 +51,25 @@ impl Transaction {
     }
 
     pub fn set(&mut self, key: &[u8], value: Bytes) {
-        let _ignore = self.writer_buf.insert(
-            Bytes::copy_from_slice(key), Some(value)
-        );
+        let _ignore = self
+            .writer_buf
+            .insert(Bytes::copy_from_slice(key), Some(value));
     }
 
     pub fn remove(&mut self, key: &[u8]) -> Result<()> {
-        let _ = self.get(key)?
-            .ok_or(KernelError::KeyNotFound)?;
+        let _ = self.get(key)?.ok_or(KernelError::KeyNotFound)?;
 
-        let _ignore = self.writer_buf
-            .insert(Bytes::copy_from_slice(key), None);
+        let _ignore = self.writer_buf.insert(Bytes::copy_from_slice(key), None);
 
         Ok(())
     }
 
     pub fn range_scan(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Result<Vec<KeyValue>> {
         let version_range = self.version_range(min, max)?;
-        let mem_table_range = self
-            .mem_table()
-            .range_scan(min, max, Some(self.seq_id));
+        let mem_table_range = self.mem_table().range_scan(min, max, Some(self.seq_id));
 
-        Ok(self._mem_range(min, max)
+        Ok(self
+            ._mem_range(min, max)
             .chain(mem_table_range)
             .chain(version_range)
             .unique_by(|(key, _)| key.clone())
@@ -93,14 +92,14 @@ impl Transaction {
             Bound::Excluded(key) => {
                 let _ = iter.seek(Seek::Backward(key))?;
             }
-            _ => ()
+            _ => (),
         }
 
         while let Some(item) = iter.next_err()? {
             if match max {
                 Bound::Included(key) => item.0 <= key,
                 Bound::Excluded(key) => item.0 < key,
-                _ => true
+                _ => true,
             } {
                 version_range.push(item);
             } else {
@@ -111,27 +110,28 @@ impl Transaction {
     }
 
     pub async fn commit(self) -> Result<()> {
-        let batch_data = self.writer_buf.iter()
+        let batch_data = self
+            .writer_buf
+            .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect_vec();
 
         let mem_table = self.mem_table();
         if mem_table.insert_batch_data(batch_data, Sequence::create())? {
-            if let Err(TrySendError::Closed(_)) = self.compactor_tx
-                .try_send(CompactTask::Flush(None))
-            { return Err(KernelError::ChannelClose); }
+            if let Err(TrySendError::Closed(_)) =
+                self.compactor_tx.try_send(CompactTask::Flush(None))
+            {
+                return Err(KernelError::ChannelClose);
+            }
         }
 
-        let _ = mem_table.tx_count
-            .fetch_sub(1, Ordering::Release);
+        let _ = mem_table.tx_count.fetch_sub(1, Ordering::Release);
 
         Ok(())
     }
 
     pub fn mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<KeyValue> {
-        let mem_table_range = self
-            .mem_table()
-            .range_scan(min, max, Some(self.seq_id));
+        let mem_table_range = self.mem_table().range_scan(min, max, Some(self.seq_id));
 
         self._mem_range(min, max)
             .chain(mem_table_range)
@@ -144,7 +144,7 @@ impl Transaction {
         self.writer_buf
             .range(
                 min.map(Bytes::copy_from_slice).as_ref(),
-                max.map(Bytes::copy_from_slice).as_ref()
+                max.map(Bytes::copy_from_slice).as_ref(),
             )
             .map(|(key, value)| (key.clone(), value.clone()))
     }
@@ -161,13 +161,13 @@ impl Transaction {
 /// TODO: 更多的Test Case
 #[cfg(test)]
 mod tests {
-    use std::collections::Bound;
+    use crate::kernel::lsm::storage::{Config, LsmStore};
+    use crate::kernel::{Result, Storage};
     use bincode::Options;
     use bytes::Bytes;
     use itertools::Itertools;
+    use std::collections::Bound;
     use tempfile::TempDir;
-    use crate::kernel::{Storage, Result};
-    use crate::kernel::lsm::storage::{Config, LsmStore};
 
     #[test]
     fn test_transaction() -> Result<()> {
@@ -180,8 +180,7 @@ mod tests {
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-            let config = Config::new(temp_dir.into_path())
-                .major_threshold_with_sst_size(4);
+            let config = Config::new(temp_dir.into_path()).major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;
 
             let mut vec_kv = Vec::new();
@@ -190,12 +189,9 @@ mod tests {
                 let vec_u8 = bincode::options().with_big_endian().serialize(&i)?;
                 vec_kv.push((
                     Bytes::from(vec_u8.clone()),
-                    Bytes::from(vec_u8.into_iter()
-                        .chain(value.to_vec())
-                        .collect_vec())
+                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
                 ));
             }
-
 
             // 模拟数据分布在MemTable以及SSTable中
             for i in 0..50 {

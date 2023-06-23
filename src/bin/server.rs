@@ -1,8 +1,8 @@
 use clap::Parser;
 use tokio::net::TcpListener;
 
-use kip_db::{DEFAULT_PORT, LOCAL_IP};
 use kip_db::net::{server, Result};
+use kip_db::{DEFAULT_PORT, LOCAL_IP};
 
 /// 服务启动方法
 /// 二进制执行文件调用方法:./kip-db-cli
@@ -25,8 +25,10 @@ pub async fn main() -> Result<()> {
 pub async fn quit() -> Result<()> {
     #[cfg(unix)]
     {
-        let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             _ = interrupt.recv() => (),
             _ = terminate.recv() => (),
@@ -45,5 +47,5 @@ struct Cli {
     #[clap(long)]
     ip: Option<String>,
     #[clap(long)]
-    port: Option<u16>
+    port: Option<u16>,
 }

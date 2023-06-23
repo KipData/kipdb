@@ -1,16 +1,16 @@
-use itertools::Itertools;
-use tokio::net::{TcpStream, ToSocketAddrs};
-use prost::Message;
 use crate::error::ConnectionError;
 use crate::kernel::{ByteUtils, CommandData};
-use crate::KernelError;
 use crate::net::connection::Connection;
 use crate::net::{kv_encode_with_len, option_from_key_value, Result};
 use crate::proto::net_pb::{CommandOption, KeyValue};
+use crate::KernelError;
+use itertools::Itertools;
+use prost::Message;
+use tokio::net::{TcpStream, ToSocketAddrs};
 
 #[allow(missing_debug_implementations)]
 pub struct Client {
-    connection: Connection
+    connection: Connection,
 }
 
 impl Client {
@@ -21,42 +21,53 @@ impl Client {
 
         let connection = Connection::new(socket);
 
-        Ok(Client{
-            connection
-        })
+        Ok(Client { connection })
     }
 
     /// 存入数据
     #[inline]
-    pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()>{
-        let key_value = KeyValue { key, value, r#type: 1 };
-        
+    pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        let key_value = KeyValue {
+            key,
+            value,
+            r#type: 1,
+        };
+
         let _ignore = self.send_cmd(option_from_key_value(&key_value)?).await?;
         Ok(())
     }
 
     /// 删除数据
     #[inline]
-    pub async fn remove(&mut self, key: Vec<u8>) -> Result<()>{
-        let key_value = KeyValue { key, value: vec![], r#type: 2 };
-        
+    pub async fn remove(&mut self, key: Vec<u8>) -> Result<()> {
+        let key_value = KeyValue {
+            key,
+            value: vec![],
+            r#type: 2,
+        };
+
         let _ignore = self.send_cmd(option_from_key_value(&key_value)?).await?;
         Ok(())
     }
 
     /// 获取数据
     #[inline]
-    pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>>{
-        let key_value = KeyValue { key, value: vec![], r#type: 0 };
+    pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>> {
+        let key_value = KeyValue {
+            key,
+            value: vec![],
+            r#type: 0,
+        };
 
-        Ok(self.send_cmd(option_from_key_value(&key_value)?)
+        Ok(self
+            .send_cmd(option_from_key_value(&key_value)?)
             .await?
             .into())
     }
 
     /// 刷入硬盘
     #[inline]
-    pub async fn flush(&mut self) -> Result<()>{
+    pub async fn flush(&mut self) -> Result<()> {
         let option = CommandOption {
             r#type: 6,
             bytes: vec![],
@@ -65,18 +76,19 @@ impl Client {
 
         if self.send_cmd(option).await?.r#type == 6 {
             Ok(())
-        } else { Err(ConnectionError::FlushError) }
+        } else {
+            Err(ConnectionError::FlushError)
+        }
     }
 
     /// 批量处理
     #[inline]
-    pub async fn batch(&mut self, batch_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>>{
+    pub async fn batch(&mut self, batch_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
         // 将KeyValue序列化后合并以传递给服务端
         let bytes = batch_cmd
             .into_iter()
             .map(KeyValue::from)
-            .filter_map(|key_value|
-                kv_encode_with_len(&key_value).ok())
+            .filter_map(|key_value| kv_encode_with_len(&key_value).ok())
             .flatten()
             .collect_vec();
 
@@ -92,7 +104,8 @@ impl Client {
             Ok(ByteUtils::sharding_tag_bytes(&result_option.bytes)
                 .into_iter()
                 .map(|vec_u8| {
-                    KeyValue::decode(vec_u8).ok()
+                    KeyValue::decode(vec_u8)
+                        .ok()
                         .map(|key_value| key_value.value)
                 })
                 .collect())
@@ -110,13 +123,11 @@ impl Client {
     /// 数据数量
     #[inline]
     pub async fn len(&mut self) -> Result<usize> {
-        self.value_option(5).await
-            .map(|len| len as usize)
+        self.value_option(5).await.map(|len| len as usize)
     }
 
     /// 数值控制选项通用流程
-    async fn value_option(&mut self, type_num: i32) -> Result<u64>
-    {
+    async fn value_option(&mut self, type_num: i32) -> Result<u64> {
         let send_option = CommandOption {
             r#type: type_num,
             bytes: vec![],
@@ -134,7 +145,7 @@ impl Client {
     }
 
     #[inline]
-    async fn send_cmd(&mut self, cmd_option: CommandOption) -> Result<CommandOption>{
+    async fn send_cmd(&mut self, cmd_option: CommandOption) -> Result<CommandOption> {
         self.connection.write(cmd_option).await?;
         self.connection.read().await
     }

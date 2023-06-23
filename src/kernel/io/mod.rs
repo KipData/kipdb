@@ -2,19 +2,18 @@ pub(crate) mod buf;
 pub(crate) mod direct;
 mod mem;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::fs;
-use std::io::{Read, Seek, Write};
-use bytes::BytesMut;
-use parking_lot::Mutex;
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
 use crate::kernel::io::direct::{DirectIoReader, DirectIoWriter};
 use crate::kernel::io::mem::{MemIoReader, MemIoWriter};
 use crate::kernel::Result;
 use crate::KernelError;
-
+use bytes::BytesMut;
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{Read, Seek, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, Copy, Clone)]
 pub enum FileExtension {
@@ -24,12 +23,11 @@ pub enum FileExtension {
 }
 
 impl FileExtension {
-
     pub(crate) fn extension_str(&self) -> &'static str {
         match self {
             FileExtension::Log => "log",
             FileExtension::SSTable => "sst",
-            FileExtension::Manifest => "manifest"
+            FileExtension::Manifest => "manifest",
         }
     }
 
@@ -42,20 +40,19 @@ impl FileExtension {
 pub struct IoFactory {
     dir_path: Arc<PathBuf>,
     extension: Arc<FileExtension>,
-    mem_files: Mutex<HashMap<i64, MemIoWriter>>
+    mem_files: Mutex<HashMap<i64, MemIoWriter>>,
 }
 
 #[derive(PartialEq, Copy, Clone, Debug)]
 pub enum IoType {
     Buf,
     Direct,
-    Mem
+    Mem,
 }
 
 impl IoFactory {
     #[inline]
-    pub fn reader(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoReader>>
-    {
+    pub fn reader(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoReader>> {
         let dir_path = Arc::clone(&self.dir_path);
         let extension = Arc::clone(&self.extension);
 
@@ -63,25 +60,26 @@ impl IoFactory {
             IoType::Buf => Box::new(BufIoReader::new(dir_path, gen, extension)?),
             IoType::Direct => Box::new(DirectIoReader::new(dir_path, gen, extension)?),
             IoType::Mem => {
-                let bytes = self.mem_files.lock()
+                let bytes = self
+                    .mem_files
+                    .lock()
                     .get(&gen)
                     .ok_or(KernelError::FileNotFound)?
                     .bytes();
                 Box::new(MemIoReader::new(gen, bytes))
-            },
+            }
         })
     }
 
     #[inline]
-    pub fn writer(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoWriter>>
-    {
+    pub fn writer(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoWriter>> {
         let dir_path = Arc::clone(&self.dir_path);
         let extension = Arc::clone(&self.extension);
 
         Ok(match io_type {
             IoType::Buf => Box::new(BufIoWriter::new(dir_path, gen, extension)?),
             IoType::Direct => Box::new(DirectIoWriter::new(dir_path, gen, extension)?),
-            IoType::Mem => Box::new(self.load_mem_file(gen))
+            IoType::Mem => Box::new(self.load_mem_file(gen)),
         })
     }
 
@@ -91,7 +89,8 @@ impl IoFactory {
     }
 
     fn load_mem_file(&self, gen: i64) -> MemIoWriter {
-        self.mem_files.lock()
+        self.mem_files
+            .lock()
             .entry(gen)
             .or_insert_with(|| MemIoWriter::new(BytesMut::new()))
             .clone()
@@ -106,36 +105,35 @@ impl IoFactory {
         let extension = Arc::new(extension);
         let mem_files = Mutex::new(HashMap::new());
 
-        Ok(Self { dir_path, extension, mem_files })
+        Ok(Self {
+            dir_path,
+            extension,
+            mem_files,
+        })
     }
 
     #[inline]
-    pub fn clean(&self, gen: i64) -> Result<()>{
+    pub fn clean(&self, gen: i64) -> Result<()> {
         if self.mem_files.lock().remove(&gen).is_some() {
             return Ok(());
         }
 
-        fs::remove_file(
-            self.extension
-                .path_with_gen(&self.dir_path, gen)
-        )?;
+        fs::remove_file(self.extension.path_with_gen(&self.dir_path, gen))?;
         Ok(())
     }
 
     #[inline]
-    pub fn exists(&self, gen: i64) -> Result<bool>{
+    pub fn exists(&self, gen: i64) -> Result<bool> {
         if self.mem_files.lock().contains_key(&gen) {
             return Ok(true);
         }
 
-        let path = self.extension
-            .path_with_gen(&self.dir_path, gen);
+        let path = self.extension.path_with_gen(&self.dir_path, gen);
         Ok(fs::try_exists(path)?)
     }
 }
 
 pub trait IoReader: Send + Sync + 'static + Read + Seek {
-
     fn get_gen(&self) -> i64;
 
     fn get_path(&self) -> PathBuf;

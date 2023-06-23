@@ -1,4 +1,4 @@
-use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
+use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::block::{BlockCache, Index, Value};
 use crate::kernel::lsm::ss_table::block_iter::BlockIter;
@@ -10,39 +10,43 @@ pub(crate) struct SSTableIter<'a> {
     ss_table: &'a SSTable,
     data_iter: BlockIter<'a, Value>,
     index_iter: BlockIter<'a, Index>,
-    block_cache: &'a BlockCache
+    block_cache: &'a BlockCache,
 }
 
 impl<'a> SSTableIter<'a> {
-    pub(crate) fn new(ss_table: &'a SSTable, block_cache: &'a BlockCache) -> Result<SSTableIter<'a>> {
-        let mut index_iter = BlockIter::new(
-            ss_table.get_index_block(block_cache)?
-        );
+    pub(crate) fn new(
+        ss_table: &'a SSTable,
+        block_cache: &'a BlockCache,
+    ) -> Result<SSTableIter<'a>> {
+        let mut index_iter = BlockIter::new(ss_table.get_index_block(block_cache)?);
         let index = index_iter.next_err()?.ok_or(KernelError::DataEmpty)?.1;
-        let data_iter = Self::data_iter_init(
-            ss_table,
-            block_cache,
-            index
-        )?;
+        let data_iter = Self::data_iter_init(ss_table, block_cache, index)?;
 
         Ok(Self {
             ss_table,
             data_iter,
             index_iter,
-            block_cache
+            block_cache,
         })
     }
 
-    fn data_iter_init(ss_table: &'a SSTable, block_cache: &'a BlockCache, index: Index) -> Result<BlockIter<'a, Value>> {
+    fn data_iter_init(
+        ss_table: &'a SSTable,
+        block_cache: &'a BlockCache,
+        index: Index,
+    ) -> Result<BlockIter<'a, Value>> {
         Ok(BlockIter::new(
-            ss_table.get_data_block(index, block_cache)?
-                .ok_or(KernelError::DataEmpty)?
+            ss_table
+                .get_data_block(index, block_cache)?
+                .ok_or(KernelError::DataEmpty)?,
         ))
     }
 
     fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> Result<Option<KeyValue>> {
         self.data_iter = Self::data_iter_init(self.ss_table, self.block_cache, index)?;
-        Ok(self.data_iter.seek(seek)?
+        Ok(self
+            .data_iter
+            .seek(seek)?
             .map(|(key, value)| (key, value.bytes)))
     }
 
@@ -57,9 +61,11 @@ impl<'a> ForwardIter<'a> for SSTableIter<'a> {
             None => {
                 if let Some((_, index)) = self.index_iter.prev_err()? {
                     self.data_iter_seek(Seek::Last, index)
-                } else { Ok(None) }
+                } else {
+                    Ok(None)
+                }
             }
-            Some((key, value)) => Ok(Some((key, value.bytes)))
+            Some((key, value)) => Ok(Some((key, value.bytes))),
         }
     }
 }
@@ -72,9 +78,11 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
             None => {
                 if let Some((_, index)) = self.index_iter.next_err()? {
                     self.data_iter_seek(Seek::First, index)
-                } else { Ok(None) }
+                } else {
+                    Ok(None)
+                }
             }
-            Some((key, value)) => Ok(Some((key, value.bytes)))
+            Some((key, value)) => Ok(Some((key, value.bytes))),
         }
     }
 
@@ -93,21 +101,21 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
-    use std::sync::Arc;
-    use bincode::Options;
-    use bytes::Bytes;
-    use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::Result;
-    use crate::kernel::lsm::iterator::{Iter, ForwardIter, Seek};
+    use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::ss_table::iter::SSTableIter;
     use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
+    use crate::kernel::Result;
+    use bincode::Options;
+    use bytes::Bytes;
+    use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -117,17 +125,18 @@ mod tests {
 
         let sst_factory = IoFactory::new(
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-            FileExtension::SSTable
+            FileExtension::SSTable,
         )?;
         let (log_loader, _, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |_| Ok(())
+            |_| Ok(()),
         )?;
         let sst_loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), log_loader)?;
 
-        let value = Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
+        let value =
+            Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
         let mut vec_data = Vec::new();
 
         let times = 2333;
@@ -135,23 +144,15 @@ mod tests {
         // 默认使用大端序进行序列化，保证顺序正确性
         for i in 0..times {
             let mut key = b"KipDB-".to_vec();
-            key.append(
-                &mut bincode::options().with_big_endian().serialize(&i)?
-            );
-            vec_data.push(
-                (Bytes::from(key), Some(value.clone()))
-            );
+            key.append(&mut bincode::options().with_big_endian().serialize(&i)?);
+            vec_data.push((Bytes::from(key), Some(value.clone())));
         }
 
         let _ = sst_loader.create(1, vec_data.clone(), 0)?;
 
         let ss_table = sst_loader.get(1).unwrap();
 
-        let cache = ShardingLruCache::new(
-            config.block_cache_size,
-            16,
-            RandomState::default()
-        )?;
+        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
 
         let mut iterator = SSTableIter::new(ss_table, &cache)?;
 
@@ -163,7 +164,10 @@ mod tests {
             assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
         }
 
-        assert_eq!(iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(), vec_data[114]);
+        assert_eq!(
+            iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(),
+            vec_data[114]
+        );
 
         assert_eq!(iterator.seek(Seek::First)?.unwrap(), vec_data[0]);
 

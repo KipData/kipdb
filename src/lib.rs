@@ -96,11 +96,11 @@ clippy::multiple_crate_versions, // caused by the dependency, can't be fixed
 )]
 extern crate core;
 
-pub mod kernel;
-pub mod error;
-pub mod config;
-pub mod net;
 pub mod cmd;
+pub mod config;
+pub mod error;
+pub mod kernel;
+pub mod net;
 pub mod proto;
 
 pub use error::KernelError;

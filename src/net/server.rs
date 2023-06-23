@@ -1,20 +1,20 @@
-use std::future::Future;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::kernel::lsm::storage::LsmStore;
+use crate::kernel::{options_none, ByteUtils, CommandData, Storage};
+use crate::net::connection::Connection;
+use crate::net::shutdown::Shutdown;
+use crate::net::{key_value_from_option, kv_encode_with_len, Result};
+use crate::proto::net_pb::{CommandOption, KeyValue};
 use bytes::Bytes;
 use chrono::Local;
 use itertools::Itertools;
+use prost::Message;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::time;
 use tracing::{error, info};
-use prost::Message;
-use crate::kernel::{ByteUtils, CommandData, Storage, options_none};
-use crate::kernel::lsm::storage::LsmStore;
-use crate::net::connection::Connection;
-use crate::net::{key_value_from_option, kv_encode_with_len, Result};
-use crate::net::shutdown::Shutdown;
-use crate::proto::net_pb::{CommandOption, KeyValue};
 
 const MAX_CONNECTIONS: usize = 250;
 
@@ -26,7 +26,7 @@ pub struct Listener {
     limit_connections: Arc<Semaphore>,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_rx: mpsc::Receiver<()>,
-    shutdown_complete_tx: mpsc::Sender<()>
+    shutdown_complete_tx: mpsc::Sender<()>,
 }
 
 /// 连接处理器
@@ -36,7 +36,7 @@ struct Handler {
     connection: Connection,
     shutdown: Shutdown,
     // 用于与Listener保持连接而感应是否全部关闭
-    _shutdown_complete: mpsc::Sender<()>
+    _shutdown_complete: mpsc::Sender<()>,
 }
 
 #[inline]
@@ -95,8 +95,7 @@ impl Listener {
     async fn run(&mut self) -> Result<()> {
         info!("[Listener][Inbound Connections]");
         loop {
-            let permit = Arc::clone(&self
-                .limit_connections)
+            let permit = Arc::clone(&self.limit_connections)
                 .acquire_owned()
                 .await
                 .unwrap();
@@ -108,11 +107,15 @@ impl Listener {
                 kv_store: Arc::clone(&self.kv_store_root),
                 connection: Connection::new(socket),
                 shutdown: Shutdown::new(self.notify_shutdown.subscribe()),
-                _shutdown_complete: self.shutdown_complete_tx.clone()
+                _shutdown_complete: self.shutdown_complete_tx.clone(),
             };
 
             let _ignore = tokio::spawn(async move {
-                info!("[Listener][New Connection][Time: {}][Ip Addr]: {}", Local::now(), &addr);
+                info!(
+                    "[Listener][New Connection][Time: {}][Ip Addr]: {}",
+                    Local::now(),
+                    &addr
+                );
                 let start = Instant::now();
                 if let Err(err) = handler.run().await {
                     error!(cause = ?err,"[Listener][Handler Running Error]");
@@ -120,9 +123,7 @@ impl Listener {
                 drop(permit);
                 info!("[Listener][Connection Drop][Time: {:?}]", start.elapsed());
             });
-
         }
-
     }
 
     /// 获取连接
@@ -131,12 +132,10 @@ impl Listener {
 
         loop {
             match self.listener.accept().await {
-                Ok((socket, _)) => {
-                    return Ok(socket)
-                }
+                Ok((socket, _)) => return Ok(socket),
                 Err(err) => {
                     if backoff > 64 {
-                        return Err(err.into())
+                        return Err(err.into());
                     }
                 }
             }
@@ -144,7 +143,6 @@ impl Listener {
             time::sleep(Duration::from_secs(backoff)).await;
 
             backoff *= 2;
-
         }
     }
 }
@@ -166,15 +164,13 @@ impl Handler {
                     // 不使用`CommandData::apply`是因为避免value的内存移动开销
                     let KeyValue { key, value, r#type } = key_value_from_option(&client_option)?;
                     let res_option = match r#type {
-                        1 => {
-                            self.kv_store.set(&key, Bytes::from(value)).await.map(|_| options_none())?
-                        }
-                        2 => {
-                            self.kv_store.remove(&key).await.map(|_| options_none())?
-                        }
-                        _ => {
-                            self.kv_store.get(&key).await.map(CommandOption::from)?
-                        }
+                        1 => self
+                            .kv_store
+                            .set(&key, Bytes::from(value))
+                            .await
+                            .map(|_| options_none())?,
+                        2 => self.kv_store.remove(&key).await.map(|_| options_none())?,
+                        _ => self.kv_store.get(&key).await.map(CommandOption::from)?,
                     };
 
                     self.connection.write(res_option).await?;
@@ -182,12 +178,12 @@ impl Handler {
                 1 => {
                     let vec_cmd = ByteUtils::sharding_tag_bytes(&client_option.bytes)
                         .into_iter()
-                        .filter_map(|vec_u8| {
-                            KeyValue::decode(vec_u8).ok()
-                                .map(CommandData::from)
-                        })
+                        .filter_map(|vec_u8| KeyValue::decode(vec_u8).ok().map(CommandData::from))
                         .collect();
-                    let bytes = self.kv_store.batch(vec_cmd).await?
+                    let bytes = self
+                        .kv_store
+                        .batch(vec_cmd)
+                        .await?
                         .into_iter()
                         .filter_map(|value_option| {
                             let key_value = KeyValue {
@@ -199,7 +195,13 @@ impl Handler {
                         })
                         .flatten()
                         .collect_vec();
-                    self.connection.write(CommandOption { r#type: 1, bytes, value: 0 }).await?;
+                    self.connection
+                        .write(CommandOption {
+                            r#type: 1,
+                            bytes,
+                            value: 0,
+                        })
+                        .await?;
                 }
                 4 => {
                     let size_of_disk = self.kv_store.size_of_disk().await?;
@@ -211,7 +213,13 @@ impl Handler {
                 }
                 6 => {
                     self.kv_store.flush().await?;
-                    self.connection.write(CommandOption { r#type: 6, bytes: vec![], value: 0 }).await?;
+                    self.connection
+                        .write(CommandOption {
+                            r#type: 6,
+                            bytes: vec![],
+                            value: 0,
+                        })
+                        .await?;
                 }
                 7 => {
                     break;
@@ -224,13 +232,14 @@ impl Handler {
     }
 
     async fn value_options(&mut self, value: u64, type_num: i32) -> Result<()> {
-        self.connection.write(CommandOption {
-            r#type: type_num,
-            bytes: vec![],
-            value
-        }).await?;
+        self.connection
+            .write(CommandOption {
+                r#type: type_num,
+                bytes: vec![],
+                value,
+            })
+            .await?;
 
         Ok(())
     }
 }
-

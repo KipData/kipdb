@@ -1,7 +1,7 @@
-use std::io::SeekFrom;
-use serde::{Deserialize, Serialize};
 use crate::kernel::io::IoReader;
 use crate::kernel::Result;
+use serde::{Deserialize, Serialize};
+use std::io::SeekFrom;
 
 /// Footer序列化长度定长
 /// 注意Footer序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致Footer在不同数据时，长度不一致
@@ -23,7 +23,7 @@ impl Footer {
     pub(crate) fn read_to_file(reader: &mut dyn IoReader) -> Result<Self> {
         let mut buf = [0; TABLE_FOOTER_SIZE];
 
-        let _ = reader.seek(SeekFrom::End( -(TABLE_FOOTER_SIZE as i64)))?;
+        let _ = reader.seek(SeekFrom::End(-(TABLE_FOOTER_SIZE as i64)))?;
         let _ = reader.read(&mut buf)?;
 
         Ok(bincode::deserialize(&buf)?)
@@ -45,7 +45,6 @@ mod test {
             meta_len: 0,
             size_of_disk: 0,
         };
-
 
         assert_eq!(bincode::serialize(&info)?.len(), TABLE_FOOTER_SIZE);
 

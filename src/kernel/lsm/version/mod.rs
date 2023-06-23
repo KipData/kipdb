@@ -1,27 +1,27 @@
-use std::sync::Arc;
-use bytes::Bytes;
-use itertools::Itertools;
-use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, info};
 use crate::kernel::io::{FileExtension, IoFactory};
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::ss_table::block::BlockCache;
-use crate::kernel::lsm::ss_table::{Scope, SSTable};
 use crate::kernel::lsm::ss_table::loader::SSTableLoader;
 use crate::kernel::lsm::ss_table::meta::SSTableMeta;
+use crate::kernel::lsm::ss_table::{SSTable, Scope};
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
-use crate::kernel::{Result, sorted_gen_list};
+use crate::kernel::{sorted_gen_list, Result};
+use bytes::Bytes;
+use itertools::Itertools;
+use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{error, info};
 
 mod cleaner;
-pub(crate) mod status;
-mod meta;
 pub(crate) mod edit;
+pub(crate) mod iter;
+mod meta;
+pub(crate) mod status;
 #[cfg(test)]
 mod test;
-pub(crate) mod iter;
 
 pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
@@ -35,7 +35,7 @@ fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
             [.., old_snapshot, new_snapshot] => {
                 factory.clean(new_snapshot)?;
                 old_snapshot
-            },
+            }
             [snapshot] => snapshot,
             _ => Gen::create(),
         });
@@ -62,7 +62,6 @@ pub(crate) struct Version {
     /// Drop时通知Cleaner进行删除
     clean_tx: UnboundedSender<CleanTag>,
 }
-
 
 impl Version {
     pub(crate) fn len(&self) -> usize {
@@ -93,7 +92,10 @@ impl Version {
             ss_tables_loader: Arc::clone(ss_table_loader),
             level_slice: Self::level_slice_new(),
             block_cache: Arc::clone(block_cache),
-            meta_data: VersionMeta { size_of_disk: 0, len: 0 },
+            meta_data: VersionMeta {
+                size_of_disk: 0,
+                len: 0,
+            },
             clean_tx,
         };
 
@@ -121,8 +123,7 @@ impl Version {
                 VersionEdit::DeleteFile((mut vec_gen, level), sst_meta) => {
                     vec_statistics_sst_meta.push(EditType::Del(sst_meta));
 
-                    self.level_slice[level]
-                        .retain(|scope| !vec_gen.contains(&scope.get_gen()));
+                    self.level_slice[level].retain(|scope| !vec_gen.contains(&scope.get_gen()));
                     del_gens.append(&mut vec_gen);
                 }
                 VersionEdit::NewFile((vec_scope, level), index, sst_meta) => {
@@ -130,9 +131,7 @@ impl Version {
 
                     // Level 0中的SSTable绝对是以gen为优先级
                     // Level N中则不以gen为顺序，此处对gen排序是因为单次NewFile中的gen肯定是有序的
-                    let scope_iter = vec_scope
-                        .into_iter()
-                        .sorted_by_key(Scope::get_gen);
+                    let scope_iter = vec_scope.into_iter().sorted_by_key(Scope::get_gen);
                     if level == LEVEL_0 {
                         for scope in scope_iter {
                             self.level_slice[level].push(scope);
@@ -146,9 +145,10 @@ impl Version {
             }
         }
 
-        self.meta_data.statistical_process(vec_statistics_sst_meta)?;
+        self.meta_data
+            .statistical_process(vec_statistics_sst_meta)?;
         self.version_num += 1;
-        self.clean_tx.send(CleanTag::Add{
+        self.clean_tx.send(CleanTag::Add {
             version: self.version_num,
             gens: del_gens,
         })?;
@@ -157,7 +157,15 @@ impl Version {
     }
 
     fn level_slice_new() -> [Vec<Scope>; 7] {
-        [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()]
+        [
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ]
     }
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
@@ -170,21 +178,24 @@ impl Version {
             }
         }
 
-        self.level_slice.iter()
+        self.level_slice
+            .iter()
             .enumerate()
             .filter_map(|(level, vec_scope)| {
-                (!vec_scope.is_empty())
-                    .then(|| VersionEdit::NewFile(
+                (!vec_scope.is_empty()).then(|| {
+                    VersionEdit::NewFile(
                         (vec_scope.clone(), level),
                         0,
-                        sst_meta_with_level(level, self.size_of_disk(), self.len())
-                    ))
+                        sst_meta_with_level(level, self.size_of_disk(), self.len()),
+                    )
+                })
             })
             .collect_vec()
     }
 
     pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<&SSTable> {
-        self.level_slice[level].get(offset)
+        self.level_slice[level]
+            .get(offset)
             .and_then(|scope| self.ss_tables_loader.get(scope.get_gen()))
     }
 
@@ -192,37 +203,50 @@ impl Version {
     ///
     /// Tips：不鼓励全量获取其他Level
     pub(crate) fn get_ss_tables_with_level_0(&self) -> Vec<&SSTable> {
-        self.level_slice[LEVEL_0].iter()
+        self.level_slice[LEVEL_0]
+            .iter()
             .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
             .collect_vec()
     }
 
     pub(crate) fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
-        self.level_slice[level].iter()
+        self.level_slice[level]
+            .iter()
             .enumerate()
             .find(|(_, scope)| source_gen.eq(&scope.get_gen()))
             .map(|(index, _)| index)
     }
 
-    pub(crate) fn first_ss_tables(&self, level: usize, size: usize) -> Option<(Vec<&SSTable>, Vec<Scope>)> {
+    pub(crate) fn first_ss_tables(
+        &self,
+        level: usize,
+        size: usize,
+    ) -> Option<(Vec<&SSTable>, Vec<Scope>)> {
         if self.level_slice[level].is_empty() {
             return None;
         }
 
-        Some(self.level_slice[level]
-            .iter()
-            .take(size)
-            .filter_map(|scope| {
-                self.ss_tables_loader
-                    .get(scope.get_gen())
-                    .map(|ss_table| (ss_table, scope.clone()))
-            })
-            .unzip())
+        Some(
+            self.level_slice[level]
+                .iter()
+                .take(size)
+                .filter_map(|scope| {
+                    self.ss_tables_loader
+                        .get(scope.get_gen())
+                        .map(|ss_table| (ss_table, scope.clone()))
+                })
+                .unzip(),
+        )
     }
 
     /// 获取指定level中与scope冲突的SSTables和Scopes
-    pub(crate) fn get_meet_scope_ss_tables_with_scopes(&self, level: usize, target_scope: &Scope) -> (Vec<&SSTable>, Vec<Scope>) {
-        self.level_slice[level].iter()
+    pub(crate) fn get_meet_scope_ss_tables_with_scopes(
+        &self,
+        level: usize,
+        target_scope: &Scope,
+    ) -> (Vec<&SSTable>, Vec<Scope>) {
+        self.level_slice[level]
+            .iter()
             .filter(|scope| scope.meet(target_scope))
             .filter_map(|scope| {
                 self.ss_tables_loader
@@ -234,9 +258,11 @@ impl Version {
 
     /// 获取指定level中与scope冲突的SSTables
     pub(crate) fn get_meet_scope_ss_tables<F>(&self, level: usize, fn_meet: F) -> Vec<&SSTable>
-        where F: Fn(&Scope) -> bool
+    where
+        F: Fn(&Scope) -> bool,
     {
-        self.level_slice[level].iter()
+        self.level_slice[level]
+            .iter()
             .filter(|scope| fn_meet(scope))
             .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
             .collect_vec()
@@ -248,10 +274,7 @@ impl Version {
         let block_cache = &self.block_cache;
 
         // Level 0的SSTable是无序且SSTable间的数据是可能重复的,因此需要遍历
-        for scope in self.level_slice[LEVEL_0]
-            .iter()
-            .rev()
-        {
+        for scope in self.level_slice[LEVEL_0].iter().rev() {
             if scope.meet_with_key(key) {
                 if let Some(ss_table) = ss_table_loader.get(scope.get_gen()) {
                     if let Some(value) = ss_table.query_with_key(key, block_cache)? {
@@ -267,7 +290,9 @@ impl Version {
             if let Some(scope) = self.level_slice[level].get(offset) {
                 return if let Some(ss_table) = ss_table_loader.get(scope.get_gen()) {
                     ss_table.query_with_key(key, block_cache)
-                } else { Ok(None) };
+                } else {
+                    Ok(None)
+                };
             }
         }
 
@@ -282,16 +307,24 @@ impl Version {
 
     /// 判断是否溢出指定的SSTable数量
     pub(crate) fn is_threshold_exceeded_major(&self, config: &Config, level: usize) -> bool {
-        self.level_slice[level].len() >=
-            (config.major_threshold_with_sst_size * config.level_sst_magnification.pow(level as u32))
+        self.level_slice[level].len()
+            >= (config.major_threshold_with_sst_size
+                * config.level_sst_magnification.pow(level as u32))
     }
 }
 
 impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
-        if self.clean_tx.send(CleanTag::Clean(self.version_num)).is_err() {
-            error!("[Cleaner][clean][Version: {}]: Channel Close!", self.version_num);
+        if self
+            .clean_tx
+            .send(CleanTag::Clean(self.version_num))
+            .is_err()
+        {
+            error!(
+                "[Cleaner][clean][Version: {}]: Channel Close!",
+                self.version_num
+            );
         }
     }
 }
@@ -299,10 +332,10 @@ impl Drop for Version {
 /// 使用特定格式进行display
 pub(crate) fn version_display(new_version: &Version, method: &str) {
     info!(
-            "[Version: {}]: version_num: {}, len: {}, size_of_disk: {}",
-            method,
-            new_version.version_num,
-            new_version.len(),
-            new_version.size_of_disk(),
-        );
+        "[Version: {}]: version_num: {}, len: {}, size_of_disk: {}",
+        method,
+        new_version.version_num,
+        new_version.len(),
+        new_version.size_of_disk(),
+    );
 }

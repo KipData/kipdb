@@ -1,8 +1,8 @@
-use bytes::BytesMut;
-use tokio_util::codec::{Decoder, Encoder};
-use prost::Message;
 use crate::error::ConnectionError;
 use crate::proto::net_pb::CommandOption;
+use bytes::BytesMut;
+use prost::Message;
+use tokio_util::codec::{Decoder, Encoder};
 
 pub(crate) struct NetCommandCodec;
 
@@ -10,7 +10,7 @@ pub(crate) struct NetCommandCodec;
 /// 用于CommandOption网络传输解析抽象
 impl NetCommandCodec {
     pub(crate) fn new() -> NetCommandCodec {
-        NetCommandCodec { }
+        NetCommandCodec {}
     }
 }
 
@@ -19,8 +19,7 @@ impl Encoder<CommandOption> for NetCommandCodec {
 
     fn encode(&mut self, item: CommandOption, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let mut buf = vec![];
-        item
-            .encode(&mut buf)
+        item.encode(&mut buf)
             .map_err(|_| ConnectionError::EncodeErr)?;
         dst.extend(buf);
         Ok(())
@@ -35,8 +34,7 @@ impl Decoder for NetCommandCodec {
         Ok(if src.is_empty() {
             None
         } else {
-            Some(CommandOption::decode(src.split())
-                .map_err(|_| ConnectionError::DecodeErr)?)
+            Some(CommandOption::decode(src.split()).map_err(|_| ConnectionError::DecodeErr)?)
         })
     }
 }

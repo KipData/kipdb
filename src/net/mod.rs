@@ -1,13 +1,13 @@
 use crate::error::ConnectionError;
 
-use prost::Message;
 use crate::kernel::ByteUtils;
-use crate::KernelError;
 use crate::proto::net_pb::{CommandOption, KeyValue};
+use crate::KernelError;
+use prost::Message;
 
-mod connection;
-mod codec;
 pub mod client;
+mod codec;
+mod connection;
 pub mod server;
 mod shutdown;
 
@@ -31,15 +31,15 @@ fn key_value_from_option(option: &CommandOption) -> Result<KeyValue> {
     if option.r#type != 0 {
         Err(ConnectionError::StoreErr(KernelError::NotMatchCmd))
     } else {
-        Ok(KeyValue::decode(&*option.bytes)
-            .map_err(|_| ConnectionError::DecodeErr)?)
+        Ok(KeyValue::decode(&*option.bytes).map_err(|_| ConnectionError::DecodeErr)?)
     }
 }
 
 fn kv_encode_with_len(key_value: &KeyValue) -> Result<Vec<u8>> {
     let mut vec = vec![];
 
-    key_value.encode(&mut vec)
+    key_value
+        .encode(&mut vec)
         .map_err(|_| ConnectionError::EncodeErr)?;
 
     if !vec.is_empty() {

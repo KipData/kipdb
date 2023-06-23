@@ -54,21 +54,27 @@ pub enum TriggerType {
     SizeOfMem,
 }
 
-pub(crate) struct TriggerFactory { }
+pub(crate) struct TriggerFactory {}
 
 impl TriggerFactory {
     pub(crate) fn create(trigger_type: TriggerType, threshold: usize) -> Box<dyn Trigger + Send> {
         match trigger_type {
-            TriggerType::Count => Box::new(CountTrigger { item_count: 0, threshold }),
-            TriggerType::SizeOfMem => Box::new(SizeOfMemTrigger { size_of_mem: 0, threshold })
+            TriggerType::Count => Box::new(CountTrigger {
+                item_count: 0,
+                threshold,
+            }),
+            TriggerType::SizeOfMem => Box::new(SizeOfMemTrigger {
+                size_of_mem: 0,
+                threshold,
+            }),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use crate::kernel::lsm::trigger::{TriggerFactory, TriggerType};
+    use bytes::Bytes;
 
     #[test]
     fn test_count_trigger() {

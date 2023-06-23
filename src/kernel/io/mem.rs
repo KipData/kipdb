@@ -1,28 +1,30 @@
+use crate::kernel::io::{IoReader, IoType, IoWriter};
+use bytes::{BufMut, Bytes, BytesMut};
+use parking_lot::Mutex;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use bytes::{BufMut, Bytes, BytesMut};
-use parking_lot::Mutex;
-use crate::kernel::io::{IoReader, IoType, IoWriter};
 
 pub(crate) struct MemIoReader {
     gen: i64,
-    inner: Cursor<Bytes>
+    inner: Cursor<Bytes>,
 }
 
 pub(crate) struct MemIoWriter {
-    inner: Arc<Mutex<MemIoWriterInner>>
+    inner: Arc<Mutex<MemIoWriterInner>>,
 }
 
 struct MemIoWriterInner {
     bytes: BytesMut,
-    pos: u64
+    pos: u64,
 }
-
 
 impl MemIoReader {
     pub(crate) fn new(gen: i64, bytes: Bytes) -> Self {
-        MemIoReader { gen, inner: Cursor::new(bytes) }
+        MemIoReader {
+            gen,
+            inner: Cursor::new(bytes),
+        }
     }
 }
 
@@ -68,7 +70,6 @@ impl IoReader for MemIoReader {
     }
 }
 
-
 impl Write for MemIoWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut inner = self.inner.lock();
@@ -92,6 +93,8 @@ impl IoWriter for MemIoWriter {
 
 impl Clone for MemIoWriter {
     fn clone(&self) -> Self {
-        MemIoWriter { inner: Arc::clone(&self.inner) }
+        MemIoWriter {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }

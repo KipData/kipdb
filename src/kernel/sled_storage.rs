@@ -1,21 +1,23 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use sled::Db;
-use async_trait::async_trait;
-use bytes::Bytes;
 use crate::kernel::Storage;
 use crate::KernelError;
+use async_trait::async_trait;
+use bytes::Bytes;
+use sled::Db;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct SledStore {
-    data_base: Arc<Db>
+    data_base: Arc<Db>,
 }
 
 #[async_trait]
 impl Storage for SledStore {
-
     #[inline]
-    fn name() -> &'static str where Self: Sized {
+    fn name() -> &'static str
+    where
+        Self: Sized,
+    {
         "Sled made in spacejam"
     }
 
@@ -23,9 +25,7 @@ impl Storage for SledStore {
     async fn open(path: impl Into<PathBuf> + Send) -> crate::kernel::Result<Self> {
         let db = Arc::new(sled::open(path.into())?);
 
-        Ok(SledStore {
-            data_base: db
-        })
+        Ok(SledStore { data_base: db })
     }
 
     #[inline]
@@ -43,19 +43,17 @@ impl Storage for SledStore {
     #[inline]
     async fn get(&self, key: &[u8]) -> crate::kernel::Result<Option<Bytes>> {
         match self.data_base.get(key)? {
-            None => { Ok(None) }
-            Some(i_vec) => {
-                Ok(Some(Bytes::from(i_vec.to_vec())))
-            }
+            None => Ok(None),
+            Some(i_vec) => Ok(Some(Bytes::from(i_vec.to_vec()))),
         }
     }
 
     #[inline]
     async fn remove(&self, key: &[u8]) -> crate::kernel::Result<()> {
         match self.data_base.remove(key) {
-            Ok(Some(_)) => { Ok(()) }
-            Ok(None) => { Err(KernelError::KeyNotFound) }
-            Err(e) => { Err(KernelError::SledErr(e)) }
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(KernelError::KeyNotFound),
+            Err(e) => Err(KernelError::SledErr(e)),
         }
     }
 

@@ -1,12 +1,12 @@
-use std::io::{Read, Seek, SeekFrom, Write};
 use bytes::Bytes;
-use tempfile::TempDir;
-use walkdir::WalkDir;
 use kip_db::kernel::io::{FileExtension, IoFactory, IoType};
 use kip_db::kernel::lsm::storage::LsmStore;
-use kip_db::kernel::Storage;
-use kip_db::kernel::Result;
 use kip_db::kernel::sled_storage::SledStore;
+use kip_db::kernel::Result;
+use kip_db::kernel::Storage;
+use std::io::{Read, Seek, SeekFrom, Write};
+use tempfile::TempDir;
+use walkdir::WalkDir;
 
 #[test]
 fn get_stored_value() -> Result<()> {
@@ -63,17 +63,29 @@ fn overwrite_value_with_kv_store<T: Storage>() -> Result<()> {
 
         kv_store.set(&key1, Bytes::from(value1.clone())).await?;
         kv_store.flush().await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value1.clone())));
+        assert_eq!(
+            kv_store.get(&key1).await?,
+            Some(Bytes::from(value1.clone()))
+        );
         kv_store.set(&key1, Bytes::from(value2.clone())).await?;
         kv_store.flush().await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value2.clone())));
+        assert_eq!(
+            kv_store.get(&key1).await?,
+            Some(Bytes::from(value2.clone()))
+        );
 
         drop(kv_store);
         let kv_store = T::open(temp_dir.path()).await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value2.clone())));
+        assert_eq!(
+            kv_store.get(&key1).await?,
+            Some(Bytes::from(value2.clone()))
+        );
         kv_store.set(&key1, Bytes::from(value3.clone())).await?;
         kv_store.flush().await?;
-        assert_eq!(kv_store.get(&key1).await?, Some(Bytes::from(value3.clone())));
+        assert_eq!(
+            kv_store.get(&key1).await?,
+            Some(Bytes::from(value3.clone()))
+        );
 
         Ok(())
     })
@@ -183,10 +195,12 @@ fn compaction_with_kv_store<T: Storage>() -> Result<()> {
             for key_id in 0..1000 {
                 let key = format!("key{}", key_id);
                 let value = format!("{}", iter);
-                kv_store.set(
-                    &encode_key(key.as_str())?,
-                    Bytes::from(encode_key(value.as_str())?)
-                ).await?
+                kv_store
+                    .set(
+                        &encode_key(key.as_str())?,
+                        Bytes::from(encode_key(value.as_str())?),
+                    )
+                    .await?
             }
 
             kv_store.flush().await?;
@@ -216,8 +230,7 @@ fn compaction_with_kv_store<T: Storage>() -> Result<()> {
 
 #[test]
 fn test_io() -> Result<()> {
-    let temp_dir = TempDir::new()
-        .expect("unable to create temporary working directory");
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let factory = IoFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
 
     io_type_test(&factory, IoType::Buf)?;
@@ -260,6 +273,6 @@ fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     Ok(())
 }
 
-fn encode_key(key: &str) -> Result<Vec<u8>>{
+fn encode_key(key: &str) -> Result<Vec<u8>> {
     Ok(bincode::serialize(key)?)
 }
