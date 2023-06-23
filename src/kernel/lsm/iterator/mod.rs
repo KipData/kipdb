@@ -1,6 +1,6 @@
+pub(crate) mod full_iter;
 pub(crate) mod level_iter;
 pub(crate) mod merging_iter;
-pub(crate) mod full_iter;
 
 use crate::kernel::Result;
 
@@ -12,7 +12,7 @@ pub(crate) enum Seek<'s> {
     // 最后一个元素
     Last,
     // 与key相等或稍大的元素
-    Backward(&'s [u8])
+    Backward(&'s [u8]),
 }
 
 /// 硬盘迭代器

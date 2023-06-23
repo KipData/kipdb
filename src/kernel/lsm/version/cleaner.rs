@@ -1,16 +1,13 @@
-use std::sync::Arc;
+use crate::kernel::lsm::ss_table::loader::SSTableLoader;
 use itertools::Itertools;
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::error;
-use crate::kernel::lsm::ss_table::loader::SSTableLoader;
 
 #[derive(Debug)]
 pub(crate) enum CleanTag {
     Clean(u64),
-    Add {
-        version: u64,
-        gens: Vec<i64>
-    }
+    Add { version: u64, gens: Vec<i64> },
 }
 
 /// SSTable的文件删除器
@@ -47,7 +44,9 @@ impl Cleaner {
                 }
                 // 关闭时对此次运行中的暂存Version全部进行删除
                 None => {
-                    let all_ver_num = self.del_gens.iter()
+                    let all_ver_num = self
+                        .del_gens
+                        .iter()
                         .map(|(ver_num, _)| ver_num)
                         .cloned()
                         .collect_vec();
@@ -74,7 +73,10 @@ impl Cleaner {
                 // 当此Version处于第一位时，直接将其删除
                 for gen in vec_gen {
                     if let Err(err) = ss_table_loader.clean(gen) {
-                        error!("[Cleaner][clean][SSTable: {}]: Remove Error!: {:?}", gen, err);
+                        error!(
+                            "[Cleaner][clean][SSTable: {}]: Remove Error!: {:?}",
+                            gen, err
+                        );
                     };
                 }
             } else {
@@ -87,11 +89,10 @@ impl Cleaner {
     }
 
     fn find_index_with_ver_num(del_gen: &[(u64, Vec<i64>)], ver_num: u64) -> Option<usize> {
-        del_gen.iter()
+        del_gen
+            .iter()
             .enumerate()
-            .find(|(_, (vn, _))| {
-                vn == &ver_num
-            })
+            .find(|(_, (vn, _))| vn == &ver_num)
             .map(|(index, _)| index)
     }
 }

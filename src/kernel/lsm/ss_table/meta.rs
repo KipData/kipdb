@@ -1,7 +1,7 @@
-use std::borrow::Borrow;
+use crate::kernel::lsm::ss_table::SSTable;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use crate::kernel::lsm::ss_table::SSTable;
+use std::borrow::Borrow;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub(crate) struct SSTableMeta {
@@ -11,7 +11,10 @@ pub(crate) struct SSTableMeta {
 
 impl SSTableMeta {
     pub(crate) fn fusion(metas: &[SSTableMeta]) -> Self {
-        let mut meta = SSTableMeta { size_of_disk: 0, len: 0 };
+        let mut meta = SSTableMeta {
+            size_of_disk: 0,
+            len: 0,
+        };
 
         for SSTableMeta { size_of_disk, len } in metas {
             meta.len += len;
@@ -31,9 +34,15 @@ impl From<&SSTable> for SSTableMeta {
     }
 }
 
-impl<T> From<&[T]> for SSTableMeta where T: Borrow<SSTable> {
+impl<T> From<&[T]> for SSTableMeta
+where
+    T: Borrow<SSTable>,
+{
     fn from(value: &[T]) -> Self {
-        let mut sst_meta = SSTableMeta { size_of_disk: 0, len: 0 };
+        let mut sst_meta = SSTableMeta {
+            size_of_disk: 0,
+            len: 0,
+        };
 
         for sst in value.iter().map(T::borrow).unique_by(|sst| sst.get_gen()) {
             sst_meta.len += sst.len();

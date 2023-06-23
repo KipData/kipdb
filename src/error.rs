@@ -1,5 +1,5 @@
-use std::io;
 use failure::Fail;
+use std::io;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::oneshot::error::RecvError;
 
@@ -48,7 +48,7 @@ pub enum KernelError {
     #[fail(display = "channel is closed")]
     ChannelClose,
     #[fail(display = "{}", _0)]
-    NotSupport(&'static str)
+    NotSupport(&'static str),
 }
 
 #[derive(Fail, Debug)]

@@ -1,22 +1,21 @@
-use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-use crate::kernel::lsm::version::iter::VersionIter;
+use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::{KeyValue, MemMapIter, TableInner};
+use crate::kernel::lsm::version::iter::VersionIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 
 /// MemTable + Version键值对迭代器
 #[allow(dead_code)]
 pub struct FullIter<'a> {
-    merge_iter: MergingIter<'a>
+    merge_iter: MergingIter<'a>,
 }
 
 impl<'a> FullIter<'a> {
     #[allow(dead_code)]
     pub(crate) fn new(mem_table: &'a TableInner, version: &'a Version) -> Result<FullIter<'a>> {
-        let mut vec_iter: Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>> = vec![
-            Box::new(MemMapIter::new(&mem_table._mem))
-        ];
+        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>> =
+            vec![Box::new(MemMapIter::new(&mem_table._mem))];
 
         if let Some(immut_map) = &mem_table._immut {
             vec_iter.push(Box::new(MemMapIter::new(immut_map)));
@@ -24,7 +23,9 @@ impl<'a> FullIter<'a> {
 
         vec_iter.append(&mut VersionIter::merging_with_version(version)?);
 
-        Ok(Self { merge_iter: MergingIter::new(vec_iter)? })
+        Ok(Self {
+            merge_iter: MergingIter::new(vec_iter)?,
+        })
     }
 }
 
@@ -46,14 +47,14 @@ impl<'a> Iter<'a> for FullIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::kernel::lsm::iterator::Iter;
+    use crate::kernel::lsm::storage::{Config, LsmStore};
+    use crate::kernel::lsm::version::iter::VersionIter;
+    use crate::kernel::{Result, Storage};
     use bincode::Options;
     use bytes::Bytes;
     use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::{Storage, Result};
-    use crate::kernel::lsm::iterator::Iter;
-    use crate::kernel::lsm::storage::{Config, LsmStore};
-    use crate::kernel::lsm::version::iter::VersionIter;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -65,14 +66,15 @@ mod tests {
             let test_str = b"The mystery of creation is like the darkness of night--it is great. \
             Delusions of knowledge are like the fog of the morning.";
 
-            let config = Config::new(temp_dir.path().to_str().unwrap())
-                .major_threshold_with_sst_size(4);
+            let config =
+                Config::new(temp_dir.path().to_str().unwrap()).major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;
             let mut vec_kv = Vec::new();
 
             for i in 100..times + 100 {
                 let vec_u8 = bincode::options().with_big_endian().serialize(&i)?;
-                let bytes = vec_u8.iter()
+                let bytes = vec_u8
+                    .iter()
                     .cloned()
                     .chain(test_str.to_vec())
                     .collect_vec();
@@ -84,7 +86,12 @@ mod tests {
 
             for i in 0..times / 1000 {
                 for j in 0..1000 {
-                    kv_store.set(&vec_kv[i * 1000 + j].0, Bytes::from(vec_kv[i * 1000 + j].1.clone())).await?
+                    kv_store
+                        .set(
+                            &vec_kv[i * 1000 + j].0,
+                            Bytes::from(vec_kv[i * 1000 + j].1.clone()),
+                        )
+                        .await?
                 }
                 kv_store.flush().await?;
             }
@@ -103,7 +110,8 @@ mod tests {
 
             for i in 0..100 {
                 let vec_u8 = bincode::serialize(&i)?;
-                let bytes = vec_u8.iter()
+                let bytes = vec_u8
+                    .iter()
                     .cloned()
                     .chain(test_str.to_vec())
                     .collect_vec();

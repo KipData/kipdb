@@ -1,6 +1,6 @@
-use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::iterator::level_iter::LevelIter;
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
+use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
@@ -8,18 +8,22 @@ use crate::kernel::Result;
 
 /// Version键值对迭代器
 pub struct VersionIter<'a> {
-    merge_iter: MergingIter<'a>
+    merge_iter: MergingIter<'a>,
 }
 
 impl<'a> VersionIter<'a> {
     pub(crate) fn new(version: &'a Version) -> Result<VersionIter<'a>> {
         let vec_iter = Self::merging_with_version(version)?;
 
-        Ok(Self { merge_iter: MergingIter::new(vec_iter)? })
+        Ok(Self {
+            merge_iter: MergingIter::new(vec_iter)?,
+        })
     }
 
-    pub(crate) fn merging_with_version(version: &'a Version) -> Result<Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>>> {
-        let mut vec_iter: Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>> = Vec::new();
+    pub(crate) fn merging_with_version(
+        version: &'a Version,
+    ) -> Result<Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>>> {
+        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>> = Vec::new();
 
         for ss_table in version.get_ss_tables_with_level_0() {
             vec_iter.push(Box::new(SSTableIter::new(ss_table, &version.block_cache)?));

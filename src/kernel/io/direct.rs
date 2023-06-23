@@ -1,9 +1,9 @@
+use crate::kernel::io::{FileExtension, IoReader, IoType, IoWriter};
+use crate::kernel::Result;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::kernel::io::{FileExtension, IoReader, IoType, IoWriter};
-use crate::kernel::Result;
 
 #[derive(Debug)]
 pub(crate) struct DirectIoReader {
@@ -19,7 +19,11 @@ pub(crate) struct DirectIoWriter {
 }
 
 impl DirectIoReader {
-    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+    pub(crate) fn new(
+        dir_path: Arc<PathBuf>,
+        gen: i64,
+        extension: Arc<FileExtension>,
+    ) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
         let fs = File::open(path)?;
 
@@ -33,7 +37,11 @@ impl DirectIoReader {
 }
 
 impl DirectIoWriter {
-    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+    pub(crate) fn new(
+        dir_path: Arc<PathBuf>,
+        gen: i64,
+        extension: Arc<FileExtension>,
+    ) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
         let fs = OpenOptions::new()
             .create(true)
@@ -63,8 +71,7 @@ impl IoReader for DirectIoReader {
     }
 
     fn get_path(&self) -> PathBuf {
-        self.extension
-            .path_with_gen(&self.dir_path, self.gen)
+        self.extension.path_with_gen(&self.dir_path, self.gen)
     }
 
     fn get_type(&self) -> IoType {

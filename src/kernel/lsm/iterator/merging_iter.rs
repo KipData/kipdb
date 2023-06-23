@@ -1,47 +1,45 @@
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::ops::Bound::{Included, Unbounded};
-use bytes::Bytes;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::Result;
+use bytes::Bytes;
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::ops::Bound::{Included, Unbounded};
 
 /// 用于取值以及对应的Iter下标
 /// 通过序号进行同值优先获取
 #[derive(Eq, PartialEq, Debug)]
 struct IterKey {
     num: usize,
-    key: Bytes
+    key: Bytes,
 }
 
 impl PartialOrd<Self> for IterKey {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.key.partial_cmp(&other.key)
-            .and_then(|ord| {
-                match ord {
-                    Ordering::Equal => self.num.partial_cmp(&other.num),
-                    ordering => Some(ordering)
-                }
-            })
+        self.key.partial_cmp(&other.key).and_then(|ord| match ord {
+            Ordering::Equal => self.num.partial_cmp(&other.num),
+            ordering => Some(ordering),
+        })
     }
 }
 
 impl Ord for IterKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.key.cmp(&other.key)
+        self.key
+            .cmp(&other.key)
             .then_with(|| self.num.cmp(&other.num))
     }
 }
 
 pub(crate) struct MergingIter<'a> {
-    vec_iter: Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>>,
+    vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>>,
     map_buf: BTreeMap<IterKey, KeyValue>,
-    pre_key: Option<Bytes>
+    pre_key: Option<Bytes>,
 }
 
 impl<'a> MergingIter<'a> {
     #[allow(dead_code, clippy::mutable_key_type)]
-    pub(crate) fn new(mut vec_iter: Vec<Box<dyn Iter<'a, Item=KeyValue> + 'a>>) -> Result<Self> {
+    pub(crate) fn new(mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>>) -> Result<Self> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {
@@ -50,7 +48,11 @@ impl<'a> MergingIter<'a> {
             }
         }
 
-        Ok(MergingIter { vec_iter, map_buf, pre_key: None })
+        Ok(MergingIter {
+            vec_iter,
+            map_buf,
+            pre_key: None,
+        })
     }
 }
 
@@ -66,19 +68,20 @@ impl<'a> Iter<'a> for MergingIter<'a> {
             // 跳过重复元素
             if let Some(key) = &self.pre_key {
                 if key == &old_item.0 {
-                    continue
+                    continue;
                 }
             }
             self.pre_key = Some(old_item.0.clone());
 
-            return Ok(Some(old_item))
+            return Ok(Some(old_item));
         }
 
         Ok(None)
     }
 
     fn is_valid(&self) -> bool {
-        self.vec_iter.iter()
+        self.vec_iter
+            .iter()
             .map(|iter| iter.is_valid())
             .all(|is_valid| is_valid)
     }
@@ -100,16 +103,17 @@ impl<'a> Iter<'a> for MergingIter<'a> {
             // 先弹出最小的元素
             // 当多个Iter seek至最尾端后存在最小元素且最小元素的key有重复的情况下，去num（iter序号）最小的元素
             // 当num为0时，则直接选择该最优先的iter的元素
-            Ok(seek_map.pop_last()
-                .map(|(IterKey{ key, num }, item)| {
-                    (num != 0).then(|| {
-                        seek_map.range((Included(&IterKey { num: 0, key }), Unbounded))
+            Ok(seek_map.pop_last().map(|(IterKey { key, num }, item)| {
+                (num != 0)
+                    .then(|| {
+                        seek_map
+                            .range((Included(&IterKey { num: 0, key }), Unbounded))
                             .next()
                             .map(|(_, range_item)| range_item.clone())
                     })
-                        .flatten()
-                        .unwrap_or(item)
-                }))
+                    .flatten()
+                    .unwrap_or(item)
+            }))
         } else {
             self.map_buf = seek_map;
 
@@ -121,27 +125,35 @@ impl<'a> Iter<'a> for MergingIter<'a> {
 #[allow(clippy::mutable_key_type)]
 impl MergingIter<'_> {
     fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, KeyValue>, num: usize, item: KeyValue) {
-        let _ = seek_map.insert(IterKey { num, key: item.0.clone() }, item);
+        let _ = seek_map.insert(
+            IterKey {
+                num,
+                key: item.0.clone(),
+            },
+            item,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
-    use std::sync::Arc;
-    use bytes::Bytes;
-    use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
+    use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::log::LogLoader;
-    use crate::kernel::lsm::mem_table::{DEFAULT_WAL_PATH, InternalKey, KeyValue, MemMap, MemMapIter};
+    use crate::kernel::lsm::mem_table::{
+        InternalKey, KeyValue, MemMap, MemMapIter, DEFAULT_WAL_PATH,
+    };
     use crate::kernel::lsm::ss_table::iter::SSTableIter;
     use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::Result;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
+    use crate::kernel::Result;
+    use bytes::Bytes;
+    use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     #[test]
     fn test_sequential_iterator() -> Result<()> {
@@ -164,7 +176,7 @@ mod tests {
             Some((Bytes::from(vec![b'8']), None)),
             Some((Bytes::from(vec![b'1']), None)),
             Some((Bytes::from(vec![b'8']), None)),
-            Some((Bytes::from(vec![b'6']), None))
+            Some((Bytes::from(vec![b'6']), None)),
         ];
 
         test_with_data(data_1, data_2, test_sequence)
@@ -191,7 +203,7 @@ mod tests {
             Some((Bytes::from(vec![b'8']), None)),
             Some((Bytes::from(vec![b'1']), None)),
             Some((Bytes::from(vec![b'8']), None)),
-            Some((Bytes::from(vec![b'6']), None))
+            Some((Bytes::from(vec![b'6']), None)),
         ];
 
         test_with_data(data_1, data_2, test_sequence)
@@ -218,16 +230,21 @@ mod tests {
             None,
             Some((Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0'])))),
             Some((Bytes::from(vec![b'6']), Some(Bytes::from(vec![b'0'])))),
-            Some((Bytes::from(vec![b'5']), None))
+            Some((Bytes::from(vec![b'5']), None)),
         ];
 
         test_with_data(data_1, data_2, test_sequence)
     }
 
-    fn test_with_data(data_1: Vec<KeyValue>, data_2: Vec<KeyValue>, sequence: Vec<Option<KeyValue>>) -> Result<()> {
+    fn test_with_data(
+        data_1: Vec<KeyValue>,
+        data_2: Vec<KeyValue>,
+        sequence: Vec<Option<KeyValue>>,
+    ) -> Result<()> {
         let map = MemMap::from_iter(
-            data_1.into_iter()
-                .map(|(key, value)| (InternalKey::new(key), value))
+            data_1
+                .into_iter()
+                .map(|(key, value)| (InternalKey::new(key), value)),
         );
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
@@ -236,13 +253,13 @@ mod tests {
 
         let sst_factory = IoFactory::new(
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-            FileExtension::SSTable
+            FileExtension::SSTable,
         )?;
         let (wal, _, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Direct,
-            |_| Ok(())
+            |_| Ok(()),
         )?;
         let loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), wal)?;
 
@@ -250,11 +267,7 @@ mod tests {
 
         let ss_table = loader.get(1).unwrap();
 
-        let cache = ShardingLruCache::new(
-            config.block_cache_size,
-            16,
-            RandomState::default()
-        )?;
+        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
 
         let map_iter = MemMapIter::new(&map);
 
@@ -264,35 +277,17 @@ mod tests {
 
         let mut merging_iter = MergingIter::new(vec![Box::new(map_iter), Box::new(sst_iter)])?;
 
-        assert_eq!(
-            merging_iter.next_err()?,
-            sequence_iter.next().flatten()
-        );
+        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.next_err()?,
-            sequence_iter.next().flatten()
-        );
+        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.next_err()?,
-            sequence_iter.next().flatten()
-        );
+        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.next_err()?,
-            sequence_iter.next().flatten()
-        );
+        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.next_err()?,
-            sequence_iter.next().flatten()
-        );
+        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.next_err()?,
-            sequence_iter.next().flatten()
-        );
+        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
 
         assert_eq!(
             merging_iter.seek(Seek::First)?,

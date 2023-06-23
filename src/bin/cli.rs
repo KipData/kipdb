@@ -1,22 +1,17 @@
-use clap::{Parser};
+use clap::Parser;
 use itertools::Itertools;
-use tracing::{error, info};
 use kip_db::cmd::Command;
-use kip_db::DEFAULT_PORT;
 use kip_db::kernel::CommandData;
-use kip_db::net::{Result, client::Client};
+use kip_db::net::{client::Client, Result};
+use kip_db::DEFAULT_PORT;
+use tracing::{error, info};
 
 const DONE: &str = "Done!";
 
 const UNKNOWN_COMMAND: &str = "Unknown Command!";
 
 #[derive(Parser, Debug)]
-#[clap(
-name = "KipDB-Cli",
-version,
-author,
-about = "Issue KipDB Commands"
-)]
+#[clap(name = "KipDB-Cli", version, author, about = "Issue KipDB Commands")]
 struct Cli {
     #[clap(subcommand)]
     command: Command,
@@ -61,36 +56,28 @@ async fn main() -> Result<()> {
         Command::Get { key } => {
             format!("{:?}", client.get(encode(&key)).await?.map(decode))
         }
-        Command::BatchSet { batch } => {
-            batch_set(&mut client, batch).await?
-        }
+        Command::BatchSet { batch } => batch_set(&mut client, batch).await?,
         Command::BatchRemove { keys } => {
-            let vec_batch_rm = keys.into_iter()
-                .map(|key|
-                    CommandData::Remove {
-                        key: encode(&key)
-                    }).collect_vec();
+            let vec_batch_rm = keys
+                .into_iter()
+                .map(|key| CommandData::Remove { key: encode(&key) })
+                .collect_vec();
             batch_run(&mut client, vec_batch_rm, DONE).await?
         }
         Command::BatchGet { keys } => {
-            let vec_batch_get = keys.into_iter()
-                .map(|key|
-                    CommandData::Get {
-                        key: encode(&key)
-                    }).collect_vec();
+            let vec_batch_get = keys
+                .into_iter()
+                .map(|key| CommandData::Get { key: encode(&key) })
+                .collect_vec();
             batch_run(&mut client, vec_batch_get, "").await?
         }
-        Command::SizeOfDisk => {
-            client.size_of_disk().await?.to_string()
-        }
-        Command::Len => {
-            client.len().await?.to_string()
-        }
+        Command::SizeOfDisk => client.size_of_disk().await?.to_string(),
+        Command::Len => client.len().await?.to_string(),
         Command::Flush => {
             client.flush().await?;
             DONE.to_string()
         }
-        _ => UNKNOWN_COMMAND.to_string()
+        _ => UNKNOWN_COMMAND.to_string(),
     };
 
     info!("{line}");
@@ -100,36 +87,43 @@ async fn main() -> Result<()> {
 
 async fn batch_set(client: &mut Client, batch: Vec<String>) -> Result<String> {
     if batch.len() % 2 != 0 {
-        error!("BatchSet len is:{}, key-value cannot be aligned", batch.len())
+        error!(
+            "BatchSet len is:{}, key-value cannot be aligned",
+            batch.len()
+        )
     }
     let (keys, values) = batch.split_at(batch.len() / 2);
-    let vec_batch_set = keys.iter().zip(values)
-        .map(|(key, value)| {
-            CommandData::Set {
-                key: encode(key),
-                value: encode(value)
-            }
-        }).collect_vec();
+    let vec_batch_set = keys
+        .iter()
+        .zip(values)
+        .map(|(key, value)| CommandData::Set {
+            key: encode(key),
+            value: encode(value),
+        })
+        .collect_vec();
     batch_run(client, vec_batch_set, DONE).await
 }
 
 async fn batch_run(
     client: &mut Client,
     vec_batch: Vec<CommandData>,
-    default_null: &str
+    default_null: &str,
 ) -> Result<String> {
-    let vec_string = client.batch(vec_batch).await?
+    let vec_string = client
+        .batch(vec_batch)
+        .await?
         .into_iter()
         .map(|option_vec_u8| {
-            option_vec_u8.and_then(|bytes| (!bytes.is_empty()).then(|| decode(bytes)))
+            option_vec_u8
+                .and_then(|bytes| (!bytes.is_empty()).then(|| decode(bytes)))
                 .unwrap_or(default_null.to_string())
         })
         .collect_vec();
 
-    Ok(format!("{vec_string:?}", ))
+    Ok(format!("{vec_string:?}",))
 }
 
-fn encode(value: &String) -> Vec<u8>{
+fn encode(value: &String) -> Vec<u8> {
     bincode::serialize(value).unwrap()
 }
 

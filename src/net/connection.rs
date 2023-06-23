@@ -1,5 +1,5 @@
-use futures::{SinkExt, StreamExt};
 use futures::stream::{SplitSink, SplitStream};
+use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
@@ -14,7 +14,7 @@ type CommandFramedSink = SplitSink<Framed<TcpStream, NetCommandCodec>, CommandOp
 
 pub(crate) struct Connection {
     writer: CommandFramedSink,
-    reader: CommandFramedStream
+    reader: CommandFramedStream,
 }
 
 impl Connection {
@@ -22,21 +22,14 @@ impl Connection {
     pub(crate) fn new(stream: TcpStream) -> Connection {
         let framed = Framed::new(stream, NetCommandCodec::new());
         let (writer, reader) = framed.split::<CommandOption>();
-        Connection{
-            writer,
-            reader
-        }
+        Connection { writer, reader }
     }
 
     /// 读取CommandOption
     pub(crate) async fn read(&mut self) -> Result<CommandOption> {
         match self.reader.next().await {
-            None => {
-                Ok(options_none())
-            }
-            Some(Ok(option)) => {
-                Ok(option)
-            }
+            None => Ok(options_none()),
+            Some(Ok(option)) => Ok(option),
             Some(Err(e)) => {
                 panic!("{e:?}")
             }

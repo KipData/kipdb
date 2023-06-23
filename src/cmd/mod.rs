@@ -1,20 +1,33 @@
-use serde::{Deserialize, Serialize};
 use clap::Subcommand;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Subcommand)]
 #[non_exhaustive]
 pub enum Command {
-    Set { key: String, value: String },
-    Remove { key: String },
-    Get { key: String },
+    Set {
+        key: String,
+        value: String,
+    },
+    Remove {
+        key: String,
+    },
+    Get {
+        key: String,
+    },
     Flush,
 
     #[clap(about = "cli.exe batch-set [keys]... [values]...")]
-    BatchSet { batch: Vec<String> },
-    BatchRemove { keys: Vec<String> },
-    BatchGet { keys: Vec<String> },
+    BatchSet {
+        batch: Vec<String>,
+    },
+    BatchRemove {
+        keys: Vec<String>,
+    },
+    BatchGet {
+        keys: Vec<String>,
+    },
     SizeOfDisk,
-    Len
+    Len,
 }
 
 impl Command {
@@ -53,4 +66,3 @@ impl Command {
         Command::BatchGet { keys }
     }
 }
-

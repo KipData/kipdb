@@ -1,23 +1,23 @@
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Instant;
-use bytes::Bytes;
-use futures::future;
-use itertools::Itertools;
-use tokio::sync::oneshot;
-use tracing::info;
-use crate::KernelError;
-use crate::kernel::Result;
-use crate::kernel::lsm::storage::{Config, StoreInner};
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::ss_table::block::BlockCache;
 use crate::kernel::lsm::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::ss_table::meta::SSTableMeta;
-use crate::kernel::lsm::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::ss_table::{SSTable, Scope};
+use crate::kernel::lsm::storage::{Config, StoreInner};
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::status::VersionStatus;
+use crate::kernel::Result;
+use crate::KernelError;
+use bytes::Bytes;
+use futures::future;
+use itertools::Itertools;
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::oneshot;
+use tracing::info;
 
 pub(crate) const LEVEL_0: usize = 0;
 
@@ -31,7 +31,7 @@ pub(crate) type DelNodeTuple = (DelNode, DelNode);
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
-    Flush(Option<oneshot::Sender<()>>)
+    Flush(Option<oneshot::Sender<()>>),
 }
 
 /// 压缩器
@@ -42,7 +42,6 @@ pub(crate) struct Compactor {
 }
 
 impl Compactor {
-
     pub(crate) fn new(store_inner: Arc<StoreInner>) -> Self {
         Compactor { store_inner }
     }
@@ -55,7 +54,7 @@ impl Compactor {
     /// 减少Level 0热数据的SSTable的冗余数据
     pub(crate) async fn check_then_compaction(
         &mut self,
-        option_tx: Option<oneshot::Sender<()>>
+        option_tx: Option<oneshot::Sender<()>>,
     ) -> Result<()> {
         if let Some((gen, values)) = self.mem_table().swap()? {
             if !values.is_empty() {
@@ -67,7 +66,9 @@ impl Compactor {
         }
 
         // 压缩请求响应
-        if let Some(tx) = option_tx { tx.send(()).map_err(|_| KernelError::ChannelClose)? }
+        if let Some(tx) = option_tx {
+            tx.send(()).map_err(|_| KernelError::ChannelClose)?
+        }
 
         Ok(())
     }
@@ -77,15 +78,14 @@ impl Compactor {
     /// 请注意：vec_values必须是依照key值有序的
     pub(crate) async fn minor_compaction(&self, gen: i64, values: Vec<KeyValue>) -> Result<()> {
         if !values.is_empty() {
-            let (scope, meta) = self.ver_status()
-                .loader()
-                .create(gen, values, LEVEL_0)?;
+            let (scope, meta) = self.ver_status().loader().create(gen, values, LEVEL_0)?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
                 LEVEL_0,
-                vec![VersionEdit::NewFile((vec![scope], 0), 0, meta)]
-            ).await?;
+                vec![VersionEdit::NewFile((vec![scope], 0), 0, meta)],
+            )
+            .await?;
         }
         Ok(())
     }
@@ -105,55 +105,68 @@ impl Compactor {
     /// Level0的Key基本是无序的，容易生成大量的SSTable至Level1
     /// 而Level1-7的Key排布有序，故转移至下一层的SSTable数量较小
     /// 因此大量数据压缩的情况下Level 1的SSTable数量会较多
-    pub(crate) async fn major_compaction(&self, mut level: usize, mut vec_ver_edit: Vec<VersionEdit>) -> Result<()> {
+    pub(crate) async fn major_compaction(
+        &self,
+        mut level: usize,
+        mut vec_ver_edit: Vec<VersionEdit>,
+    ) -> Result<()> {
         if level > 6 {
             return Err(KernelError::LevelOver);
         }
 
         while level < 7 {
-            if let Some((index, ((del_gens_l, del_meta_l), (del_gens_ll, del_meta_ll)), vec_sharding)) =
-                self.data_loading_with_level(level).await?
+            if let Some((
+                index,
+                ((del_gens_l, del_meta_l), (del_gens_ll, del_meta_ll)),
+                vec_sharding,
+            )) = self.data_loading_with_level(level).await?
             {
-
                 let start = Instant::now();
                 // 并行创建SSTable
-                let ss_table_futures = vec_sharding.into_iter()
-                    .map(|(gen, sharding)| {
-                        async move {
-                            self.ver_status()
-                                .loader()
-                                .create(gen, sharding, level + 1)
-                        }
-                    });
-                let vec_ss_table_and_scope: Vec<(Scope, SSTableMeta)> = future::try_join_all(ss_table_futures).await?;
-                let (new_scopes, new_metas): (Vec<Scope>, Vec<SSTableMeta>) = vec_ss_table_and_scope
-                    .into_iter()
-                    .unzip();
+                let ss_table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
+                    self.ver_status().loader().create(gen, sharding, level + 1)
+                });
+                let vec_ss_table_and_scope: Vec<(Scope, SSTableMeta)> =
+                    future::try_join_all(ss_table_futures).await?;
+                let (new_scopes, new_metas): (Vec<Scope>, Vec<SSTableMeta>) =
+                    vec_ss_table_and_scope.into_iter().unzip();
                 let fusion_meta = SSTableMeta::fusion(&new_metas);
 
                 vec_ver_edit.append(&mut vec![
                     VersionEdit::NewFile((new_scopes, level + 1), index, fusion_meta),
                     VersionEdit::DeleteFile((del_gens_l, level), del_meta_l),
-                    VersionEdit::DeleteFile((del_gens_ll, level + 1), del_meta_ll)
+                    VersionEdit::DeleteFile((del_gens_ll, level + 1), del_meta_ll),
                 ]);
-                info!("[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]", level, start.elapsed());
+                info!(
+                    "[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]",
+                    level,
+                    start.elapsed()
+                );
                 level += 1;
-            } else { break }
+            } else {
+                break;
+            }
         }
         self.ver_status()
-            .log_and_apply(vec_ver_edit, self.config().ver_log_snapshot_threshold).await?;
+            .log_and_apply(vec_ver_edit, self.config().ver_log_snapshot_threshold)
+            .await?;
         Ok(())
     }
 
     /// 通过Level进行归并数据加载
-    async fn data_loading_with_level(&self, level: usize) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
+    async fn data_loading_with_level(
+        &self,
+        level: usize,
+    ) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
         let version = self.ver_status().current().await;
         let config = self.config();
         let major_select_file_size = config.major_select_file_size;
         let next_level = level + 1;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !version.is_threshold_exceeded_major(config, level) { return Ok(None); }
+        if level > 5 || !version.is_threshold_exceeded_major(config, level) {
+            return Ok(None);
+        }
 
         // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
@@ -163,17 +176,18 @@ impl Compactor {
             let start = Instant::now();
             let scope_l = Scope::fusion(&scopes_l)?;
             // 获取下一级中有重复键值范围的SSTable
-            let (ss_tables_ll, scopes_ll) = version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l);
+            let (ss_tables_ll, scopes_ll) =
+                version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l);
             let index = SSTable::find_index_with_level(
                 ss_tables_ll.first().map(|sst| sst.get_gen()),
                 &version,
-                next_level
+                next_level,
             );
 
             // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
             if level == LEVEL_0 {
                 ss_tables_l.append(
-                    &mut version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_l))
+                    &mut version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_l)),
                 )
             }
 
@@ -184,20 +198,23 @@ impl Compactor {
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
             let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_ll)),
-                Err(_) => ss_tables_l
-            }.into_iter()
-                .unique_by(|sst| sst.get_gen())
-                .collect_vec();
+                Ok(scope_ll) => {
+                    version.get_meet_scope_ss_tables(level, |scope| scope.meet(&scope_ll))
+                }
+                Err(_) => ss_tables_l,
+            }
+            .into_iter()
+            .unique_by(|sst| sst.get_gen())
+            .collect_vec();
 
             // 数据合并并切片
-            let vec_merge_sharding =
-                Self::data_merge_and_sharding(
-                    ss_tables_l_final,
-                    ss_tables_ll,
-                    &version.block_cache,
-                    config.sst_file_size
-                ).await?;
+            let vec_merge_sharding = Self::data_merge_and_sharding(
+                ss_tables_l_final,
+                ss_tables_ll,
+                &version.block_cache,
+                config.sst_file_size,
+            )
+            .await?;
 
             info!(
                 "[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]",
@@ -220,17 +237,19 @@ impl Compactor {
         ss_tables_l: Vec<&SSTable>,
         ss_tables_ll: Vec<&SSTable>,
         block_cache: &BlockCache,
-        sst_file_size: usize
+        sst_file_size: usize,
     ) -> Result<MergeShardingVec> {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
-        let map_futures_l = ss_tables_l.iter()
+        let map_futures_l = ss_tables_l
+            .iter()
             .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
             .map(|ss_table| async { Self::ss_table_load_data(block_cache, ss_table, |_| true) });
 
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
         // 获取Level l的唯一KeySet用于Level ll的迭代过滤数据
-        let filter_set_l: HashSet<&Bytes> = sharding_l.iter()
+        let filter_set_l: HashSet<&Bytes> = sharding_l
+            .iter()
             .flatten()
             .map(|key_value| &key_value.0)
             .collect();
@@ -238,10 +257,10 @@ impl Compactor {
         // 通过KeySet过滤出Level l中需要补充的数据
         // 并行: 因为即使l为0时，此时的ll(Level 1)仍然保证SSTable数据之间排列有序且不冲突，因此并行迭代不会导致数据冲突
         // 过滤: 基于l进行数据过滤避免冗余的数据迭代导致占用大量内存占用
-        let sharding_ll = future::try_join_all(ss_tables_ll.iter()
-                .map(|ss_table| async {
-                    Self::ss_table_load_data(block_cache, ss_table, |key| !filter_set_l.contains(key))
-                })).await?;
+        let sharding_ll = future::try_join_all(ss_tables_ll.iter().map(|ss_table| async {
+            Self::ss_table_load_data(block_cache, ss_table, |key| !filter_set_l.contains(key))
+        }))
+        .await?;
 
         // 使用sharding_ll来链接sharding_l以保持数据倒序的顺序是由新->旧
         let vec_cmd_data = sharding_ll
@@ -255,8 +274,13 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, sst_file_size))
     }
 
-    fn ss_table_load_data<F>(block_cache: &BlockCache, ss_table: &SSTable, fn_is_filter: F) -> Result<Vec<KeyValue>>
-        where F: Fn(&Bytes) -> bool
+    fn ss_table_load_data<F>(
+        block_cache: &BlockCache,
+        ss_table: &SSTable,
+        fn_is_filter: F,
+    ) -> Result<Vec<KeyValue>>
+    where
+        F: Fn(&Bytes) -> bool,
     {
         let mut iter = SSTableIter::new(ss_table, block_cache)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
@@ -283,10 +307,6 @@ impl Compactor {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
-    use std::sync::Arc;
-    use bytes::Bytes;
-    use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::Compactor;
     use crate::kernel::lsm::log::LogLoader;
@@ -294,8 +314,12 @@ mod tests {
     use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::Result;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
+    use crate::kernel::Result;
+    use bytes::Bytes;
+    use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     #[test]
     fn test_data_merge() -> Result<()> {
@@ -304,18 +328,14 @@ mod tests {
         let config = Config::new(temp_dir.into_path());
         let sst_factory = IoFactory::new(
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-            FileExtension::SSTable
+            FileExtension::SSTable,
         )?;
-        let cache = ShardingLruCache::new(
-            config.block_cache_size,
-            16,
-            RandomState::default()
-        )?;
+        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
         let (log_loader, _, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |_| Ok(())
+            |_| Ok(()),
         )?;
         let sst_loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), log_loader)?;
 
@@ -324,34 +344,34 @@ mod tests {
             vec![
                 (Bytes::from_static(b"1"), Some(Bytes::from_static(b"1"))),
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"2"))),
-                (Bytes::from_static(b"3"), Some(Bytes::from_static(b"31")))
+                (Bytes::from_static(b"3"), Some(Bytes::from_static(b"31"))),
             ],
-            0
+            0,
         )?;
         let _ = sst_loader.create(
             2,
             vec![
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"3"))),
-                (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4")))
+                (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4"))),
             ],
-            0
+            0,
         )?;
         let _ = sst_loader.create(
             3,
             vec![
                 (Bytes::from_static(b"1"), Some(Bytes::from_static(b"11"))),
-                (Bytes::from_static(b"2"), Some(Bytes::from_static(b"21")))
+                (Bytes::from_static(b"2"), Some(Bytes::from_static(b"21"))),
             ],
-            1
+            1,
         )?;
         let _ = sst_loader.create(
             4,
             vec![
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"32"))),
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"41"))),
-                (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5")))
+                (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5"))),
             ],
-            1
+            1,
         )?;
 
         let ss_table_1 = sst_loader.get(1).unwrap();
@@ -364,17 +384,21 @@ mod tests {
                 vec![&ss_table_1, &ss_table_2],
                 vec![&ss_table_3, &ss_table_4],
                 &cache,
-                config.sst_file_size
-            ).await
+                config.sst_file_size,
+            )
+            .await
         })?[0];
 
-        assert_eq!(vec_data, &vec![
-            (Bytes::from_static(b"1"), Some(Bytes::from_static(b"1"))),
-            (Bytes::from_static(b"2"), Some(Bytes::from_static(b"2"))),
-            (Bytes::from_static(b"3"), Some(Bytes::from_static(b"3"))),
-            (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4"))),
-            (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5")))
-        ]);
+        assert_eq!(
+            vec_data,
+            &vec![
+                (Bytes::from_static(b"1"), Some(Bytes::from_static(b"1"))),
+                (Bytes::from_static(b"2"), Some(Bytes::from_static(b"2"))),
+                (Bytes::from_static(b"3"), Some(Bytes::from_static(b"3"))),
+                (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4"))),
+                (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5")))
+            ]
+        );
         Ok(())
     }
 }

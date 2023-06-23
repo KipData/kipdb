@@ -1,10 +1,10 @@
+use crate::kernel::io::{FileExtension, IoReader, IoType, IoWriter};
+use crate::kernel::Result;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::kernel::io::{FileExtension, IoType, IoReader, IoWriter};
-use crate::kernel::Result;
 
 /// 使用BufReade和BufWriter实现的IOHandler
 /// 目前是使用了Mutex实现其线程安全
@@ -18,7 +18,11 @@ pub(crate) struct BufIoReader {
 }
 
 impl BufIoReader {
-    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+    pub(crate) fn new(
+        dir_path: Arc<PathBuf>,
+        gen: i64,
+        extension: Arc<FileExtension>,
+    ) -> Result<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
 
         let reader = BufReaderWithPos::new(File::open(path)?)?;
@@ -38,7 +42,11 @@ pub(crate) struct BufIoWriter {
 }
 
 impl BufIoWriter {
-    pub(crate) fn new(dir_path: Arc<PathBuf>, gen: i64, extension: Arc<FileExtension>) -> Result<Self> {
+    pub(crate) fn new(
+        dir_path: Arc<PathBuf>,
+        gen: i64,
+        extension: Arc<FileExtension>,
+    ) -> Result<Self> {
         // 通过路径构造写入器
         let file = OpenOptions::new()
             .create(true)
@@ -46,7 +54,9 @@ impl BufIoWriter {
             .read(true)
             .open(extension.path_with_gen(&dir_path, gen))?;
 
-        Ok(BufIoWriter { writer: BufWriterWithPos::new(file)? })
+        Ok(BufIoWriter {
+            writer: BufWriterWithPos::new(file)?,
+        })
     }
 }
 
@@ -68,8 +78,7 @@ impl IoReader for BufIoReader {
     }
 
     fn get_path(&self) -> PathBuf {
-        self.extension
-            .path_with_gen(&self.dir_path, self.gen)
+        self.extension.path_with_gen(&self.dir_path, self.gen)
     }
 
     fn get_type(&self) -> IoType {

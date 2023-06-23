@@ -1,3 +1,5 @@
+use crate::error::CacheError;
+use parking_lot::Mutex;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::hash_map::{Iter, RandomState};
@@ -7,8 +9,6 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use parking_lot::Mutex;
-use crate::error::CacheError;
 
 pub type Result<T> = std::result::Result<T, CacheError>;
 
@@ -26,9 +26,7 @@ impl<K, V> Clone for NodeReadPtr<K, V> {
     }
 }
 
-impl<K, V> Copy for NodeReadPtr<K, V> {
-
-}
+impl<K, V> Copy for NodeReadPtr<K, V> {}
 
 impl<K, V> Deref for NodeReadPtr<K, V> {
     type Target = NonNull<Node<K, V>>;
@@ -87,7 +85,7 @@ impl<K: Ord, V> PartialOrd<Self> for KeyRef<K, V> {
     }
 }
 
-impl<K: Ord, V> Ord for KeyRef<K, V>  {
+impl<K: Ord, V> Ord for KeyRef<K, V> {
     fn cmp(&self, other: &Self) -> Ordering {
         unsafe { self.0.as_ref().key.cmp(&other.0.as_ref().key) }
     }
@@ -137,39 +135,30 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         self.shard(key)
             .lock()
             .get_node(key)
-            .map(|node| {
-                unsafe { &node.as_ref().value }
-            })
+            .map(|node| unsafe { &node.as_ref().value })
     }
 
     pub(crate) fn put(&self, key: K, value: V) -> Option<V> {
-        self.shard(&key)
-            .lock()
-            .put(key, value)
+        self.shard(&key).lock().put(key, value)
     }
 
     pub(crate) fn remove(&self, key: &K) -> Option<V> {
-        self.shard(key)
-            .lock()
-            .remove(key)
+        self.shard(key).lock().remove(key)
     }
 
     #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         for lru in &self.sharding_vec {
             if !lru.lock().is_empty() {
-                return false
+                return false;
             }
         }
         true
     }
 
-    pub(crate) fn get_or_insert<F>(
-        &self,
-        key: K,
-        fn_once: F
-    ) -> Result<&V>
-        where F: FnOnce(&K) -> Result<V>
+    pub(crate) fn get_or_insert<F>(&self, key: K, fn_once: F) -> Result<&V>
+    where
+        F: FnOnce(&K) -> Result<V>,
     {
         self.shard(&key)
             .lock()
@@ -192,7 +181,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
 impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     pub(crate) fn new(cap: usize) -> Result<Self> {
         if cap < 1 {
-            return Err(CacheError::CacheSizeOverFlow)
+            return Err(CacheError::CacheSizeOverFlow);
         }
 
         Ok(Self {
@@ -200,7 +189,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             tail: None,
             inner: HashMap::new(),
             cap,
-            marker:PhantomData,
+            marker: PhantomData,
         })
     }
 
@@ -263,11 +252,10 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
 
     pub(crate) fn put(&mut self, key: K, value: V) -> Option<V> {
         let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
-        let old_node = self.inner.remove(&KeyRef(node))
-            .map(|node| {
-                self.detach(node);
-                node
-            });
+        let old_node = self.inner.remove(&KeyRef(node)).map(|node| {
+            self.detach(node);
+            node
+        });
         self.expulsion();
         self.attach(node);
         let _ignore1 = self.inner.insert(KeyRef(node), node);
@@ -302,22 +290,18 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     pub(crate) fn remove(&mut self, key: &K) -> Option<V> {
-        self.inner.remove(key)
-            .map(|node| {
-                self.detach(node);
-                unsafe {
-                    let node: Box<Node<K, V>> = Box::from_raw(node.as_ptr());
-                    node.value
-                }
-            })
+        self.inner.remove(key).map(|node| {
+            self.detach(node);
+            unsafe {
+                let node: Box<Node<K, V>> = Box::from_raw(node.as_ptr());
+                node.value
+            }
+        })
     }
 
-    fn get_or_insert_node<F>(
-        &mut self,
-        key: K,
-        fn_once: F
-    ) -> Result<NodeReadPtr<K, V>>
-        where F: FnOnce(&K) -> Result<V>
+    fn get_or_insert_node<F>(&mut self, key: K, fn_once: F) -> Result<NodeReadPtr<K, V>>
+    where
+        F: FnOnce(&K) -> Result<V>,
     {
         if let Some(node) = self.inner.get(&key) {
             let node = *node;
@@ -327,11 +311,10 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         } else {
             let value = fn_once(&key)?;
             let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
-            let _ignore = self.inner.remove(&KeyRef(node))
-                .map(|node| {
-                    self.detach(node);
-                    node
-                });
+            let _ignore = self.inner.remove(&KeyRef(node)).map(|node| {
+                self.detach(node);
+                node
+            });
             self.expulsion();
             self.attach(node);
             let _ignore1 = self.inner.insert(KeyRef(node), node);
@@ -340,12 +323,9 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get_or_insert<F>(
-        &mut self,
-        key: K,
-        fn_once: F
-    ) -> Result<&V>
-        where F: FnOnce(&K) -> Result<V>
+    pub(crate) fn get_or_insert<F>(&mut self, key: K, fn_once: F) -> Result<&V>
+    where
+        F: FnOnce(&K) -> Result<V>,
     {
         self.get_or_insert_node(key, fn_once)
             .map(|node| unsafe { &node.as_ref().value })
@@ -368,21 +348,22 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
 }
 
 pub(crate) struct LruCacheIter<'a, K, V> {
-    inner: Iter<'a, KeyRef<K, V>, NodeReadPtr<K, V>>
+    inner: Iter<'a, KeyRef<K, V>, NodeReadPtr<K, V>>,
 }
 
 impl<'a, K, V> Iterator for LruCacheIter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.inner
+            .next()
             .map(|(_, node)| unsafe { (&node.as_ref().key, &node.as_ref().value) })
     }
 }
 
 impl<K, V> Drop for LruCache<K, V> {
     fn drop(&mut self) {
-        while let Some(node) = self.head.take(){
+        while let Some(node) = self.head.take() {
             unsafe {
                 self.head = node.as_ref().next;
                 drop(Box::from_raw(node.as_ptr()))
@@ -393,9 +374,9 @@ impl<K, V> Drop for LruCache<K, V> {
 
 #[cfg(test)]
 mod tests {
+    use crate::kernel::utils::lru_cache::{LruCache, ShardingLruCache};
     use std::collections::hash_map::RandomState;
     use std::collections::HashSet;
-    use crate::kernel::utils::lru_cache::{LruCache, ShardingLruCache};
 
     #[test]
     fn test_lru_cache() {
@@ -410,13 +391,7 @@ mod tests {
         assert_eq!(lru.get(&2), Some(&200));
         assert_eq!(lru.get(&3), None);
 
-        assert_eq!(
-            lru.get_or_insert(
-                9,
-                |_| Ok(9)
-            ).unwrap(),
-            &9
-        );
+        assert_eq!(lru.get_or_insert(9, |_| Ok(9)).unwrap(), &9);
 
         assert_eq!(lru.len(), 3);
         assert!(!lru.is_empty());
@@ -435,12 +410,6 @@ mod tests {
         assert_eq!(lru.put(1, 10), None);
         assert_eq!(lru.get(&1), Some(&10));
         assert!(!lru.is_empty());
-        assert_eq!(
-            lru.get_or_insert(
-                9,
-                |_| Ok(9)
-            ).unwrap(),
-            &9
-        );
+        assert_eq!(lru.get_or_insert(9, |_| Ok(9)).unwrap(), &9);
     }
 }

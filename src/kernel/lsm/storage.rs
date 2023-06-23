@@ -1,30 +1,30 @@
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
-use async_trait::async_trait;
-use bytes::Bytes;
-use chrono::Local;
-use fslock::LockFile;
-use parking_lot::MutexGuard;
-use skiplist::SkipMap;
-use tokio::sync::mpsc::{channel, Sender};
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::oneshot;
-use tracing::{error, info};
-use crate::kernel::{DEFAULT_LOCK_FILE, Storage, lock_or_time_out};
 use crate::kernel::io::IoType;
-use crate::kernel::lsm::compactor::{Compactor, CompactTask};
+use crate::kernel::lsm::compactor::{CompactTask, Compactor};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::ss_table::block;
 use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version;
-use crate::kernel::lsm::version::Version;
 use crate::kernel::lsm::version::status::VersionStatus;
+use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
+use crate::kernel::{lock_or_time_out, Storage, DEFAULT_LOCK_FILE};
 use crate::KernelError;
+use async_trait::async_trait;
+use bytes::Bytes;
+use chrono::Local;
+use fslock::LockFile;
+use parking_lot::MutexGuard;
+use skiplist::SkipMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::oneshot;
+use tracing::{error, info};
 
 pub(crate) const BANNER: &str = "
 █████   ████  ███            ██████████   ███████████
@@ -72,7 +72,7 @@ pub struct LsmStore {
     /// 避免多进程进行数据读写
     lock_file: LockFile,
     /// Compactor 通信器
-    compactor_tx: Sender<CompactTask>
+    compactor_tx: Sender<CompactTask>,
 }
 
 pub(crate) struct StoreInner {
@@ -91,10 +91,8 @@ impl StoreInner {
         let mem_table = MemTable::new(&config)?;
 
         // 初始化wal日志
-        let ver_status = VersionStatus::load_with_path(
-            config.clone(),
-            mem_table.log_loader_clone()
-        )?;
+        let ver_status =
+            VersionStatus::load_with_path(config.clone(), mem_table.log_loader_clone())?;
 
         Ok(StoreInner {
             mem_table,
@@ -107,7 +105,10 @@ impl StoreInner {
 #[async_trait]
 impl Storage for LsmStore {
     #[inline]
-    fn name() -> &'static str where Self: Sized {
+    fn name() -> &'static str
+    where
+        Self: Sized,
+    {
         "LSMStore made in Kould"
     }
 
@@ -129,9 +130,8 @@ impl Storage for LsmStore {
 
     #[inline]
     async fn set(&self, key: &[u8], value: Bytes) -> Result<()> {
-        self.append_cmd_data(
-            (Bytes::copy_from_slice(key), Some(value))
-        ).await
+        self.append_cmd_data((Bytes::copy_from_slice(key), Some(value)))
+            .await
     }
 
     #[inline]
@@ -140,9 +140,7 @@ impl Storage for LsmStore {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.current_version().await
-            .find_data_for_ss_tables(key)?
-        {
+        if let Some(value) = self.current_version().await.find_data_for_ss_tables(key)? {
             return Ok(Some(value));
         }
 
@@ -152,8 +150,11 @@ impl Storage for LsmStore {
     #[inline]
     async fn remove(&self, key: &[u8]) -> Result<()> {
         match self.get(key).await? {
-            Some(_) => self.append_cmd_data((Bytes::copy_from_slice(key), None)).await,
-            None => Err(KernelError::KeyNotFound)
+            Some(_) => {
+                self.append_cmd_data((Bytes::copy_from_slice(key), None))
+                    .await
+            }
+            None => Err(KernelError::KeyNotFound),
         }
     }
 
@@ -169,8 +170,7 @@ impl Storage for LsmStore {
 
     #[inline]
     async fn is_empty(&self) -> bool {
-        self.current_version().await.is_empty()
-            && self.mem_table().is_empty()
+        self.current_version().await.is_empty() && self.mem_table().is_empty()
     }
 }
 
@@ -178,19 +178,19 @@ impl Drop for LsmStore {
     #[inline]
     #[allow(clippy::expect_used)]
     fn drop(&mut self) {
-        self.lock_file.unlock()
-            .expect("LockFile unlock failed!");
+        self.lock_file.unlock().expect("LockFile unlock failed!");
     }
 }
 
 impl LsmStore {
-
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         if self.mem_table().insert_data(data)? {
-            if let Err(TrySendError::Closed(_)) = self.compactor_tx
-                .try_send(CompactTask::Flush(None))
-            { return Err(KernelError::ChannelClose); }
+            if let Err(TrySendError::Closed(_)) =
+                self.compactor_tx.try_send(CompactTask::Flush(None))
+            {
+                return Err(KernelError::ChannelClose);
+            }
         }
 
         Ok(())
@@ -198,20 +198,19 @@ impl LsmStore {
 
     /// 使用Config进行LsmStore初始化
     #[inline]
-    pub async fn open_with_config(config: Config) -> Result<Self> where Self: Sized {
+    pub async fn open_with_config(config: Config) -> Result<Self>
+    where
+        Self: Sized,
+    {
         info!("{}", BANNER);
         Gen::init();
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;
-        let lock_file = lock_or_time_out(
-            &config.path().join(DEFAULT_LOCK_FILE)
-        ).await?;
+        let lock_file = lock_or_time_out(&config.path().join(DEFAULT_LOCK_FILE)).await?;
 
         let inner = Arc::new(StoreInner::new(config.clone()).await?);
 
-        let mut compactor = Compactor::new(
-            Arc::clone(&inner),
-        );
+        let mut compactor = Compactor::new(Arc::clone(&inner));
 
         let (task_tx, mut task_rx) = channel(1);
 
@@ -223,7 +222,11 @@ impl LsmStore {
             }
         });
 
-        Ok(LsmStore { inner, lock_file, compactor_tx: task_tx })
+        Ok(LsmStore {
+            inner,
+            lock_file,
+            compactor_tx: task_tx,
+        })
     }
 
     fn mem_table(&self) -> &MemTable {
@@ -237,8 +240,7 @@ impl LsmStore {
     /// 创建事务
     #[inline]
     pub async fn new_transaction(&self) -> Transaction {
-        let _ = self.mem_table().tx_count
-            .fetch_add(1, Ordering::Release);
+        let _ = self.mem_table().tx_count.fetch_add(1, Ordering::Release);
 
         Transaction {
             store_inner: Arc::clone(&self.inner),
@@ -256,14 +258,14 @@ impl LsmStore {
 
         Ok(Guard {
             _inner: self.mem_table().inner_with_lock(),
-            _version: version
+            _version: version,
         })
     }
 }
 
 pub struct Guard<'a> {
     _inner: MutexGuard<'a, TableInner>,
-    _version: Arc<Version>
+    _version: Arc<Version>,
 }
 
 impl<'a> Guard<'a> {
@@ -320,7 +322,10 @@ impl Config {
             dir_path: path.into(),
             wal_threshold: DEFAULT_WAL_THRESHOLD,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
-            minor_trigger_with_threshold: (TriggerType::SizeOfMem, DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM),
+            minor_trigger_with_threshold: (
+                TriggerType::SizeOfMem,
+                DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM,
+            ),
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
             major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
@@ -346,7 +351,11 @@ impl Config {
     }
 
     #[inline]
-    pub fn minor_trigger_with_threshold(mut self, trigger_type: TriggerType, threshold: usize) -> Self {
+    pub fn minor_trigger_with_threshold(
+        mut self,
+        trigger_type: TriggerType,
+        threshold: usize,
+    ) -> Self {
         self.minor_trigger_with_threshold = (trigger_type, threshold);
         self
     }
@@ -460,13 +469,13 @@ impl Gen {
 
 #[cfg(test)]
 mod tests {
-    use std::thread::sleep;
-    use std::time::{Duration, Instant};
+    use crate::kernel::lsm::storage::{Config, Gen, LsmStore, Sequence};
+    use crate::kernel::{Result, Storage};
     use bytes::Bytes;
     use itertools::Itertools;
+    use std::thread::sleep;
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
-    use crate::kernel::{Storage, Result};
-    use crate::kernel::lsm::storage::{Config, Gen, LsmStore, Sequence};
 
     #[test]
     fn test_seq_create() {
@@ -513,8 +522,8 @@ mod tests {
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-            let config = Config::new(temp_dir.path().to_str().unwrap())
-                .major_threshold_with_sst_size(4);
+            let config =
+                Config::new(temp_dir.path().to_str().unwrap()).major_threshold_with_sst_size(4);
             let kv_store = LsmStore::open_with_config(config).await?;
             let mut vec_kv = Vec::new();
 
@@ -522,9 +531,7 @@ mod tests {
                 let vec_u8 = bincode::serialize(&i)?;
                 vec_kv.push((
                     Bytes::from(vec_u8.clone()),
-                    Bytes::from(vec_u8.into_iter()
-                        .chain(value.to_vec())
-                        .collect_vec())
+                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
                 ));
             }
 

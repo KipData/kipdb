@@ -1,7 +1,7 @@
-use std::cmp::Ordering;
-use serde::{Deserialize, Serialize};
-use crate::kernel::lsm::ss_table::Scope;
 use crate::kernel::lsm::ss_table::meta::SSTableMeta;
+use crate::kernel::lsm::ss_table::Scope;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub(crate) enum VersionEdit {
@@ -25,7 +25,7 @@ impl EditType {
     fn ord_num(&self) -> usize {
         match self {
             EditType::Add(_) => 0,
-            EditType::Del(_) => 1
+            EditType::Del(_) => 1,
         }
     }
 }

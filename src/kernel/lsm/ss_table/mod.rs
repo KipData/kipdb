@@ -1,35 +1,37 @@
-use std::collections::Bound;
-use std::io::SeekFrom;
-use std::sync::Arc;
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
-use itertools::Itertools;
-use parking_lot::Mutex;
-use tracing::info;
 use crate::kernel::io::IoReader;
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::block::{Block, BlockCache, BlockItem, BlockType, CompressType, Index, MetaBlock, Value};
+use crate::kernel::lsm::ss_table::block::{
+    Block, BlockCache, BlockItem, BlockType, CompressType, Index, MetaBlock, Value,
+};
 use crate::kernel::lsm::ss_table::footer::Footer;
 use crate::kernel::lsm::ss_table::meta::SSTableMeta;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
+use bytes::Bytes;
+use itertools::Itertools;
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use std::collections::Bound;
+use std::io::SeekFrom;
+use std::sync::Arc;
+use tracing::info;
 
-pub(crate) mod loader;
 pub(crate) mod block;
 pub(crate) mod block_iter;
-pub(crate) mod iter;
-pub(crate) mod meta;
 mod footer;
+pub(crate) mod iter;
+pub(crate) mod loader;
+pub(crate) mod meta;
 
 pub(crate) struct SSTable {
-    inner: Arc<SSTableInner>
+    inner: Arc<SSTableInner>,
 }
 
 impl Clone for SSTable {
     fn clone(&self) -> Self {
         SSTable {
-            inner: Arc::clone(&self.inner)
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -61,7 +63,6 @@ pub(crate) struct Scope {
 }
 
 impl Scope {
-
     pub(crate) fn get_gen(&self) -> i64 {
         self.gen
     }
@@ -78,12 +79,14 @@ impl Scope {
     /// 将多个scope重组融合成一个scope
     pub(crate) fn fusion(scopes: &[Scope]) -> Result<Self> {
         if !scopes.is_empty() {
-            let start = scopes.iter()
+            let start = scopes
+                .iter()
                 .map(|scope| &scope.start)
                 .min()
                 .ok_or(KernelError::DataEmpty)?
                 .clone();
-            let end = scopes.iter()
+            let end = scopes
+                .iter()
                 .map(|scope| &scope.end)
                 .max()
                 .ok_or(KernelError::DataEmpty)?
@@ -103,8 +106,7 @@ impl Scope {
 
     /// 判断key与Scope是否相交
     pub(crate) fn meet_with_key(&self, key: &[u8]) -> bool {
-        self.start.as_ref().le(key)
-            && self.end.as_ref().ge(key)
+        self.start.as_ref().le(key) && self.end.as_ref().ge(key)
     }
 
     #[allow(dead_code)]
@@ -112,12 +114,12 @@ impl Scope {
         let is_min_inside = match min {
             Bound::Included(key) => self.start.as_ref().le(key),
             Bound::Excluded(key) => self.start.as_ref().lt(key),
-            Bound::Unbounded => true
+            Bound::Unbounded => true,
         };
         let is_max_inside = match max {
             Bound::Included(key) => self.end.as_ref().ge(key),
             Bound::Excluded(key) => self.end.as_ref().gt(key),
-            Bound::Unbounded => true
+            Bound::Unbounded => true,
         };
 
         is_min_inside && is_max_inside
@@ -127,15 +129,9 @@ impl Scope {
     #[allow(clippy::pattern_type_mismatch)]
     pub(crate) fn from_vec_data(gen: i64, vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
         match vec_mem_data.as_slice() {
-            [first, .., last] => {
-                Ok(Self::from_data(gen, first, last))
-            },
-            [one] => {
-                Ok(Self::from_data(gen, one, one))
-            },
-            _ => {
-                Err(KernelError::DataEmpty)
-            },
+            [first, .., last] => Ok(Self::from_data(gen, first, last)),
+            [one] => Ok(Self::from_data(gen, one, one)),
+            _ => Err(KernelError::DataEmpty),
         }
     }
 }
@@ -161,10 +157,15 @@ impl SSTable {
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
-    pub(crate) fn load_from_file(mut reader: Box<dyn IoReader>) -> Result<Self>{
+    pub(crate) fn load_from_file(mut reader: Box<dyn IoReader>) -> Result<Self> {
         let gen = reader.get_gen();
         let footer = Footer::read_to_file(reader.as_mut())?;
-        let Footer { size_of_disk, meta_offset, meta_len ,.. } = &footer;
+        let Footer {
+            size_of_disk,
+            meta_offset,
+            meta_len,
+            ..
+        } = &footer;
         info!(
             "[SsTable: {gen}][load_from_file][MetaBlock]: {footer:?}, Size of Disk: {}, IO Type: {:?}",
             size_of_disk ,
@@ -178,9 +179,12 @@ impl SSTable {
         let meta = bincode::deserialize(&buf)?;
         let reader = Mutex::new(reader);
         Ok(SSTable {
-            inner : Arc::new(
-                SSTableInner { footer, gen, reader, meta, }
-            )
+            inner: Arc::new(SSTableInner {
+                footer,
+                gen,
+                reader,
+                meta,
+            }),
         })
     }
 
@@ -188,76 +192,82 @@ impl SSTable {
     pub(crate) fn query_with_key(
         &self,
         key: &[u8],
-        block_cache: &BlockCache
+        block_cache: &BlockCache,
     ) -> Result<Option<Bytes>> {
         let inner = &self.inner;
         if inner.meta.filter.contains(key) {
             let index_block = self.get_index_block(block_cache)?;
 
-            if let BlockType::Data(data_block) =  block_cache.get_or_insert(
+            if let BlockType::Data(data_block) = block_cache.get_or_insert(
                 (self.get_gen(), Some(index_block.find_with_upper(key))),
                 |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
                     Ok(Self::get_data_block_(inner, index)?)
-                }
-            )? { return Ok(data_block.find(key)); }
+                },
+            )? {
+                return Ok(data_block.find(key));
+            }
         }
 
         Ok(None)
     }
 
-    pub(crate) fn get_data_block<'a>(&'a self, index: Index, block_cache: &'a BlockCache) -> Result<Option<&Block<Value>>> {
+    pub(crate) fn get_data_block<'a>(
+        &'a self,
+        index: Index,
+        block_cache: &'a BlockCache,
+    ) -> Result<Option<&Block<Value>>> {
         let inner = &self.inner;
-        Ok(block_cache.get_or_insert(
-            (self.get_gen(), Some(index)),
-            |(_, index)| {
+        Ok(block_cache
+            .get_or_insert((self.get_gen(), Some(index)), |(_, index)| {
                 let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
                 Ok(Self::get_data_block_(inner, index)?)
-            }
-        ).map(|block_type| {
-            match block_type {
+            })
+            .map(|block_type| match block_type {
                 BlockType::Data(data_block) => Some(data_block),
-                _ => None
-            }
-        })?)
+                _ => None,
+            })?)
     }
 
     fn get_data_block_(inner: &SSTableInner, index: Index) -> Result<BlockType> {
-        Ok(BlockType::Data(
-            Self::loading_block(
-                inner.reader.lock().as_mut(),
-                index.offset(),
-                index.len(),
-                CompressType::LZ4,
-                inner.meta.data_restart_interval
-            )?
-        ))
+        Ok(BlockType::Data(Self::loading_block(
+            inner.reader.lock().as_mut(),
+            index.offset(),
+            index.len(),
+            CompressType::LZ4,
+            inner.meta.data_restart_interval,
+        )?))
     }
 
-    pub(crate) fn get_index_block<'a>(&'a self, block_cache: &'a BlockCache) -> Result<&Block<Index>> {
+    pub(crate) fn get_index_block<'a>(
+        &'a self,
+        block_cache: &'a BlockCache,
+    ) -> Result<&Block<Index>> {
         let inner = &self.inner;
-        block_cache.get_or_insert(
-            (self.get_gen(), None),
-            |_| Ok(Self::get_index_block_(inner)?)
-        ).map(|block_type| {
-            match block_type {
+        block_cache
+            .get_or_insert((self.get_gen(), None), |_| {
+                Ok(Self::get_index_block_(inner)?)
+            })
+            .map(|block_type| match block_type {
                 BlockType::Index(data_block) => Some(data_block),
-                _ => None
-            }
-        })?.ok_or(KernelError::DataEmpty)
+                _ => None,
+            })?
+            .ok_or(KernelError::DataEmpty)
     }
 
     fn get_index_block_(inner: &Arc<SSTableInner>) -> Result<BlockType> {
-        let Footer { index_offset, index_len, .. } = inner.footer;
-        Ok(BlockType::Index(
-            Self::loading_block(
-                inner.reader.lock().as_mut(),
-                index_offset,
-                index_len as usize,
-                CompressType::None,
-                inner.meta.index_restart_interval
-            )?
-        ))
+        let Footer {
+            index_offset,
+            index_len,
+            ..
+        } = inner.footer;
+        Ok(BlockType::Index(Self::loading_block(
+            inner.reader.lock().as_mut(),
+            index_offset,
+            index_len as usize,
+            CompressType::None,
+            inner.meta.index_restart_interval,
+        )?))
     }
 
     fn loading_block<T>(
@@ -267,7 +277,8 @@ impl SSTable {
         compress_type: CompressType,
         restart_interval: usize,
     ) -> Result<Block<T>>
-        where T: BlockItem
+    where
+        T: BlockItem,
     {
         let mut buf = vec![0; len];
         let _ = reader.seek(SeekFrom::Start(offset as u64))?;
@@ -280,26 +291,30 @@ impl SSTable {
     pub(crate) fn collect_gen(vec_ss_table: &[&SSTable]) -> Result<(Vec<i64>, SSTableMeta)> {
         let meta = SSTableMeta::from(vec_ss_table);
 
-        Ok((vec_ss_table.iter()
+        Ok((
+            vec_ss_table
+                .iter()
                 .map(|sst| sst.get_gen())
                 .unique()
-                .collect_vec(), meta))
+                .collect_vec(),
+            meta,
+        ))
     }
 
     /// 获取指定SSTable索引位置
-    pub(crate) fn find_index_with_level(option_first: Option<i64>, version: &Version, level: usize) -> usize {
-        option_first.and_then(|gen| version.get_index(level, gen))
+    pub(crate) fn find_index_with_level(
+        option_first: Option<i64>,
+        version: &Version,
+        level: usize,
+    ) -> usize {
+        option_first
+            .and_then(|gen| version.get_index(level, gen))
             .unwrap_or(0)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
-    use std::sync::Arc;
-    use bincode::Options;
-    use bytes::Bytes;
-    use tempfile::TempDir;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
@@ -309,29 +324,30 @@ mod tests {
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
+    use bincode::Options;
+    use bytes::Bytes;
+    use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     #[test]
     fn test_ss_table() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-        let value = Bytes::copy_from_slice(b"If you shed tears when you miss the sun, you also miss the stars.");
-        let config = Config::new(temp_dir.into_path());
-        let sst_factory = Arc::new(
-            IoFactory::new(
-                config.dir_path.join(DEFAULT_SS_TABLE_PATH),
-                FileExtension::SSTable
-            )?
+        let value = Bytes::copy_from_slice(
+            b"If you shed tears when you miss the sun, you also miss the stars.",
         );
-        let cache = ShardingLruCache::new(
-            config.block_cache_size,
-            16,
-            RandomState::default()
-        )?;
+        let config = Config::new(temp_dir.into_path());
+        let sst_factory = Arc::new(IoFactory::new(
+            config.dir_path.join(DEFAULT_SS_TABLE_PATH),
+            FileExtension::SSTable,
+        )?);
+        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
         let (log_loader, _, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |_| Ok(())
+            |_| Ok(()),
         )?;
         let sst_loader = SSTableLoader::new(config, sst_factory.clone(), log_loader)?;
 
@@ -339,9 +355,10 @@ mod tests {
         let times = 2333;
 
         for i in 0..times {
-            vec_data.push(
-                (Bytes::from(bincode::options().with_big_endian().serialize(&i)?), Some(value.clone()))
-            );
+            vec_data.push((
+                Bytes::from(bincode::options().with_big_endian().serialize(&i)?),
+                Some(value.clone()),
+            ));
         }
         // Tips: 此处Level需要为0以上，因为Level 0默认为Mem类型，容易丢失
         let _ = sst_loader.create(1, vec_data.clone(), 1)?;
@@ -350,14 +367,18 @@ mod tests {
         let ss_table = sst_loader.get(1).unwrap();
 
         for i in 0..times {
-            assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
+            assert_eq!(
+                ss_table.query_with_key(&vec_data[i].0, &cache)?,
+                Some(value.clone())
+            )
         }
 
-        let ss_table = SSTable::load_from_file(
-            sst_factory.reader(1, IoType::Direct)?
-        )?;
+        let ss_table = SSTable::load_from_file(sst_factory.reader(1, IoType::Direct)?)?;
         for i in 0..times {
-            assert_eq!(ss_table.query_with_key(&vec_data[i].0, &cache)?, Some(value.clone()))
+            assert_eq!(
+                ss_table.query_with_key(&vec_data[i].0, &cache)?,
+                Some(value.clone())
+            )
         }
 
         Ok(())

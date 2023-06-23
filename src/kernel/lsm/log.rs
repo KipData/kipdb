@@ -1,16 +1,15 @@
+use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
+use crate::kernel::lsm::storage::Gen;
+use crate::kernel::{sorted_gen_list, Result};
+use crate::KernelError;
+use integer_encoding::FixedInt;
 use std::cmp::min;
 /// dermesser/leveldb-rs crates.io: v1.0.6
 /// https://github.com/dermesser/leveldb-rs/blob/master/src/log.rs
 /// The MIT License (MIT)
-
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
-use integer_encoding::FixedInt;
-use crate::kernel::{Result, sorted_gen_list};
-use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
-use crate::kernel::lsm::storage::Gen;
-use crate::KernelError;
 
 const BLOCK_SIZE: usize = 32 * 1024;
 const HEADER_SIZE: usize = 4 + 4 + 1;
@@ -26,17 +25,13 @@ impl LogLoader {
         wal_dir_path: &Path,
         path_name: (&str, Option<i64>),
         io_type: IoType,
-        fn_decode: F
+        fn_decode: F,
     ) -> Result<(Self, Vec<R>, i64)>
-        where F: Fn(&mut Vec<u8>) -> Result<R>
+    where
+        F: Fn(&mut Vec<u8>) -> Result<R>,
     {
-        let (loader, log_gen) = Self::_reload(
-            wal_dir_path,
-            path_name,
-            io_type
-        )?;
-        let reload_data = loader.load(log_gen, fn_decode)
-            .unwrap_or(Vec::new());
+        let (loader, log_gen) = Self::_reload(wal_dir_path, path_name, io_type)?;
+        let reload_data = loader.load(log_gen, fn_decode).unwrap_or(Vec::new());
 
         Ok((loader, reload_data, log_gen))
     }
@@ -44,38 +39,30 @@ impl LogLoader {
     fn _reload(
         wal_dir_path: &Path,
         path_name: (&str, Option<i64>),
-        io_type: IoType
+        io_type: IoType,
     ) -> Result<(Self, i64)> {
         let (path, name) = path_name;
         let wal_path = wal_dir_path.join(path);
 
-        let factory = Arc::new(
-            IoFactory::new(
-                wal_path.clone(),
-                FileExtension::Log
-            )?
-        );
+        let factory = Arc::new(IoFactory::new(wal_path.clone(), FileExtension::Log)?);
 
-        let current_gen = name.or_else(|| {
-            sorted_gen_list(&wal_path, FileExtension::Log)
-                .ok()
-                .and_then(|vec| vec.last().cloned())
-        }).unwrap_or(Gen::create());
+        let current_gen = name
+            .or_else(|| {
+                sorted_gen_list(&wal_path, FileExtension::Log)
+                    .ok()
+                    .and_then(|vec| vec.last().cloned())
+            })
+            .unwrap_or(Gen::create());
 
-        Ok((LogLoader {
-            factory,
-            io_type,
-        }, current_gen))
+        Ok((LogLoader { factory, io_type }, current_gen))
     }
-
 
     /// 通过Gen载入数据进行读取
     pub(crate) fn load<F, R>(&self, gen: i64, fn_decode: F) -> Result<Vec<R>>
-        where F: Fn(&mut Vec<u8>) -> Result<R>
+    where
+        F: Fn(&mut Vec<u8>) -> Result<R>,
     {
-        let mut reader = LogReader::new(
-            self.factory.reader(gen, self.io_type)?
-        );
+        let mut reader = LogReader::new(self.factory.reader(gen, self.io_type)?);
         let mut vec_data = Vec::new();
         let mut buf = vec![0; 128];
 
@@ -241,7 +228,7 @@ impl<R: Read + Seek> LogReader<R> {
             if head_pos == 0 {
                 return Ok(dst_offset);
             } else if head_pos != HEADER_SIZE {
-                continue
+                continue;
             } else {
                 head_pos = 0;
             }
@@ -272,15 +259,15 @@ impl<R: Read + Seek> LogReader<R> {
 
 #[cfg(test)]
 mod tests {
+    use crate::kernel::io::IoType;
+    use crate::kernel::lsm::log::{LogLoader, LogReader, LogWriter, HEADER_SIZE};
+    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
+    use crate::kernel::lsm::storage::Config;
+    use crate::kernel::Result;
     use std::fs::{File, OpenOptions};
     use std::io::Cursor;
     use std::mem;
     use tempfile::TempDir;
-    use crate::kernel::io::IoType;
-    use crate::kernel::lsm::log::{HEADER_SIZE, LogLoader, LogReader, LogWriter};
-    use crate::kernel::Result;
-    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
-    use crate::kernel::lsm::storage::Config;
 
     #[test]
     fn test_writer() {
@@ -388,7 +375,7 @@ mod tests {
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |bytes| Ok(bytes.clone())
+            |bytes| Ok(bytes.clone()),
         )?;
 
         let mut writer = loader.writer(1)?;
@@ -404,7 +391,7 @@ mod tests {
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |bytes| Ok(bytes.clone())
+            |bytes| Ok(bytes.clone()),
         )?;
 
         let reload_data_2 = wal.load(1, |bytes| Ok(mem::take(bytes)))?;
@@ -416,5 +403,3 @@ mod tests {
         Ok(())
     }
 }
-
-

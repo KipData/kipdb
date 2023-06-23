@@ -1,3 +1,14 @@
+use crate::kernel::io::IoWriter;
+use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::log::{LogLoader, LogWriter};
+use crate::kernel::lsm::ss_table::block::{Entry, Value};
+use crate::kernel::lsm::storage::{Config, Gen, Sequence};
+use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
+use crate::kernel::Result;
+use bytes::Bytes;
+use itertools::Itertools;
+use parking_lot::{Mutex, MutexGuard};
+use skiplist::{skipmap, SkipMap};
 use std::cmp::Ordering;
 use std::collections::Bound;
 use std::io::Cursor;
@@ -5,17 +16,6 @@ use std::mem;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Acquire;
 use std::vec::IntoIter;
-use bytes::Bytes;
-use itertools::Itertools;
-use parking_lot::{Mutex, MutexGuard};
-use skiplist::{SkipMap, skipmap};
-use crate::kernel::io::IoWriter;
-use crate::kernel::lsm::iterator::{Iter, Seek};
-use crate::kernel::lsm::log::{LogLoader, LogWriter};
-use crate::kernel::lsm::ss_table::block::{Entry, Value};
-use crate::kernel::Result;
-use crate::kernel::lsm::storage::{Config, Gen, Sequence};
-use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
@@ -41,24 +41,27 @@ pub(crate) struct InternalKey {
 
 impl PartialOrd<Self> for InternalKey {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.key.partial_cmp(&other.key)
-            .and_then(|ord| match ord {
-                Ordering::Equal => self.seq_id.partial_cmp(&other.seq_id),
-                ordering => Some(ordering)
-            })
+        self.key.partial_cmp(&other.key).and_then(|ord| match ord {
+            Ordering::Equal => self.seq_id.partial_cmp(&other.seq_id),
+            ordering => Some(ordering),
+        })
     }
 }
 
 impl Ord for InternalKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.key.cmp(&other.key)
+        self.key
+            .cmp(&other.key)
             .then_with(|| self.seq_id.cmp(&other.seq_id))
     }
 }
 
 impl InternalKey {
     pub(crate) fn new(key: Bytes) -> Self {
-        InternalKey { key, seq_id: Sequence::create() }
+        InternalKey {
+            key,
+            seq_id: Sequence::create(),
+        }
     }
 
     pub(crate) fn new_with_seq(key: Bytes, seq_id: i64) -> Self {
@@ -74,7 +77,7 @@ pub(crate) struct MemMapIter<'a> {
     mem_map: &'a MemMap,
 
     prev_item: Option<(Bytes, Option<Bytes>)>,
-    iter: Option<skipmap::Iter<'a, InternalKey, Option<Bytes>>>
+    iter: Option<skipmap::Iter<'a, InternalKey, Option<Bytes>>>,
 }
 
 impl<'a> MemMapIter<'a> {
@@ -98,8 +101,8 @@ impl<'a> Iter<'a> for MemMapIter<'a> {
                     if key != &prev_item.0 {
                         return Ok(mem::replace(
                             &mut self.prev_item,
-                            Some((key.clone(), value.clone()))
-                        ))
+                            Some((key.clone(), value.clone())),
+                        ));
                     }
                 }
                 self.prev_item = Some((key.clone(), value.clone()));
@@ -120,18 +123,21 @@ impl<'a> Iter<'a> for MemMapIter<'a> {
         self.iter = match seek {
             Seek::First => Some(self.mem_map.iter()),
             Seek::Last => None,
-            Seek::Backward(seek_key) => {
-                Some(self.mem_map.range(
-                    Bound::Included(&InternalKey::new_with_seq(Bytes::copy_from_slice(seek_key), 0)),
-                    Bound::Unbounded
-                ))
-            }
+            Seek::Backward(seek_key) => Some(self.mem_map.range(
+                Bound::Included(&InternalKey::new_with_seq(
+                    Bytes::copy_from_slice(seek_key),
+                    0,
+                )),
+                Bound::Unbounded,
+            )),
         };
 
         if let Seek::Last = seek {
-            Ok(self.mem_map.iter()
+            Ok(self
+                .mem_map
+                .iter()
                 .last()
-                .map(|(InternalKey{ key, .. }, value)| (key.clone(), value.clone())))
+                .map(|(InternalKey { key, .. }, value)| (key.clone(), value.clone())))
         } else {
             self.next_err()
         }
@@ -140,7 +146,7 @@ impl<'a> Iter<'a> for MemMapIter<'a> {
 
 pub(crate) struct MemTable {
     inner: Mutex<TableInner>,
-    pub(crate) tx_count: AtomicUsize
+    pub(crate) tx_count: AtomicUsize,
 }
 
 pub(crate) struct TableInner {
@@ -161,15 +167,14 @@ impl MemTable {
             config.path(),
             (DEFAULT_WAL_PATH, None),
             config.wal_io_type,
-            |bytes| Ok(mem::take(bytes))
+            |bytes| Ok(mem::take(bytes)),
         )?;
         let log_writer = (log_loader.writer(log_gen)?, log_gen);
         // Q: 为什么INIT_SEQ作为Seq id?
         // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
         // 因此不会影响Version的读取顺序
         let mem_map = MemMap::from_iter(
-            logs_decode(log_bytes)?
-                .map(|(key, value)| (InternalKey::new_with_seq(key, 0), value))
+            logs_decode(log_bytes)?.map(|(key, value)| (InternalKey::new_with_seq(key, 0), value)),
         );
         let (trigger_type, threshold) = config.minor_trigger_with_threshold;
 
@@ -188,10 +193,7 @@ impl MemTable {
     /// 插入并判断是否溢出
     ///
     /// 插入时不会去除重复键值，而是进行追加
-    pub(crate) fn insert_data(
-        &self,
-        data: KeyValue,
-    ) -> Result<bool> {
+    pub(crate) fn insert_data(&self, data: KeyValue) -> Result<bool> {
         let (key, value) = data.clone();
         let mut inner = self.inner.lock();
 
@@ -204,11 +206,7 @@ impl MemTable {
     }
 
     /// Tips: 当数据在插入mem_table中停机，则不会存入日志中
-    pub(crate) fn insert_batch_data(
-        &self,
-        vec_data: Vec<KeyValue>,
-        seq_id: i64
-    ) -> Result<bool> {
+    pub(crate) fn insert_batch_data(&self, vec_data: Vec<KeyValue>, seq_id: i64) -> Result<bool> {
         let mut inner = self.inner.lock();
 
         let mut buf = Vec::new();
@@ -216,7 +214,9 @@ impl MemTable {
             let (key, value) = item.clone();
             inner.trigger.item_process(&item);
 
-            let _ = inner._mem.insert(InternalKey::new_with_seq(key, seq_id), value);
+            let _ = inner
+                ._mem
+                .insert(InternalKey::new_with_seq(key, seq_id), value);
             buf.append(&mut data_to_bytes(item)?);
         }
         let _ = inner.log_writer.0.add_record(&buf)?;
@@ -247,12 +247,14 @@ impl MemTable {
                 // 并且事务即使在lock后出现，所持有的seq为该压缩之前，
                 // 也不会丢失该seq的_mem，因为转移到了_immut，可以从_immut得到对应seq的数据
                 if 0 != self.tx_count.load(Acquire) {
-                    continue
+                    continue;
                 }
                 return if !inner._mem.is_empty() {
                     inner.trigger.reset();
-                    
-                    let mut vec_data = inner._mem.iter()
+
+                    let mut vec_data = inner
+                        ._mem
+                        .iter()
                         .map(|(k, v)| (k.key.clone(), v.clone()))
                         // rev以使用最后(最新)的key
                         .rev()
@@ -282,11 +284,12 @@ impl MemTable {
         let internal_key = InternalKey::new_with_seq(Bytes::copy_from_slice(key), SEQ_MAX);
         let inner = self.inner.lock();
 
-        Self::find_(&internal_key, &inner._mem)
-            .or_else(|| {
-                inner._immut.as_ref()
-                    .and_then(|mem_map| Self::find_(&internal_key, mem_map))
-            })
+        Self::find_(&internal_key, &inner._mem).or_else(|| {
+            inner
+                ._immut
+                .as_ref()
+                .and_then(|mem_map| Self::find_(&internal_key, mem_map))
+        })
     }
 
     /// 查询时附带seq_id进行历史数据查询
@@ -304,7 +307,8 @@ impl MemTable {
     }
 
     fn find_(internal_key: &InternalKey, mem_map: &MemMap) -> Option<Bytes> {
-        mem_map.upper_bound(Bound::Included(internal_key))
+        mem_map
+            .upper_bound(Bound::Included(internal_key))
             .and_then(|(intern_key, value)| {
                 (internal_key.get_key() == &intern_key.key).then(|| value.clone())
             })
@@ -315,10 +319,17 @@ impl MemTable {
     ///
     /// MemTable中涉及锁操作，因此若是使用iter进行range操作容易长时间占用锁，因此直接返回范围值并命名为range_scan会比较合适
     #[allow(dead_code)]
-    pub(crate) fn range_scan(&self, min: Bound<&[u8]>, max: Bound<&[u8]>, option_seq: Option<i64>) -> Vec<KeyValue> {
+    pub(crate) fn range_scan(
+        &self,
+        min: Bound<&[u8]>,
+        max: Bound<&[u8]>,
+        option_seq: Option<i64>,
+    ) -> Vec<KeyValue> {
         let inner = self.inner.lock();
 
-        inner._immut.as_ref()
+        inner
+            ._immut
+            .as_ref()
             .map(|mem_map| Self::_range_scan(mem_map, min, max, option_seq))
             .unwrap_or(vec![])
             .into_iter()
@@ -333,18 +344,34 @@ impl MemTable {
     }
 
     /// Tips: 返回的数据为倒序
-    fn _range_scan(mem_map: &MemMap, min: Bound<&[u8]>, max: Bound<&[u8]>, option_seq: Option<i64>) -> Vec<KeyValue> {
-        fn to_internal_key(bound: &Bound<&[u8]>, included: i64, excluded: i64) -> Bound<InternalKey> {
-            bound.map(|key| InternalKey::new_with_seq(
-                Bytes::copy_from_slice(key),
-                if let Bound::Included(_) = &bound { included } else { excluded }
-            ))
+    fn _range_scan(
+        mem_map: &MemMap,
+        min: Bound<&[u8]>,
+        max: Bound<&[u8]>,
+        option_seq: Option<i64>,
+    ) -> Vec<KeyValue> {
+        fn to_internal_key(
+            bound: &Bound<&[u8]>,
+            included: i64,
+            excluded: i64,
+        ) -> Bound<InternalKey> {
+            bound.map(|key| {
+                InternalKey::new_with_seq(
+                    Bytes::copy_from_slice(key),
+                    if let Bound::Included(_) = &bound {
+                        included
+                    } else {
+                        excluded
+                    },
+                )
+            })
         }
 
         let min_key = to_internal_key(&min, i64::MIN, i64::MAX);
         let max_key = to_internal_key(&max, i64::MAX, i64::MIN);
 
-        mem_map.range(min_key.as_ref(), max_key.as_ref())
+        mem_map
+            .range(min_key.as_ref(), max_key.as_ref())
             .rev()
             .filter(|(InternalKey { seq_id, .. }, _)| {
                 option_seq.map_or(true, |current_seq| &current_seq >= seq_id)
@@ -356,18 +383,14 @@ impl MemTable {
 }
 
 pub(crate) fn logs_decode(log_bytes: Vec<Vec<u8>>) -> Result<IntoIter<(Bytes, Option<Bytes>)>> {
-    let flatten_bytes = log_bytes.into_iter()
-        .flatten()
-        .collect_vec();
-    Entry::<Value>::batch_decode(&mut Cursor::new(flatten_bytes))
-        .map(|vec| {
-            vec.into_iter()
-                .map(|(_, Entry { key, item, .. })| (key, item.bytes))
-                .rev()
-                .unique_by(|(key, _)| key.clone())
-                .sorted_by_key(|(key, _)| key.clone())
-        })
-
+    let flatten_bytes = log_bytes.into_iter().flatten().collect_vec();
+    Entry::<Value>::batch_decode(&mut Cursor::new(flatten_bytes)).map(|vec| {
+        vec.into_iter()
+            .map(|(_, Entry { key, item, .. })| (key, item.bytes))
+            .rev()
+            .unique_by(|(key, _)| key.clone())
+            .sorted_by_key(|(key, _)| key.clone())
+    })
 }
 
 pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
@@ -377,25 +400,25 @@ pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::Bound;
-    use bytes::Bytes;
-    use tempfile::TempDir;
     use crate::kernel::lsm::iterator::{Iter, Seek};
-    use crate::kernel::Result;
-    use crate::kernel::lsm::mem_table::{data_to_bytes, InternalKey, KeyValue, MemMap, MemMapIter, MemTable};
+    use crate::kernel::lsm::mem_table::{
+        data_to_bytes, InternalKey, KeyValue, MemMap, MemMapIter, MemTable,
+    };
     use crate::kernel::lsm::storage::{Config, Sequence};
+    use crate::kernel::Result;
+    use bytes::Bytes;
+    use std::collections::Bound;
+    use tempfile::TempDir;
 
     impl MemTable {
-        pub(crate) fn insert_data_with_seq(
-            &self,
-            data: KeyValue,
-            seq: i64,
-        ) -> Result<usize> {
+        pub(crate) fn insert_data_with_seq(&self, data: KeyValue, seq: i64) -> Result<usize> {
             let (key, value) = data.clone();
             let mut inner = self.inner.lock();
 
             let _ = inner.log_writer.0.add_record(&data_to_bytes(data)?)?;
-            let _ = inner._mem.insert(InternalKey::new_with_seq(key, seq), value);
+            let _ = inner
+                ._mem
+                .insert(InternalKey::new_with_seq(key, seq), value);
 
             Ok(inner._mem.len())
         }
@@ -420,11 +443,17 @@ mod tests {
 
         assert_eq!(mem_table.find(&vec![b'k']), Some(Bytes::from(vec![b'2'])));
 
-        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id), Some(Bytes::from(vec![b'1'])));
+        assert_eq!(
+            mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id),
+            Some(Bytes::from(vec![b'1']))
+        );
 
         let new_seq_id = Sequence::create();
 
-        assert_eq!(mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id), Some(Bytes::from(vec![b'2'])));
+        assert_eq!(
+            mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id),
+            Some(Bytes::from(vec![b'2']))
+        );
 
         Ok(())
     }
@@ -435,16 +464,25 @@ mod tests {
 
         let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
 
-        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'1']))))?;
-        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))?;
-        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))?;
-        let _ = mem_table.insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?;
+        let _ = mem_table
+            .insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'1']))))?;
+        let _ = mem_table
+            .insert_data((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))?;
+        let _ = mem_table
+            .insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))?;
+        let _ = mem_table
+            .insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?;
 
         let (_, mut vec) = mem_table.swap()?.unwrap();
 
-        assert_eq!(vec.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
-        assert_eq!(vec.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
-
+        assert_eq!(
+            vec.pop(),
+            Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))
+        );
+        assert_eq!(
+            vec.pop(),
+            Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))
+        );
 
         Ok(())
     }
@@ -464,32 +502,80 @@ mod tests {
         let key3 = vec![b'k', b'3'];
         let bytes_key3 = Bytes::copy_from_slice(&key3);
 
-        assert_eq!(mem_table.insert_data_with_seq((bytes_key1.clone(), Some(Bytes::from(vec![b'1']))), 1)?, 1);
-        assert_eq!(mem_table.insert_data_with_seq((bytes_key1.clone(), Some(Bytes::from(vec![b'2']))), 2)?, 2);
-        assert_eq!(mem_table.insert_data_with_seq((bytes_key2.clone(), Some(Bytes::from(vec![b'1']))), 3)?, 3);
-        assert_eq!(mem_table.insert_data_with_seq((bytes_key2.clone(), Some(Bytes::from(vec![b'2']))), 4)?, 4);
-        assert_eq!(mem_table.insert_data_with_seq((bytes_key3.clone(), Some(Bytes::from(vec![b'1']))), 5)?, 5);
-        assert_eq!(mem_table.insert_data_with_seq((bytes_key3.clone(), Some(Bytes::from(vec![b'2']))), 6)?, 6);
+        assert_eq!(
+            mem_table
+                .insert_data_with_seq((bytes_key1.clone(), Some(Bytes::from(vec![b'1']))), 1)?,
+            1
+        );
+        assert_eq!(
+            mem_table
+                .insert_data_with_seq((bytes_key1.clone(), Some(Bytes::from(vec![b'2']))), 2)?,
+            2
+        );
+        assert_eq!(
+            mem_table
+                .insert_data_with_seq((bytes_key2.clone(), Some(Bytes::from(vec![b'1']))), 3)?,
+            3
+        );
+        assert_eq!(
+            mem_table
+                .insert_data_with_seq((bytes_key2.clone(), Some(Bytes::from(vec![b'2']))), 4)?,
+            4
+        );
+        assert_eq!(
+            mem_table
+                .insert_data_with_seq((bytes_key3.clone(), Some(Bytes::from(vec![b'1']))), 5)?,
+            5
+        );
+        assert_eq!(
+            mem_table
+                .insert_data_with_seq((bytes_key3.clone(), Some(Bytes::from(vec![b'2']))), 6)?,
+            6
+        );
 
         let mut vec1 = mem_table.range_scan(Bound::Included(&key1), Bound::Included(&key2), None);
         assert_eq!(vec1.len(), 2);
-        assert_eq!(vec1.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
-        assert_eq!(vec1.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(
+            vec1.pop(),
+            Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))
+        );
+        assert_eq!(
+            vec1.pop(),
+            Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))
+        );
 
         let mut vec2 = mem_table.range_scan(Bound::Excluded(&key1), Bound::Excluded(&key3), None);
         assert_eq!(vec2.len(), 1);
-        assert_eq!(vec2.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(
+            vec2.pop(),
+            Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))
+        );
 
         let mut vec3 = mem_table.range_scan(Bound::Unbounded, Bound::Unbounded, None);
         assert_eq!(vec3.len(), 3);
-        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'3']), Some(Bytes::from(vec![b'2'])))));
-        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2'])))));
-        assert_eq!(vec3.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(
+            vec3.pop(),
+            Some((Bytes::from(vec![b'k', b'3']), Some(Bytes::from(vec![b'2']))))
+        );
+        assert_eq!(
+            vec3.pop(),
+            Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))
+        );
+        assert_eq!(
+            vec3.pop(),
+            Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))
+        );
 
         let mut vec4 = mem_table.range_scan(Bound::Unbounded, Bound::Unbounded, Some(3));
         assert_eq!(vec4.len(), 2);
-        assert_eq!(vec4.pop(), Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1'])))));
-        assert_eq!(vec4.pop(), Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2'])))));
+        assert_eq!(
+            vec4.pop(),
+            Some((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'1']))))
+        );
+        assert_eq!(
+            vec4.pop(),
+            Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))
+        );
 
         Ok(())
     }
@@ -514,35 +600,17 @@ mod tests {
 
         let mut iter = MemMapIter::new(&map);
 
-        assert_eq!(
-            iter.next_err()?,
-            Some((key_1_2.key.clone(), None))
-        );
+        assert_eq!(iter.next_err()?, Some((key_1_2.key.clone(), None)));
 
-        assert_eq!(
-            iter.next_err()?,
-            Some((key_2_2.key.clone(), None))
-        );
+        assert_eq!(iter.next_err()?, Some((key_2_2.key.clone(), None)));
 
-        assert_eq!(
-            iter.next_err()?,
-            Some((key_4_2.key.clone(), None))
-        );
+        assert_eq!(iter.next_err()?, Some((key_4_2.key.clone(), None)));
 
-        assert_eq!(
-            iter.seek(Seek::First)?,
-            Some((key_1_2.key.clone(), None))
-        );
+        assert_eq!(iter.seek(Seek::First)?, Some((key_1_2.key.clone(), None)));
 
-        assert_eq!(
-            iter.seek(Seek::Last)?,
-            Some((key_4_2.key.clone(), None))
-        );
+        assert_eq!(iter.seek(Seek::Last)?, Some((key_4_2.key.clone(), None)));
 
-        assert_eq!(
-            iter.next_err()?,
-            None
-        );
+        assert_eq!(iter.next_err()?, None);
 
         assert_eq!(
             iter.seek(Seek::Backward(&vec![b'3']))?,

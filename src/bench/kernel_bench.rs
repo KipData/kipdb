@@ -1,14 +1,13 @@
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering::Relaxed;
 use bytes::Bytes;
 /// 参考Sled Benchmark
 /// https://github.com/spacejam/sled/blob/main/benchmarks/criterion/benches/sled.rs
-
 use criterion::{criterion_group, criterion_main, Criterion};
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::Relaxed;
 
-use kip_db::kernel::Storage;
 use kip_db::kernel::lsm::storage::LsmStore;
 use kip_db::kernel::sled_storage::SledStore;
+use kip_db::kernel::Storage;
 
 fn counter() -> usize {
     use std::sync::atomic::AtomicUsize;
@@ -53,7 +52,8 @@ fn bulk_load<T: Storage>(c: &mut Criterion) {
 
     let count = AtomicU32::new(0_u32);
     let bytes = |len| -> Vec<u8> {
-        count.fetch_add(1, Relaxed)
+        count
+            .fetch_add(1, Relaxed)
             .to_be_bytes()
             .into_iter()
             .cycle()
@@ -63,17 +63,23 @@ fn bulk_load<T: Storage>(c: &mut Criterion) {
 
     let mut bench = |key_len, val_len| {
         let db = rt.block_on(async {
-            T::open(format!("bulk_k{}_v{}", key_len, val_len)).await.unwrap()
+            T::open(format!("bulk_k{}_v{}", key_len, val_len))
+                .await
+                .unwrap()
         });
 
         c.bench_function(
-            &format!("Store: {}, bulk load key/value lengths {}/{}", T::name(), key_len, val_len),
+            &format!(
+                "Store: {}, bulk load key/value lengths {}/{}",
+                T::name(),
+                key_len,
+                val_len
+            ),
             |b| {
                 b.to_async(&rt).iter(|| async {
-                    db.set(
-                        &bytes(key_len),
-                        Bytes::from(bytes(val_len))
-                    ).await.unwrap();
+                    db.set(&bytes(key_len), Bytes::from(bytes(val_len)))
+                        .await
+                        .unwrap();
                 })
             },
         );
@@ -97,37 +103,32 @@ fn monotonic_crud<T: Storage>(c: &mut Criterion) {
     rt.block_on(async {
         let db = T::open("monotonic_crud").await.unwrap();
 
-        c.bench_function(
-            &format!("Store: {}, monotonic inserts", T::name()),
-            |b| {
+        c.bench_function(&format!("Store: {}, monotonic inserts", T::name()), |b| {
+            let count = AtomicU32::new(0_u32);
+            b.iter(|| async {
+                db.set(&count.fetch_add(1, Relaxed).to_be_bytes(), Bytes::new())
+                    .await
+                    .unwrap();
+            })
+        });
 
-                let count = AtomicU32::new(0_u32);
-                b.iter(|| async {
-                    db.set(&count.fetch_add(1, Relaxed).to_be_bytes(), Bytes::new()).await.unwrap();
-                })
-            }
-        );
+        c.bench_function(&format!("Store: {}, monotonic gets", T::name()), |b| {
+            let count = AtomicU32::new(0_u32);
+            b.iter(|| async {
+                db.get(&count.fetch_add(1, Relaxed).to_be_bytes())
+                    .await
+                    .unwrap();
+            })
+        });
 
-        c.bench_function(
-            &format!("Store: {}, monotonic gets", T::name()),
-            |b| {
-                let count = AtomicU32::new(0_u32);
-                b.iter(|| async {
-                    db.get(&count.fetch_add(1, Relaxed).to_be_bytes()).await.unwrap();
-                })
-            }
-        );
-
-        c.bench_function(
-            &format!("Store: {}, monotonic removals", T::name()),
-
-            |b| {
-                let count = AtomicU32::new(0_u32);
-                b.iter(|| async {
-                    db.remove(&count.fetch_add(1, Relaxed).to_be_bytes()).await.unwrap();
-                })
-            }
-        );
+        c.bench_function(&format!("Store: {}, monotonic removals", T::name()), |b| {
+            let count = AtomicU32::new(0_u32);
+            b.iter(|| async {
+                db.remove(&count.fetch_add(1, Relaxed).to_be_bytes())
+                    .await
+                    .unwrap();
+            })
+        });
     });
 }
 
@@ -141,32 +142,25 @@ fn random_crud<T: Storage>(c: &mut Criterion) {
     rt.block_on(async {
         let db = T::open("random_crud").await.unwrap();
 
-        c.bench_function(
-            &format!("Store: {}, random inserts", T::name()),
-            |b| {
-                b.iter(|| async {
-                    db.set(&random(SIZE).to_be_bytes(), Bytes::new()).await.unwrap();
-                })
-            }
-        );
+        c.bench_function(&format!("Store: {}, random inserts", T::name()), |b| {
+            b.iter(|| async {
+                db.set(&random(SIZE).to_be_bytes(), Bytes::new())
+                    .await
+                    .unwrap();
+            })
+        });
 
-        c.bench_function(
-            &format!("Store: {}, random gets", T::name()),
-            |b| {
-                b.iter(|| async {
-                    db.get(&random(SIZE).to_be_bytes()).await.unwrap();
-                })
-            }
-        );
+        c.bench_function(&format!("Store: {}, random gets", T::name()), |b| {
+            b.iter(|| async {
+                db.get(&random(SIZE).to_be_bytes()).await.unwrap();
+            })
+        });
 
-        c.bench_function(
-            &format!("Store: {}, random removals", T::name()),
-            |b| {
-                b.iter(|| async {
-                    db.remove(&random(SIZE).to_be_bytes()).await.unwrap();
-                })
-            }
-        );
+        c.bench_function(&format!("Store: {}, random removals", T::name()), |b| {
+            b.iter(|| async {
+                db.remove(&random(SIZE).to_be_bytes()).await.unwrap();
+            })
+        });
     });
 }
 
@@ -177,14 +171,13 @@ fn empty_opens<T: Storage>(c: &mut Criterion) {
         .unwrap();
 
     let _ = std::fs::remove_dir_all("empty_opens");
-    c.bench_function(
-        &format!("Store: {}, empty opens", T::name()),
-        |b| {
-            b.to_async(&rt).iter(|| async {
-                let _ = T::open(format!("empty_opens/{}.db", counter())).await.unwrap();
-            })
-        }
-    );
+    c.bench_function(&format!("Store: {}, empty opens", T::name()), |b| {
+        b.to_async(&rt).iter(|| async {
+            let _ = T::open(format!("empty_opens/{}.db", counter()))
+                .await
+                .unwrap();
+        })
+    });
     let _ = std::fs::remove_dir_all("empty_opens");
 }
 
