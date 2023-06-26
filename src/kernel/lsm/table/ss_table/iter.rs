@@ -1,8 +1,9 @@
 use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::table::ss_table::block::{BlockCache, BlockType, Index, Value};
+use crate::kernel::lsm::table::ss_table::block::{BlockType, Index, Value};
 use crate::kernel::lsm::table::ss_table::block_iter::BlockIter;
 use crate::kernel::lsm::table::ss_table::SSTable;
+use crate::kernel::lsm::table::Table;
 use crate::kernel::Result;
 use crate::KernelError;
 
@@ -10,37 +11,30 @@ pub(crate) struct SSTableIter<'a> {
     ss_table: &'a SSTable,
     data_iter: BlockIter<'a, Value>,
     index_iter: BlockIter<'a, Index>,
-    block_cache: &'a BlockCache,
 }
 
 impl<'a> SSTableIter<'a> {
-    pub(crate) fn new(
-        ss_table: &'a SSTable,
-        block_cache: &'a BlockCache,
-    ) -> Result<SSTableIter<'a>> {
-        let mut index_iter = BlockIter::new(ss_table.get_index_block(block_cache)?);
+    pub(crate) fn new(ss_table: &'a SSTable) -> Result<SSTableIter<'a>> {
+        let mut index_iter = BlockIter::new(ss_table.index_block()?);
         let index = index_iter.next_err()?.ok_or(KernelError::DataEmpty)?.1;
-        let data_iter = Self::data_iter_init(ss_table, block_cache, index)?;
+        let data_iter = Self::data_iter_init(ss_table, index)?;
 
         Ok(Self {
             ss_table,
             data_iter,
             index_iter,
-            block_cache,
         })
     }
 
     fn data_iter_init(
         ss_table: &'a SSTable,
-        block_cache: &'a BlockCache,
         index: Index,
     ) -> Result<BlockIter<'a, Value>> {
-        let inner = &ss_table.inner;
         let block = {
-            block_cache
-                .get_or_insert((ss_table.get_gen(), Some(index)), |(_, index)| {
+            ss_table.cache
+                .get_or_insert((ss_table.gen(), Some(index)), |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                    Ok(SSTable::data_block(inner, index)?)
+                    Ok(ss_table.data_block(index)?)
                 })
                 .map(|block_type| match block_type {
                     BlockType::Data(data_block) => Some(data_block),
@@ -52,7 +46,7 @@ impl<'a> SSTableIter<'a> {
     }
 
     fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> Result<Option<KeyValue>> {
-        self.data_iter = Self::data_iter_init(self.ss_table, self.block_cache, index)?;
+        self.data_iter = Self::data_iter_init(self.ss_table, index)?;
         Ok(self
             .data_iter
             .seek(seek)?
@@ -114,15 +108,11 @@ mod tests {
     use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
-    use crate::kernel::lsm::ss_table::iter::SSTableIter;
-    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
     use bincode::Options;
     use bytes::Bytes;
-    use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
     use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
@@ -163,9 +153,7 @@ mod tests {
 
         let ss_table = sst_loader.get(1).unwrap();
 
-        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
-
-        let mut iterator = SSTableIter::new(ss_table, &cache)?;
+        let mut iterator = SSTableIter::new(ss_table)?;
 
         for i in 0..times {
             assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);

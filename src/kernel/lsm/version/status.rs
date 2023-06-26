@@ -6,10 +6,8 @@ use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::{
     snapshot_gen, version_display, Version, DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH,
 };
-use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::Result;
 use itertools::Itertools;
-use std::collections::hash_map::RandomState;
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -35,11 +33,7 @@ impl VersionStatus {
     pub(crate) fn load_with_path(config: Config, wal: LogLoader) -> Result<Self> {
         let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
 
-        let block_cache = Arc::new(ShardingLruCache::new(
-            config.block_cache_size,
-            16,
-            RandomState::default(),
-        )?);
+
         let sst_factory = Arc::new(IoFactory::new(sst_path, FileExtension::SSTable)?);
 
         let ss_table_loader = Arc::new(SSTableLoader::new(
@@ -64,15 +58,14 @@ impl VersionStatus {
 
         let edit_approximate_count = AtomicUsize::new(vec_log.len());
 
-        let (tag_tx, tag_rx) = unbounded_channel();
+        let (clean_tx, clean_rx) = unbounded_channel();
         let version = Arc::new(Version::load_from_log(
             vec_log,
             &ss_table_loader,
-            &block_cache,
-            tag_tx,
+            clean_tx,
         )?);
 
-        let mut cleaner = Cleaner::new(&ss_table_loader, tag_rx);
+        let mut cleaner = Cleaner::new(&ss_table_loader, clean_rx);
 
         let _ignore = tokio::spawn(async move {
             cleaner.listen().await;

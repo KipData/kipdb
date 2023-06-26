@@ -144,16 +144,14 @@ mod tests {
     use crate::kernel::lsm::mem_table::{
         InternalKey, KeyValue, MemMap, MemMapIter, DEFAULT_WAL_PATH,
     };
-    use crate::kernel::lsm::ss_table::iter::SSTableIter;
-    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
     use bytes::Bytes;
-    use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
+    use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
+    use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
 
     #[test]
     fn test_sequential_iterator() -> Result<()> {
@@ -267,11 +265,9 @@ mod tests {
 
         let ss_table = loader.get(1).unwrap();
 
-        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
-
         let map_iter = MemMapIter::new(&map);
 
-        let sst_iter = SSTableIter::new(&ss_table, &cache)?;
+        let sst_iter = SSTableIter::new(&ss_table)?;
 
         let mut sequence_iter = sequence.into_iter();
 

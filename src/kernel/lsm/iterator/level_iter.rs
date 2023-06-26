@@ -23,7 +23,7 @@ impl<'a> LevelIter<'a> {
         let ss_table = version
             .get_ss_table(level, 0)
             .ok_or(KernelError::DataEmpty)?;
-        let sst_iter = SSTableIter::new(ss_table, &version.block_cache)?;
+        let sst_iter = SSTableIter::new(ss_table)?;
         let level_len = version.level_len(level);
 
         Ok(Self {
@@ -39,7 +39,7 @@ impl<'a> LevelIter<'a> {
         self.offset = offset;
         if self.is_valid() {
             if let Some(ss_table) = self.version.get_ss_table(self.level, offset) {
-                self.sst_iter = SSTableIter::new(ss_table, &self.version.block_cache)?;
+                self.sst_iter = SSTableIter::new(ss_table)?;
                 return self.sst_iter.seek(seek);
             }
         }
@@ -104,7 +104,6 @@ mod tests {
     use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
-    use crate::kernel::lsm::ss_table::meta::SSTableMeta;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::edit::VersionEdit;
     use crate::kernel::lsm::version::status::VersionStatus;

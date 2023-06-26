@@ -14,17 +14,18 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::info;
-use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
-use crate::kernel::lsm::table::ss_table::{Scope, SSTable};
-use crate::kernel::lsm::table::ss_table::block::BlockCache;
+use crate::kernel::lsm::table::meta::TableMeta;
+use crate::kernel::lsm::table::scope::Scope;
+use crate::kernel::lsm::table::ss_table::SSTable;
 use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
+use crate::kernel::lsm::table::{collect_gen, Table};
 
 pub(crate) const LEVEL_0: usize = 0;
 
 /// 数据分片集
 /// 包含对应分片的Gen与数据
 pub(crate) type MergeShardingVec = Vec<(i64, Vec<KeyValue>)>;
-pub(crate) type DelNode = (Vec<i64>, SSTableMeta);
+pub(crate) type DelNode = (Vec<i64>, TableMeta);
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
 pub(crate) type DelNodeTuple = (DelNode, DelNode);
 
@@ -126,11 +127,11 @@ impl Compactor {
                 let ss_table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
                     self.ver_status().loader().create(gen, sharding, level + 1)
                 });
-                let vec_ss_table_and_scope: Vec<(Scope, SSTableMeta)> =
+                let vec_ss_table_and_scope: Vec<(Scope, TableMeta)> =
                     future::try_join_all(ss_table_futures).await?;
-                let (new_scopes, new_metas): (Vec<Scope>, Vec<SSTableMeta>) =
+                let (new_scopes, new_metas): (Vec<Scope>, Vec<TableMeta>) =
                     vec_ss_table_and_scope.into_iter().unzip();
-                let fusion_meta = SSTableMeta::fusion(&new_metas);
+                let fusion_meta = TableMeta::fusion(&new_metas);
 
                 vec_ver_edit.append(&mut vec![
                     VersionEdit::NewFile((new_scopes, level + 1), index, fusion_meta),
@@ -177,9 +178,9 @@ impl Compactor {
             let scope_l = Scope::fusion(&scopes_l)?;
             // 获取下一级中有重复键值范围的SSTable
             let (ss_tables_ll, scopes_ll) =
-                version.get_meet_scope_ss_tables_with_scopes(next_level, &scope_l);
+                version.get_ss_tables_by_scopes(next_level, &scope_l);
             let index = SSTable::find_index_with_level(
-                ss_tables_ll.first().map(|sst| sst.get_gen()),
+                ss_tables_ll.first().map(|sst| sst.gen()),
                 &version,
                 next_level,
             );
@@ -192,8 +193,8 @@ impl Compactor {
             }
 
             // 收集需要清除的SSTable
-            let del_gen_l = SSTable::collect_gen(&ss_tables_l)?;
-            let del_gen_ll = SSTable::collect_gen(&ss_tables_ll)?;
+            let del_gen_l = collect_gen(&ss_tables_l)?;
+            let del_gen_ll = collect_gen(&ss_tables_ll)?;
 
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
@@ -204,14 +205,13 @@ impl Compactor {
                 Err(_) => ss_tables_l,
             }
             .into_iter()
-            .unique_by(|sst| sst.get_gen())
+            .unique_by(|sst| sst.gen())
             .collect_vec();
 
             // 数据合并并切片
             let vec_merge_sharding = Self::data_merge_and_sharding(
                 ss_tables_l_final,
                 ss_tables_ll,
-                &version.block_cache,
                 config.sst_file_size,
             )
             .await?;
@@ -236,14 +236,13 @@ impl Compactor {
     async fn data_merge_and_sharding(
         ss_tables_l: Vec<&SSTable>,
         ss_tables_ll: Vec<&SSTable>,
-        block_cache: &BlockCache,
         sst_file_size: usize,
     ) -> Result<MergeShardingVec> {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
         let map_futures_l = ss_tables_l
             .iter()
-            .sorted_unstable_by_key(|ss_table| ss_table.get_gen())
-            .map(|ss_table| async { Self::ss_table_load_data(block_cache, ss_table, |_| true) });
+            .sorted_unstable_by_key(|ss_table| ss_table.gen())
+            .map(|ss_table| async { Self::ss_table_load_data(ss_table, |_| true) });
 
         let sharding_l = future::try_join_all(map_futures_l).await?;
 
@@ -258,7 +257,7 @@ impl Compactor {
         // 并行: 因为即使l为0时，此时的ll(Level 1)仍然保证SSTable数据之间排列有序且不冲突，因此并行迭代不会导致数据冲突
         // 过滤: 基于l进行数据过滤避免冗余的数据迭代导致占用大量内存占用
         let sharding_ll = future::try_join_all(ss_tables_ll.iter().map(|ss_table| async {
-            Self::ss_table_load_data(block_cache, ss_table, |key| !filter_set_l.contains(key))
+            Self::ss_table_load_data(ss_table, |key| !filter_set_l.contains(key))
         }))
         .await?;
 
@@ -275,14 +274,13 @@ impl Compactor {
     }
 
     fn ss_table_load_data<F>(
-        block_cache: &BlockCache,
         ss_table: &SSTable,
         fn_is_filter: F,
     ) -> Result<Vec<KeyValue>>
     where
         F: Fn(&Bytes) -> bool,
     {
-        let mut iter = SSTableIter::new(ss_table, block_cache)?;
+        let mut iter = SSTableIter::new(ss_table)?;
         let mut vec_cmd = Vec::with_capacity(iter.len());
         while let Some(item) = iter.next_err()? {
             if fn_is_filter(&item.0) {
@@ -311,15 +309,13 @@ mod tests {
     use crate::kernel::lsm::compactor::Compactor;
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
-    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
     use bytes::Bytes;
-    use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
+    use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
 
     #[test]
     fn test_data_merge() -> Result<()> {
@@ -330,7 +326,6 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?;
-        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
         let (log_loader, _, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
@@ -383,7 +378,6 @@ mod tests {
             Compactor::data_merge_and_sharding(
                 vec![&ss_table_1, &ss_table_2],
                 vec![&ss_table_3, &ss_table_4],
-                &cache,
                 config.sst_file_size,
             )
             .await

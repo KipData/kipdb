@@ -12,10 +12,11 @@ use std::collections::hash_map::RandomState;
 use std::mem;
 use std::sync::Arc;
 use tracing::{info, warn};
-use crate::kernel::lsm::table::ss_table::block::{BlockBuilder, BlockOptions, CompressType, MetaBlock, Value};
+use crate::kernel::lsm::table::meta::TableMeta;
+use crate::kernel::lsm::table::scope::Scope;
+use crate::kernel::lsm::table::ss_table::block::{BlockBuilder, BlockCache, BlockOptions, CompressType, MetaBlock, Value};
 use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
-use crate::kernel::lsm::table::ss_table::{Scope, SSTable, SSTableInner};
-use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
+use crate::kernel::lsm::table::ss_table::SSTable;
 
 #[derive(Clone)]
 pub(crate) struct SSTableLoader {
@@ -23,6 +24,7 @@ pub(crate) struct SSTableLoader {
     factory: Arc<IoFactory>,
     config: Config,
     wal: LogLoader,
+    cache: Arc<BlockCache>
 }
 
 impl SSTableLoader {
@@ -32,11 +34,17 @@ impl SSTableLoader {
             16,
             RandomState::default(),
         )?);
+        let cache = Arc::new(ShardingLruCache::new(
+            config.block_cache_size,
+            16,
+            RandomState::default(),
+        )?);
         Ok(SSTableLoader {
             inner,
             factory,
             config,
             wal,
+            cache,
         })
     }
 
@@ -103,12 +111,11 @@ impl SSTableLoader {
 
         let reader = Mutex::new(io_factory.reader(gen, io_type)?);
         Ok(SSTable {
-            inner: Arc::new(SSTableInner {
-                footer,
-                reader,
-                gen,
-                meta,
-            }),
+            footer,
+            reader,
+            gen,
+            meta,
+            cache: Arc::clone(&self.cache),
         })
     }
 
@@ -117,11 +124,11 @@ impl SSTableLoader {
         gen: i64,
         vec_data: Vec<KeyValue>,
         level: usize,
-    ) -> Result<(Scope, SSTableMeta)> {
+    ) -> Result<(Scope, TableMeta)> {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_data(gen, &vec_data)?;
         let ss_table = self._create(gen, vec_data, level)?;
-        let sst_meta = SSTableMeta::from(&ss_table);
+        let sst_meta = TableMeta::from(&ss_table);
         let _ = self.inner.put(gen, ss_table);
 
         Ok((scope, sst_meta))
@@ -138,7 +145,7 @@ impl SSTableLoader {
                 // 使其尝试使用WAL进行加载而恢复Level 0的SSTable以保证数据在停机后不会丢失
                 let ss_table = match sst_factory
                     .reader(*gen, IoType::Direct)
-                    .and_then(SSTable::load_from_file)
+                    .and_then(|reader| SSTable::load_from_file(reader, Arc::clone(&self.cache)))
                 {
                     Ok(ss_table) => ss_table,
                     Err(err) => {
@@ -187,17 +194,15 @@ mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::{data_to_bytes, DEFAULT_WAL_PATH};
-    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
     use bincode::Options;
     use bytes::Bytes;
-    use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
     use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
+    use crate::kernel::lsm::table::Table;
 
     #[test]
     fn test_ss_table_loader() -> Result<()> {
@@ -211,7 +216,6 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?);
-        let cache = ShardingLruCache::new(config.table_cache_size, 16, RandomState::default())?;
         let mut vec_data = Vec::new();
         let times = 2333;
         let (log_loader, _, _) = LogLoader::reload(
@@ -249,12 +253,12 @@ mod tests {
         let ss_table_loaded = sst_loader.get(1).unwrap();
 
         assert_eq!(
-            ss_table_loaded.query_with_key(&repeat_data.0, &cache)?,
+            ss_table_loaded.query(&repeat_data.0)?,
             repeat_data.1
         );
         for i in 1..times {
             assert_eq!(
-                ss_table_loaded.query_with_key(&vec_data[i].0, &cache)?,
+                ss_table_loaded.query(&vec_data[i].0)?,
                 Some(value.clone())
             )
         }
@@ -268,12 +272,12 @@ mod tests {
         let ss_table_backup = sst_loader.get(1).unwrap();
 
         assert_eq!(
-            ss_table_backup.query_with_key(&repeat_data.0, &cache)?,
+            ss_table_backup.query(&repeat_data.0)?,
             repeat_data.1
         );
         for i in 1..times {
             assert_eq!(
-                ss_table_backup.query_with_key(&vec_data[i].0, &cache)?,
+                ss_table_backup.query(&vec_data[i].0)?,
                 Some(value.clone())
             )
         }

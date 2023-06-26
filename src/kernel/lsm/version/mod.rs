@@ -10,10 +10,11 @@ use itertools::Itertools;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info};
-use crate::kernel::lsm::table::ss_table::block::BlockCache;
+use crate::kernel::lsm::table::meta::TableMeta;
+use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
-use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
-use crate::kernel::lsm::table::ss_table::{Scope, SSTable};
+use crate::kernel::lsm::table::ss_table::SSTable;
+use crate::kernel::lsm::table::Table;
 
 mod cleaner;
 pub(crate) mod edit;
@@ -47,8 +48,6 @@ fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
 #[derive(Clone)]
 pub(crate) struct Version {
     pub(crate) version_num: u64,
-    /// 稀疏区间数据Block缓存
-    pub(crate) block_cache: Arc<BlockCache>,
     /// SSTable存储Map
     /// 全局共享
     ss_tables_loader: Arc<SSTableLoader>,
@@ -84,14 +83,12 @@ impl Version {
     pub(crate) fn load_from_log(
         vec_log: Vec<VersionEdit>,
         ss_table_loader: &Arc<SSTableLoader>,
-        block_cache: &Arc<BlockCache>,
         clean_tx: UnboundedSender<CleanTag>,
     ) -> Result<Self> {
         let mut version = Self {
             version_num: 0,
             ss_tables_loader: Arc::clone(ss_table_loader),
             level_slice: Self::level_slice_new(),
-            block_cache: Arc::clone(block_cache),
             meta_data: VersionMeta {
                 size_of_disk: 0,
                 len: 0,
@@ -170,11 +167,11 @@ impl Version {
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
     pub(crate) fn to_vec_edit(&self) -> Vec<VersionEdit> {
-        fn sst_meta_with_level(level: usize, size_of_disk: u64, len: usize) -> SSTableMeta {
+        fn sst_meta_by_level(level: usize, size_of_disk: u64, len: usize) -> TableMeta {
             if LEVEL_0 == level {
-                SSTableMeta { size_of_disk, len }
+                TableMeta { size_of_disk, len }
             } else {
-                SSTableMeta::default()
+                TableMeta::default()
             }
         }
 
@@ -186,7 +183,7 @@ impl Version {
                     VersionEdit::NewFile(
                         (vec_scope.clone(), level),
                         0,
-                        sst_meta_with_level(level, self.size_of_disk(), self.len()),
+                        sst_meta_by_level(level, self.size_of_disk(), self.len()),
                     )
                 })
             })
@@ -202,7 +199,7 @@ impl Version {
     /// 只限定获取Level 0的SSTable
     ///
     /// Tips：不鼓励全量获取其他Level
-    pub(crate) fn get_ss_tables_with_level_0(&self) -> Vec<&SSTable> {
+    pub(crate) fn get_ss_tables_by_level_0(&self) -> Vec<&SSTable> {
         self.level_slice[LEVEL_0]
             .iter()
             .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
@@ -240,7 +237,7 @@ impl Version {
     }
 
     /// 获取指定level中与scope冲突的SSTables和Scopes
-    pub(crate) fn get_meet_scope_ss_tables_with_scopes(
+    pub(crate) fn get_ss_tables_by_scopes(
         &self,
         level: usize,
         target_scope: &Scope,
@@ -271,13 +268,11 @@ impl Version {
     /// 使用Key从现有SSTables中获取对应的数据
     pub(crate) fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let ss_table_loader = &self.ss_tables_loader;
-        let block_cache = &self.block_cache;
-
         // Level 0的SSTable是无序且SSTable间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
-            if scope.meet_with_key(key) {
+            if scope.meet_by_key(key) {
                 if let Some(ss_table) = ss_table_loader.get(scope.get_gen()) {
-                    if let Some(value) = ss_table.query_with_key(key, block_cache)? {
+                    if let Some(value) = ss_table.query(key)? {
                         return Ok(Some(value));
                     }
                 }
@@ -289,7 +284,7 @@ impl Version {
 
             if let Some(scope) = self.level_slice[level].get(offset) {
                 return if let Some(ss_table) = ss_table_loader.get(scope.get_gen()) {
-                    ss_table.query_with_key(key, block_cache)
+                    ss_table.query(key)
                 } else {
                     Ok(None)
                 };

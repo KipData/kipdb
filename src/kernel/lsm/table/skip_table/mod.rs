@@ -11,6 +11,7 @@ pub(crate) struct SkipTable {
 }
 
 impl SkipTable {
+    #[allow(dead_code)]
     pub(crate) fn new(level: usize, gen: i64, len: usize, data: Vec<KeyValue>) -> Self {
         SkipTable {
             level,

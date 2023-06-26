@@ -25,8 +25,8 @@ impl<'a> VersionIter<'a> {
     ) -> Result<Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>>> {
         let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>> = Vec::new();
 
-        for ss_table in version.get_ss_tables_with_level_0() {
-            vec_iter.push(Box::new(SSTableIter::new(ss_table, &version.block_cache)?));
+        for ss_table in version.get_ss_tables_by_level_0() {
+            vec_iter.push(Box::new(SSTableIter::new(ss_table)?));
         }
 
         for level in 1..6 {
