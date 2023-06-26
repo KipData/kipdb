@@ -1,10 +1,5 @@
 use crate::kernel::io::IoReader;
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::block::{
-    Block, BlockCache, BlockItem, BlockType, CompressType, Index, MetaBlock, Value,
-};
-use crate::kernel::lsm::ss_table::footer::Footer;
-use crate::kernel::lsm::ss_table::meta::SSTableMeta;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -16,6 +11,10 @@ use std::collections::Bound;
 use std::io::SeekFrom;
 use std::sync::Arc;
 use tracing::info;
+use crate::kernel::lsm::table::ss_table::block::{Block, BlockCache, BlockItem, BlockType, CompressType, Index, MetaBlock};
+use crate::kernel::lsm::table::ss_table::footer::Footer;
+use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
+use crate::kernel::lsm::table::Table;
 
 pub(crate) mod block;
 pub(crate) mod block_iter;
@@ -202,7 +201,7 @@ impl SSTable {
                 (self.get_gen(), Some(index_block.find_with_upper(key))),
                 |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                    Ok(Self::get_data_block_(inner, index)?)
+                    Ok(Self::data_block(inner, index)?)
                 },
             )? {
                 return Ok(data_block.find(key));
@@ -212,24 +211,7 @@ impl SSTable {
         Ok(None)
     }
 
-    pub(crate) fn get_data_block<'a>(
-        &'a self,
-        index: Index,
-        block_cache: &'a BlockCache,
-    ) -> Result<Option<&Block<Value>>> {
-        let inner = &self.inner;
-        Ok(block_cache
-            .get_or_insert((self.get_gen(), Some(index)), |(_, index)| {
-                let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                Ok(Self::get_data_block_(inner, index)?)
-            })
-            .map(|block_type| match block_type {
-                BlockType::Data(data_block) => Some(data_block),
-                _ => None,
-            })?)
-    }
-
-    fn get_data_block_(inner: &SSTableInner, index: Index) -> Result<BlockType> {
+    pub(crate) fn data_block(inner: &SSTableInner, index: Index) -> Result<BlockType> {
         Ok(BlockType::Data(Self::loading_block(
             inner.reader.lock().as_mut(),
             index.offset(),
@@ -246,28 +228,24 @@ impl SSTable {
         let inner = &self.inner;
         block_cache
             .get_or_insert((self.get_gen(), None), |_| {
-                Ok(Self::get_index_block_(inner)?)
+                let Footer {
+                    index_offset,
+                    index_len,
+                    ..
+                } = inner.footer;
+                Ok(BlockType::Index(Self::loading_block(
+                    inner.reader.lock().as_mut(),
+                    index_offset,
+                    index_len as usize,
+                    CompressType::None,
+                    inner.meta.index_restart_interval,
+                )?))
             })
             .map(|block_type| match block_type {
                 BlockType::Index(data_block) => Some(data_block),
                 _ => None,
             })?
             .ok_or(KernelError::DataEmpty)
-    }
-
-    fn get_index_block_(inner: &Arc<SSTableInner>) -> Result<BlockType> {
-        let Footer {
-            index_offset,
-            index_len,
-            ..
-        } = inner.footer;
-        Ok(BlockType::Index(Self::loading_block(
-            inner.reader.lock().as_mut(),
-            index_offset,
-            index_len as usize,
-            CompressType::None,
-            inner.meta.index_restart_interval,
-        )?))
     }
 
     fn loading_block<T>(
@@ -310,6 +288,28 @@ impl SSTable {
         option_first
             .and_then(|gen| version.get_index(level, gen))
             .unwrap_or(0)
+    }
+}
+
+impl Table for SSTable {
+    fn query(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        todo!()
+    }
+
+    fn len(&self) -> usize {
+        todo!()
+    }
+
+    fn size_of_disk(&self) -> u64 {
+        todo!()
+    }
+
+    fn gen(&self) -> i64 {
+        todo!()
+    }
+
+    fn level(&self) -> usize {
+        todo!()
     }
 }
 

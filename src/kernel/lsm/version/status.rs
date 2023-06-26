@@ -1,6 +1,5 @@
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
-use crate::kernel::lsm::ss_table::loader::SSTableLoader;
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::version::cleaner::Cleaner;
 use crate::kernel::lsm::version::edit::VersionEdit;
@@ -17,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::RwLock;
 use tracing::info;
+use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
 
 /// 用于切换Version的封装Inner
 struct VersionInner {

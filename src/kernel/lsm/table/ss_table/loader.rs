@@ -2,12 +2,6 @@ use crate::kernel::io::{IoFactory, IoType};
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{logs_decode, KeyValue};
-use crate::kernel::lsm::ss_table::block::{
-    BlockBuilder, BlockOptions, CompressType, MetaBlock, Value,
-};
-use crate::kernel::lsm::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
-use crate::kernel::lsm::ss_table::meta::SSTableMeta;
-use crate::kernel::lsm::ss_table::{SSTable, SSTableInner, Scope};
 use crate::kernel::lsm::storage::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::Result;
@@ -18,6 +12,10 @@ use std::collections::hash_map::RandomState;
 use std::mem;
 use std::sync::Arc;
 use tracing::{info, warn};
+use crate::kernel::lsm::table::ss_table::block::{BlockBuilder, BlockOptions, CompressType, MetaBlock, Value};
+use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
+use crate::kernel::lsm::table::ss_table::{Scope, SSTable, SSTableInner};
+use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
 
 #[derive(Clone)]
 pub(crate) struct SSTableLoader {
@@ -199,6 +197,7 @@ mod tests {
     use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
+    use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
 
     #[test]
     fn test_ss_table_loader() -> Result<()> {

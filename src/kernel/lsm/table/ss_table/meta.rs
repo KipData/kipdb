@@ -1,7 +1,7 @@
-use crate::kernel::lsm::ss_table::SSTable;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
+use crate::kernel::lsm::table::ss_table::SSTable;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub(crate) struct SSTableMeta {

@@ -1,8 +1,8 @@
-use crate::kernel::lsm::ss_table::loader::SSTableLoader;
 use itertools::Itertools;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::error;
+use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
 
 #[derive(Debug)]
 pub(crate) enum CleanTag {

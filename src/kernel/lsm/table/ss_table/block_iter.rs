@@ -1,7 +1,7 @@
 use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
-use crate::kernel::lsm::ss_table::block::{Block, BlockItem, Entry};
 use crate::kernel::Result;
 use bytes::Bytes;
+use crate::kernel::lsm::table::ss_table::block::{Block, BlockItem, Entry};
 
 /// Block迭代器
 ///
@@ -108,6 +108,8 @@ mod tests {
     use bincode::Options;
     use bytes::Bytes;
     use std::vec;
+    use crate::kernel::lsm::table::ss_table::block::{Block, DEFAULT_DATA_RESTART_INTERVAL, Value};
+    use crate::kernel::lsm::table::ss_table::block_iter::BlockIter;
 
     #[test]
     fn test_iterator() -> Result<()> {

@@ -7,10 +7,10 @@ mod iterator;
 mod log;
 mod mem_table;
 mod mvcc;
-mod ss_table;
 pub mod storage;
 mod trigger;
 mod version;
+mod table;
 
 /// KeyValue数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
 /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）

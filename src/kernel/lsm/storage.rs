@@ -3,7 +3,6 @@ use crate::kernel::lsm::compactor::{CompactTask, Compactor};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
-use crate::kernel::lsm::ss_table::block;
 use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version;
 use crate::kernel::lsm::version::status::VersionStatus;
@@ -25,6 +24,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tracing::{error, info};
+use crate::kernel::lsm::table::ss_table::block;
 
 pub(crate) const BANNER: &str = "
 █████   ████  ███            ██████████   ███████████

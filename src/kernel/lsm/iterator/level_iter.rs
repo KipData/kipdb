@@ -1,7 +1,7 @@
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::iter::SSTableIter;
+use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -112,6 +112,7 @@ mod tests {
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
+    use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
 
     #[test]
     fn test_iterator() -> Result<()> {

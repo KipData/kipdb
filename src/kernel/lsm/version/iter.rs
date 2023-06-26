@@ -2,7 +2,7 @@ use crate::kernel::lsm::iterator::level_iter::LevelIter;
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::iter::SSTableIter;
+use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 

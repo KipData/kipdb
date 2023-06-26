@@ -1,9 +1,5 @@
 use crate::kernel::io::{FileExtension, IoFactory};
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::ss_table::block::BlockCache;
-use crate::kernel::lsm::ss_table::loader::SSTableLoader;
-use crate::kernel::lsm::ss_table::meta::SSTableMeta;
-use crate::kernel::lsm::ss_table::{SSTable, Scope};
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
@@ -14,6 +10,10 @@ use itertools::Itertools;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info};
+use crate::kernel::lsm::table::ss_table::block::BlockCache;
+use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
+use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
+use crate::kernel::lsm::table::ss_table::{Scope, SSTable};
 
 mod cleaner;
 pub(crate) mod edit;

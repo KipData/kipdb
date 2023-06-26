@@ -1,5 +1,6 @@
-use crate::kernel::lsm::ss_table::meta::SSTableMeta;
-use crate::kernel::lsm::ss_table::Scope;
+use crate::kernel::lsm::table::ss_table::meta::SSTableMeta;
+use crate::kernel::lsm::table::ss_table::Scope;
+
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
