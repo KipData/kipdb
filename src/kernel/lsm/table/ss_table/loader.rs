@@ -5,29 +5,35 @@ use crate::kernel::lsm::mem_table::{logs_decode, KeyValue};
 use crate::kernel::lsm::storage::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::Result;
-use growable_bloom_filter::GrowableBloom;
 use itertools::Itertools;
-use parking_lot::Mutex;
 use std::collections::hash_map::RandomState;
 use std::mem;
 use std::sync::Arc;
-use tracing::{info, warn};
+use bytes::Bytes;
+use tracing::warn;
+use crate::kernel::lsm::table::{BoxTable, Table};
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::lsm::table::scope::Scope;
-use crate::kernel::lsm::table::ss_table::block::{BlockBuilder, BlockCache, BlockOptions, CompressType, MetaBlock, Value};
-use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
+use crate::kernel::lsm::table::skip_table::SkipTable;
+use crate::kernel::lsm::table::ss_table::block::BlockCache;
 use crate::kernel::lsm::table::ss_table::SSTable;
 
+pub(crate) enum TableType {
+    SortedString,
+    #[allow(dead_code)]
+    Skip
+}
+
 #[derive(Clone)]
-pub(crate) struct SSTableLoader {
-    inner: Arc<ShardingLruCache<i64, SSTable>>,
+pub(crate) struct TableLoader {
+    inner: Arc<ShardingLruCache<i64, BoxTable>>,
     factory: Arc<IoFactory>,
     config: Config,
     wal: LogLoader,
     cache: Arc<BlockCache>
 }
 
-impl SSTableLoader {
+impl TableLoader {
     pub(crate) fn new(config: Config, factory: Arc<IoFactory>, wal: LogLoader) -> Result<Self> {
         let inner = Arc::new(ShardingLruCache::new(
             config.table_cache_size,
@@ -39,7 +45,7 @@ impl SSTableLoader {
             16,
             RandomState::default(),
         )?);
-        Ok(SSTableLoader {
+        Ok(TableLoader {
             inner,
             factory,
             config,
@@ -48,125 +54,71 @@ impl SSTableLoader {
         })
     }
 
-    fn _create(&self, gen: i64, vec_data: Vec<KeyValue>, level: usize) -> Result<SSTable> {
-        fn io_type_by_level(level: usize) -> IoType {
-            if LEVEL_0 == level {
-                IoType::Mem
-            } else {
-                IoType::Direct
-            }
-        }
-
-        let io_type = io_type_by_level(level);
-        let io_factory = &self.factory;
-        let config = &self.config;
-        let len = vec_data.len();
-        let data_restart_interval = config.data_restart_interval;
-        let index_restart_interval = config.index_restart_interval;
-        let mut filter = GrowableBloom::new(config.desired_error_prob, len);
-
-        let mut builder = BlockBuilder::new(
-            BlockOptions::from(config)
-                .compress_type(CompressType::LZ4)
-                .data_restart_interval(data_restart_interval)
-                .index_restart_interval(index_restart_interval),
-        );
-        for data in vec_data {
-            let (key, value) = data;
-            let _ = filter.insert(&key);
-            builder.add((key, Value::from(value)));
-        }
-        let meta = MetaBlock {
-            filter,
-            len,
-            index_restart_interval,
-            data_restart_interval,
-        };
-
-        let (data_bytes, index_bytes) = builder.build()?;
-        let meta_bytes = bincode::serialize(&meta)?;
-        let footer = Footer {
-            level: level as u8,
-            index_offset: data_bytes.len() as u32,
-            index_len: index_bytes.len() as u32,
-            meta_offset: (data_bytes.len() + index_bytes.len()) as u32,
-            meta_len: meta_bytes.len() as u32,
-            size_of_disk: (data_bytes.len()
-                + index_bytes.len()
-                + meta_bytes.len()
-                + TABLE_FOOTER_SIZE) as u32,
-        };
-        let mut writer = io_factory.writer(gen, io_type)?;
-        writer.write_all(
-            data_bytes
-                .into_iter()
-                .chain(index_bytes)
-                .chain(meta_bytes)
-                .chain(bincode::serialize(&footer)?)
-                .collect_vec()
-                .as_mut(),
-        )?;
-        writer.flush()?;
-        info!("[SsTable: {}][create][MetaBlock]: {:?}", gen, meta);
-
-        let reader = Mutex::new(io_factory.reader(gen, io_type)?);
-        Ok(SSTable {
-            footer,
-            reader,
-            gen,
-            meta,
-            cache: Arc::clone(&self.cache),
-        })
-    }
-
     pub(crate) fn create(
         &self,
         gen: i64,
         vec_data: Vec<KeyValue>,
         level: usize,
+        table_type: TableType,
     ) -> Result<(Scope, TableMeta)> {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_data(gen, &vec_data)?;
-        let ss_table = self._create(gen, vec_data, level)?;
-        let sst_meta = TableMeta::from(&ss_table);
-        let _ = self.inner.put(gen, ss_table);
+        let table: Box<dyn Table> = match table_type {
+            TableType::SortedString => {
+                Box::new(self.create_ss_table(gen, vec_data, level)?)
+            }
+            TableType::Skip => {
+                Box::new(SkipTable::new(level, gen, vec_data))
+            }
+        };
+        let table_meta = TableMeta::from(table.as_ref());
+        let _ = self.inner.put(gen, table);
 
-        Ok((scope, sst_meta))
+        Ok((scope, table_meta))
     }
 
-    pub(crate) fn get(&self, gen: i64) -> Option<&SSTable> {
+    pub(crate) fn get(&self, gen: i64) -> Option<&dyn Table> {
         self.inner
             .get_or_insert(gen, |gen| {
                 let sst_factory = &self.factory;
 
-                // Tips: 此处虽然写死使用`IoType::Direct`,
-                // 但是若该SSTable为Level 0,那么在创建时会使用`IoType::Mem`进行创建使其不会被持久化，
-                // 因此此处创建reader时并无法使用`SSTable::load_from_file`进行加载，
-                // 使其尝试使用WAL进行加载而恢复Level 0的SSTable以保证数据在停机后不会丢失
                 let ss_table = match sst_factory
                     .reader(*gen, IoType::Direct)
                     .and_then(|reader| SSTable::load_from_file(reader, Arc::clone(&self.cache)))
                 {
                     Ok(ss_table) => ss_table,
                     Err(err) => {
+                        // 尝试恢复仅对Level 0的Table有效
                         warn!(
-                            "[LSMStore][Load SSTable: {}][try to reload with wal]: {:?}",
+                            "[LSMStore][Load Table: {}][try to reload with wal]: {:?}",
                             gen, err
                         );
                         let reload_data =
                             logs_decode(self.wal.load(*gen, |bytes| Ok(mem::take(bytes)))?)?
                                 .collect_vec();
 
-                        self._create(*gen, reload_data, LEVEL_0)?
+                        self.create_ss_table(*gen, reload_data, LEVEL_0)?
                     }
                 };
 
-                Ok(ss_table)
-            })
+                Ok(Box::new(ss_table))
+            }).map(Box::as_ref)
             .ok()
     }
 
-    pub(crate) fn remove(&self, gen: &i64) -> Option<SSTable> {
+    fn create_ss_table(&self, gen: i64, reload_data: Vec<(Bytes, Option<Bytes>)>, level: usize) -> Result<SSTable> {
+        SSTable::new(
+            &self.factory,
+            &self.config,
+            Arc::clone(&self.cache),
+            gen,
+            reload_data,
+            level,
+            IoType::Direct
+        )
+    }
+
+    pub(crate) fn remove(&self, gen: &i64) -> Option<BoxTable> {
         self.inner.remove(gen)
     }
 
@@ -183,8 +135,9 @@ impl SSTableLoader {
         Ok(())
     }
 
+    // Tips: 仅仅对持久化Table有效，SkipTable类内存Table始终为false
     #[allow(dead_code)]
-    pub(crate) fn is_sst_file_exist(&self, gen: i64) -> Result<bool> {
+    pub(crate) fn is_table_file_exist(&self, gen: i64) -> Result<bool> {
         self.factory.exists(gen)
     }
 }
@@ -201,8 +154,7 @@ mod tests {
     use bytes::Bytes;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
-    use crate::kernel::lsm::table::Table;
+    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
 
     #[test]
     fn test_ss_table_loader() -> Result<()> {
@@ -243,9 +195,14 @@ mod tests {
 
         log_writer.flush()?;
 
-        let sst_loader = SSTableLoader::new(config, sst_factory.clone(), log_loader.clone())?;
+        let sst_loader = TableLoader::new(config, sst_factory.clone(), log_loader.clone())?;
 
-        let _ = sst_loader.create(1, vec_data.clone(), 0)?;
+        let _ = sst_loader.create(
+            1,
+            vec_data.clone(),
+            0,
+            TableType::SortedString
+        )?;
 
         assert!(sst_loader.remove(&1).is_some());
         assert!(sst_loader.is_emtpy());
@@ -284,7 +241,7 @@ mod tests {
         Ok(())
     }
 
-    fn clean_sst(gen: i64, loader: &SSTableLoader) -> Result<()> {
+    fn clean_sst(gen: i64, loader: &TableLoader) -> Result<()> {
         loader.factory.clean(gen)?;
 
         Ok(())

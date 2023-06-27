@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time;
+use crate::kernel::lsm::table::ss_table::loader::TableType;
 
 #[test]
 fn test_version_clean() -> Result<()> {
@@ -33,10 +34,10 @@ fn test_version_clean() -> Result<()> {
         let sst_loader = ver_status.loader().clone();
 
         let (scope_1, meta_1) =
-            sst_loader.create(1, vec![(Bytes::from_static(b"test"), None)], 0)?;
+            sst_loader.create(1, vec![(Bytes::from_static(b"test"), None)], 0, TableType::SortedString)?;
 
         let (scope_2, meta_2) =
-            sst_loader.create(2, vec![(Bytes::from_static(b"test"), None)], 0)?;
+            sst_loader.create(2, vec![(Bytes::from_static(b"test"), None)], 0, TableType::SortedString)?;
 
         let vec_edit_1 = vec![VersionEdit::NewFile((vec![scope_1], 0), 0, meta_1)];
 
@@ -74,25 +75,25 @@ fn test_version_clean() -> Result<()> {
             ]
         );
 
-        assert!(sst_loader.is_sst_file_exist(1)?);
-        assert!(sst_loader.is_sst_file_exist(2)?);
+        assert!(sst_loader.is_table_file_exist(1)?);
+        assert!(sst_loader.is_table_file_exist(2)?);
 
         drop(version_2);
 
-        assert!(sst_loader.is_sst_file_exist(1)?);
-        assert!(sst_loader.is_sst_file_exist(2)?);
+        assert!(sst_loader.is_table_file_exist(1)?);
+        assert!(sst_loader.is_table_file_exist(2)?);
 
         drop(version_1);
         time::sleep(Duration::from_secs(1)).await;
 
-        assert!(!sst_loader.is_sst_file_exist(1)?);
-        assert!(sst_loader.is_sst_file_exist(2)?);
+        assert!(!sst_loader.is_table_file_exist(1)?);
+        assert!(sst_loader.is_table_file_exist(2)?);
 
         drop(ver_status);
         time::sleep(Duration::from_secs(1)).await;
 
-        assert!(!sst_loader.is_sst_file_exist(1)?);
-        assert!(!sst_loader.is_sst_file_exist(2)?);
+        assert!(!sst_loader.is_table_file_exist(1)?);
+        assert!(!sst_loader.is_table_file_exist(2)?);
 
         Ok(())
     })
@@ -119,12 +120,22 @@ fn test_version_apply_and_log() -> Result<()> {
         let (scope_1, meta_1) =
             ver_status_1
                 .loader()
-                .create(1, vec![(Bytes::from_static(b"test"), None)], 0)?;
+                .create(
+                    1,
+                    vec![(Bytes::from_static(b"test"), None)],
+                    0,
+                    TableType::SortedString
+                )?;
 
         let (scope_2, meta_2) =
             ver_status_1
                 .loader()
-                .create(2, vec![(Bytes::from_static(b"test"), None)], 0)?;
+                .create(
+                    2,
+                    vec![(Bytes::from_static(b"test"), None)],
+                    0,
+                    TableType::SortedString
+                )?;
 
         let vec_edit = vec![
             VersionEdit::NewFile((vec![scope_1], 0), 0, meta_1),
@@ -137,12 +148,22 @@ fn test_version_apply_and_log() -> Result<()> {
         let (scope_3, meta_3) =
             ver_status_1
                 .loader()
-                .create(3, vec![(Bytes::from_static(b"test3"), None)], 0)?;
+                .create(
+                    3,
+                    vec![(Bytes::from_static(b"test3"), None)],
+                    0,
+                    TableType::SortedString
+                )?;
 
         let (scope_4, meta_4) =
             ver_status_1
                 .loader()
-                .create(4, vec![(Bytes::from_static(b"test4"), None)], 0)?;
+                .create(
+                    4,
+                    vec![(Bytes::from_static(b"test4"), None)],
+                    0,
+                    TableType::SortedString
+                )?;
 
         let vec_edit2 = vec![
             VersionEdit::NewFile((vec![scope_3], 0), 0, meta_3),

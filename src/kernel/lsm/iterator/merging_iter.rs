@@ -137,12 +137,12 @@ impl MergingIter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::RandomState;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
     use crate::kernel::lsm::iterator::{Iter, Seek};
-    use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::{
-        InternalKey, KeyValue, MemMap, MemMapIter, DEFAULT_WAL_PATH,
+        InternalKey, KeyValue, MemMap, MemMapIter,
     };
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
@@ -151,7 +151,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
-    use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
+    use crate::kernel::lsm::table::ss_table::SSTable;
+    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_sequential_iterator() -> Result<()> {
@@ -246,24 +247,28 @@ mod tests {
         );
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
         let config = Config::new(temp_dir.into_path());
-
         let sst_factory = IoFactory::new(
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?;
-        let (wal, _, _) = LogLoader::reload(
-            config.path(),
-            (DEFAULT_WAL_PATH, Some(1)),
-            IoType::Direct,
-            |_| Ok(()),
+        let cache = Arc::new(
+            ShardingLruCache::new(
+                config.table_cache_size,
+                16,
+                RandomState::default()
+            )?
+        );
+
+        let ss_table = SSTable::new(
+            &sst_factory,
+            &config,
+            Arc::clone(&cache),
+            1,
+            data_2,
+            0,
+            IoType::Direct
         )?;
-        let loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), wal)?;
-
-        let _ = loader.create(1, data_2, 0)?;
-
-        let ss_table = loader.get(1).unwrap();
 
         let map_iter = MemMapIter::new(&map);
 

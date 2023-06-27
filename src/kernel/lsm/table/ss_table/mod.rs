@@ -1,14 +1,19 @@
-use crate::kernel::io::IoReader;
-use crate::kernel::lsm::version::Version;
+use crate::kernel::io::{IoFactory, IoReader, IoType};
 use crate::kernel::Result;
 use crate::KernelError;
 use bytes::Bytes;
 use parking_lot::Mutex;
 use std::io::SeekFrom;
 use std::sync::Arc;
+use growable_bloom_filter::GrowableBloom;
+use itertools::Itertools;
 use tracing::info;
-use crate::kernel::lsm::table::ss_table::block::{Block, BlockCache, BlockItem, BlockType, CompressType, Index, MetaBlock};
-use crate::kernel::lsm::table::ss_table::footer::Footer;
+use crate::kernel::lsm::iterator::Iter;
+use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::storage::Config;
+use crate::kernel::lsm::table::ss_table::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index, MetaBlock, Value};
+use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
+use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::table::Table;
 
 pub(crate) mod block;
@@ -34,6 +39,74 @@ pub(crate) struct SSTable {
 }
 
 impl SSTable {
+    pub(crate) fn new(
+        io_factory: &IoFactory,
+        config: &Config,
+        cache: Arc<BlockCache>,
+        gen: i64,
+        vec_data: Vec<KeyValue>,
+        level: usize,
+        io_type: IoType
+    ) -> Result<SSTable> {
+        let len = vec_data.len();
+        let data_restart_interval = config.data_restart_interval;
+        let index_restart_interval = config.index_restart_interval;
+        let mut filter = GrowableBloom::new(config.desired_error_prob, len);
+
+        let mut builder = BlockBuilder::new(
+            BlockOptions::from(config)
+                .compress_type(CompressType::LZ4)
+                .data_restart_interval(data_restart_interval)
+                .index_restart_interval(index_restart_interval),
+        );
+        for data in vec_data {
+            let (key, value) = data;
+            let _ = filter.insert(&key);
+            builder.add((key, Value::from(value)));
+        }
+        let meta = MetaBlock {
+            filter,
+            len,
+            index_restart_interval,
+            data_restart_interval,
+        };
+
+        let (data_bytes, index_bytes) = builder.build()?;
+        let meta_bytes = bincode::serialize(&meta)?;
+        let footer = Footer {
+            level: level as u8,
+            index_offset: data_bytes.len() as u32,
+            index_len: index_bytes.len() as u32,
+            meta_offset: (data_bytes.len() + index_bytes.len()) as u32,
+            meta_len: meta_bytes.len() as u32,
+            size_of_disk: (data_bytes.len()
+                + index_bytes.len()
+                + meta_bytes.len()
+                + TABLE_FOOTER_SIZE) as u32,
+        };
+        let mut writer = io_factory.writer(gen, io_type)?;
+        writer.write_all(
+            data_bytes
+                .into_iter()
+                .chain(index_bytes)
+                .chain(meta_bytes)
+                .chain(bincode::serialize(&footer)?)
+                .collect_vec()
+                .as_mut(),
+        )?;
+        writer.flush()?;
+        info!("[SsTable: {}][create][MetaBlock]: {:?}", gen, meta);
+
+        let reader = Mutex::new(io_factory.reader(gen, io_type)?);
+        Ok(SSTable {
+            footer,
+            reader,
+            gen,
+            meta,
+            cache,
+        })
+    }
+
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
@@ -116,17 +189,6 @@ impl SSTable {
 
         Block::decode(buf, compress_type, restart_interval)
     }
-
-    /// 获取指定SSTable索引位置
-    pub(crate) fn find_index_with_level(
-        option_first: Option<i64>,
-        version: &Version,
-        level: usize,
-    ) -> usize {
-        option_first
-            .and_then(|gen| version.get_index(level, gen))
-            .unwrap_or(0)
-    }
 }
 
 impl Table for SSTable {
@@ -163,6 +225,10 @@ impl Table for SSTable {
     fn level(&self) -> usize {
         self.footer.level as usize
     }
+
+    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item=KeyValue> + 'a>> {
+        Ok(SSTableIter::new(&self).map(Box::new)?)
+    }
 }
 
 #[cfg(test)]
@@ -179,7 +245,7 @@ mod tests {
     use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
+    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
     use crate::kernel::lsm::table::ss_table::SSTable;
     use crate::kernel::lsm::table::Table;
 
@@ -201,7 +267,7 @@ mod tests {
             IoType::Buf,
             |_| Ok(()),
         )?;
-        let sst_loader = SSTableLoader::new(config.clone(), sst_factory.clone(), log_loader)?;
+        let sst_loader = TableLoader::new(config.clone(), sst_factory.clone(), log_loader)?;
 
         let mut vec_data = Vec::new();
         let times = 2333;
@@ -213,8 +279,13 @@ mod tests {
             ));
         }
         // Tips: 此处Level需要为0以上，因为Level 0默认为Mem类型，容易丢失
-        let _ = sst_loader.create(1, vec_data.clone(), 1)?;
-        assert!(sst_loader.is_sst_file_exist(1)?);
+        let _ = sst_loader.create(
+            1,
+            vec_data.clone(),
+            1,
+            TableType::SortedString
+        )?;
+        assert!(sst_loader.is_table_file_exist(1)?);
 
         let ss_table = sst_loader.get(1).unwrap();
 

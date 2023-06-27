@@ -2,7 +2,7 @@ use itertools::Itertools;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::error;
-use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
+use crate::kernel::lsm::table::ss_table::loader::TableLoader;
 
 #[derive(Debug)]
 pub(crate) enum CleanTag {
@@ -15,14 +15,14 @@ pub(crate) enum CleanTag {
 /// 整体的设计思路是由`Version::drop`进行删除驱动
 /// 考虑过在Compactor中进行文件删除，但这样会需要进行额外的阈值判断以触发压缩(Compactor的阈值判断是通过传入的KV进行累计)
 pub(crate) struct Cleaner {
-    ss_table_loader: Arc<SSTableLoader>,
+    ss_table_loader: Arc<TableLoader>,
     tag_rx: UnboundedReceiver<CleanTag>,
     del_gens: Vec<(u64, Vec<i64>)>,
 }
 
 impl Cleaner {
     pub(crate) fn new(
-        ss_table_loader: &Arc<SSTableLoader>,
+        ss_table_loader: &Arc<TableLoader>,
         tag_rx: UnboundedReceiver<CleanTag>,
     ) -> Self {
         Self {

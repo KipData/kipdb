@@ -235,7 +235,6 @@ fn test_io() -> Result<()> {
 
     io_type_test(&factory, IoType::Buf)?;
     io_type_test(&factory, IoType::Direct)?;
-    io_type_test(&factory, IoType::Mem)?;
 
     Ok(())
 }

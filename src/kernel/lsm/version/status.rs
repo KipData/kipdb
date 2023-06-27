@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::RwLock;
 use tracing::info;
-use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
+use crate::kernel::lsm::table::ss_table::loader::TableLoader;
 
 /// 用于切换Version的封装Inner
 struct VersionInner {
@@ -24,7 +24,7 @@ struct VersionInner {
 
 pub(crate) struct VersionStatus {
     inner: RwLock<VersionInner>,
-    ss_table_loader: Arc<SSTableLoader>,
+    ss_table_loader: Arc<TableLoader>,
     log_factory: Arc<IoFactory>,
     edit_approximate_count: AtomicUsize,
 }
@@ -36,7 +36,7 @@ impl VersionStatus {
 
         let sst_factory = Arc::new(IoFactory::new(sst_path, FileExtension::SSTable)?);
 
-        let ss_table_loader = Arc::new(SSTableLoader::new(
+        let ss_table_loader = Arc::new(TableLoader::new(
             config.clone(),
             Arc::clone(&sst_factory),
             wal,
@@ -143,7 +143,7 @@ impl VersionStatus {
         Ok(())
     }
 
-    pub(crate) fn loader(&self) -> &SSTableLoader {
+    pub(crate) fn loader(&self) -> &TableLoader {
         &self.ss_table_loader
     }
 }

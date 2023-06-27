@@ -48,7 +48,7 @@ pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
 pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
 
-pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
+pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 5;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
@@ -140,7 +140,7 @@ impl Storage for LsmStore {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.current_version().await.find_data_for_ss_tables(key)? {
+        if let Some(value) = self.current_version().await.query(key)? {
             return Ok(Some(value));
         }
 

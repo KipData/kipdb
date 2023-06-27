@@ -52,10 +52,6 @@ impl<'a> SSTableIter<'a> {
             .seek(seek)?
             .map(|(key, value)| (key, value.bytes)))
     }
-
-    pub(crate) fn len(&self) -> usize {
-        self.ss_table.len()
-    }
 }
 
 impl<'a> ForwardIter<'a> for SSTableIter<'a> {
@@ -104,10 +100,9 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::RandomState;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
-    use crate::kernel::lsm::log::LogLoader;
-    use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
@@ -116,7 +111,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
-    use crate::kernel::lsm::table::ss_table::loader::SSTableLoader;
+    use crate::kernel::lsm::table::ss_table::SSTable;
+    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -128,13 +124,6 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?;
-        let (log_loader, _, _) = LogLoader::reload(
-            config.path(),
-            (DEFAULT_WAL_PATH, Some(1)),
-            IoType::Buf,
-            |_| Ok(()),
-        )?;
-        let sst_loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), log_loader)?;
 
         let value =
             Bytes::from_static(b"What you are you do not see, what you see is your shadow.");
@@ -148,12 +137,25 @@ mod tests {
             key.append(&mut bincode::options().with_big_endian().serialize(&i)?);
             vec_data.push((Bytes::from(key), Some(value.clone())));
         }
+        let cache = Arc::new(
+            ShardingLruCache::new(
+                config.table_cache_size,
+                16,
+                RandomState::default()
+            )?
+        );
 
-        let _ = sst_loader.create(1, vec_data.clone(), 0)?;
+        let ss_table = SSTable::new(
+            &sst_factory,
+            &config,
+            cache,
+            1,
+            vec_data.clone(),
+            0,
+            IoType::Direct
+        )?;
 
-        let ss_table = sst_loader.get(1).unwrap();
-
-        let mut iterator = SSTableIter::new(ss_table)?;
+        let mut iterator = SSTableIter::new(&ss_table)?;
 
         for i in 0..times {
             assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);

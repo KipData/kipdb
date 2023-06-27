@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use crate::kernel::lsm::table::Table;
@@ -25,8 +24,8 @@ impl TableMeta {
     }
 }
 
-impl<T: Table> From<&T> for TableMeta {
-    fn from(value: &T) -> Self {
+impl From<&dyn Table> for TableMeta {
+    fn from(value: &dyn Table) -> Self {
         TableMeta {
             size_of_disk: value.size_of_disk(),
             len: value.len(),
@@ -34,14 +33,14 @@ impl<T: Table> From<&T> for TableMeta {
     }
 }
 
-impl<T: Borrow<Box<dyn Table>>> From<&[T]> for TableMeta {
-    fn from(value: &[T]) -> Self {
+impl From<&[&dyn Table]> for TableMeta {
+    fn from(value: &[&dyn Table]) -> Self {
         let mut sst_meta = TableMeta {
             size_of_disk: 0,
             len: 0,
         };
 
-        for sst in value.iter().map(T::borrow).unique_by(|sst| sst.gen()) {
+        for sst in value.iter().unique_by(|sst| sst.gen()) {
             sst_meta.len += sst.len();
             sst_meta.size_of_disk += sst.size_of_disk();
         }
