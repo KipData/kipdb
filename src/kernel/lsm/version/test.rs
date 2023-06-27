@@ -1,7 +1,7 @@
 use crate::kernel::io::IoType;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::storage::Config;
-use crate::kernel::lsm::table::ss_table::loader::TableType;
+use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;

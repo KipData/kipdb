@@ -23,7 +23,6 @@ pub(crate) mod block;
 pub(crate) mod block_iter;
 mod footer;
 pub(crate) mod iter;
-pub(crate) mod loader;
 
 /// SSTable
 ///
@@ -243,9 +242,9 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::storage::Config;
-    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
+    use crate::kernel::lsm::table::loader::TableLoader;
     use crate::kernel::lsm::table::ss_table::SSTable;
-    use crate::kernel::lsm::table::Table;
+    use crate::kernel::lsm::table::{Table, TableType};
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;

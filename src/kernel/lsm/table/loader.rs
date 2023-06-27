@@ -8,7 +8,7 @@ use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::skip_table::SkipTable;
 use crate::kernel::lsm::table::ss_table::block::BlockCache;
 use crate::kernel::lsm::table::ss_table::SSTable;
-use crate::kernel::lsm::table::{BoxTable, Table};
+use crate::kernel::lsm::table::{BoxTable, Table, TableType};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::Result;
 use bytes::Bytes;
@@ -17,13 +17,6 @@ use std::collections::hash_map::RandomState;
 use std::mem;
 use std::sync::Arc;
 use tracing::warn;
-
-#[derive(Copy, Clone, Debug)]
-pub enum TableType {
-    SortedString,
-    #[allow(dead_code)]
-    Skip,
-}
 
 #[derive(Clone)]
 pub(crate) struct TableLoader {
@@ -151,7 +144,7 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::{data_to_bytes, DEFAULT_WAL_PATH};
     use crate::kernel::lsm::storage::Config;
-    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
+    use crate::kernel::lsm::table::loader::{TableLoader, TableType};
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
     use bincode::Options;

@@ -5,10 +5,18 @@ use crate::kernel::Result;
 use bytes::Bytes;
 use itertools::Itertools;
 
+pub(crate) mod loader;
 pub(crate) mod meta;
 pub(crate) mod scope;
 pub(crate) mod skip_table;
 pub(crate) mod ss_table;
+
+#[derive(Copy, Clone, Debug)]
+pub enum TableType {
+    SortedString,
+    #[allow(dead_code)]
+    Skip,
+}
 
 pub(crate) type BoxTable = Box<dyn Table>;
 

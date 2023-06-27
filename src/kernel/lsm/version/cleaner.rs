@@ -1,4 +1,4 @@
-use crate::kernel::lsm::table::ss_table::loader::TableLoader;
+use crate::kernel::lsm::table::loader::TableLoader;
 use itertools::Itertools;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;

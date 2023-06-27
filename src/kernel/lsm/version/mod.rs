@@ -1,9 +1,9 @@
 use crate::kernel::io::{FileExtension, IoFactory};
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::storage::{Config, Gen};
+use crate::kernel::lsm::table::loader::TableLoader;
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::lsm::table::scope::Scope;
-use crate::kernel::lsm::table::ss_table::loader::TableLoader;
 use crate::kernel::lsm::table::Table;
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};

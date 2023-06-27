@@ -4,7 +4,7 @@ use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::table::ss_table::block;
-use crate::kernel::lsm::table::ss_table::loader::TableType;
+use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version;
 use crate::kernel::lsm::version::status::VersionStatus;

@@ -88,7 +88,7 @@ mod tests {
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::table::meta::TableMeta;
-    use crate::kernel::lsm::table::ss_table::loader::TableType;
+    use crate::kernel::lsm::table::TableType;
     use crate::kernel::lsm::version::edit::VersionEdit;
     use crate::kernel::lsm::version::status::VersionStatus;
     use crate::kernel::Result;
