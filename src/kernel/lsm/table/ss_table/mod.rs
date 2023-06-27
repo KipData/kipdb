@@ -1,20 +1,23 @@
 use crate::kernel::io::{IoFactory, IoReader, IoType};
-use crate::kernel::Result;
-use crate::KernelError;
-use bytes::Bytes;
-use parking_lot::Mutex;
-use std::io::SeekFrom;
-use std::sync::Arc;
-use growable_bloom_filter::GrowableBloom;
-use itertools::Itertools;
-use tracing::info;
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::storage::Config;
-use crate::kernel::lsm::table::ss_table::block::{Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index, MetaBlock, Value};
+use crate::kernel::lsm::table::ss_table::block::{
+    Block, BlockBuilder, BlockCache, BlockItem, BlockOptions, BlockType, CompressType, Index,
+    MetaBlock, Value,
+};
 use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
 use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::table::Table;
+use crate::kernel::Result;
+use crate::KernelError;
+use bytes::Bytes;
+use growable_bloom_filter::GrowableBloom;
+use itertools::Itertools;
+use parking_lot::Mutex;
+use std::io::SeekFrom;
+use std::sync::Arc;
+use tracing::info;
 
 pub(crate) mod block;
 pub(crate) mod block_iter;
@@ -46,7 +49,7 @@ impl SSTable {
         gen: i64,
         vec_data: Vec<KeyValue>,
         level: usize,
-        io_type: IoType
+        io_type: IoType,
     ) -> Result<SSTable> {
         let len = vec_data.len();
         let data_restart_interval = config.data_restart_interval;
@@ -110,7 +113,10 @@ impl SSTable {
     /// 通过已经存在的文件构建SSTable
     ///
     /// 使用原有的路径与分区大小恢复出一个有内容的SSTable
-    pub(crate) fn load_from_file(mut reader: Box<dyn IoReader>, cache: Arc<BlockCache>) -> Result<Self> {
+    pub(crate) fn load_from_file(
+        mut reader: Box<dyn IoReader>,
+        cache: Arc<BlockCache>,
+    ) -> Result<Self> {
         let gen = reader.get_gen();
         let footer = Footer::read_to_file(reader.as_mut())?;
         let Footer {
@@ -226,7 +232,7 @@ impl Table for SSTable {
         self.footer.level as usize
     }
 
-    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item=KeyValue> + 'a>> {
+    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
         Ok(SSTableIter::new(&self).map(Box::new)?)
     }
 }
@@ -237,6 +243,9 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
+    use crate::kernel::lsm::table::ss_table::SSTable;
+    use crate::kernel::lsm::table::Table;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
@@ -245,9 +254,6 @@ mod tests {
     use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
-    use crate::kernel::lsm::table::ss_table::SSTable;
-    use crate::kernel::lsm::table::Table;
 
     #[test]
     fn test_ss_table() -> Result<()> {
@@ -279,29 +285,19 @@ mod tests {
             ));
         }
         // Tips: 此处Level需要为0以上，因为Level 0默认为Mem类型，容易丢失
-        let _ = sst_loader.create(
-            1,
-            vec_data.clone(),
-            1,
-            TableType::SortedString
-        )?;
+        let _ = sst_loader.create(1, vec_data.clone(), 1, TableType::SortedString)?;
         assert!(sst_loader.is_table_file_exist(1)?);
 
         let ss_table = sst_loader.get(1).unwrap();
 
         for i in 0..times {
-            assert_eq!(
-                ss_table.query(&vec_data[i].0)?,
-                Some(value.clone())
-            )
+            assert_eq!(ss_table.query(&vec_data[i].0)?, Some(value.clone()))
         }
         let cache = ShardingLruCache::new(config.table_cache_size, 16, RandomState::default())?;
-        let ss_table = SSTable::load_from_file(sst_factory.reader(1, IoType::Direct)?, Arc::new(cache))?;
+        let ss_table =
+            SSTable::load_from_file(sst_factory.reader(1, IoType::Direct)?, Arc::new(cache))?;
         for i in 0..times {
-            assert_eq!(
-                ss_table.query(&vec_data[i].0)?,
-                Some(value.clone())
-            )
+            assert_eq!(ss_table.query(&vec_data[i].0)?, Some(value.clone()))
         }
 
         Ok(())

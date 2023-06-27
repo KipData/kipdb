@@ -26,12 +26,10 @@ impl<'a> SSTableIter<'a> {
         })
     }
 
-    fn data_iter_init(
-        ss_table: &'a SSTable,
-        index: Index,
-    ) -> Result<BlockIter<'a, Value>> {
+    fn data_iter_init(ss_table: &'a SSTable, index: Index) -> Result<BlockIter<'a, Value>> {
         let block = {
-            ss_table.cache
+            ss_table
+                .cache
                 .get_or_insert((ss_table.gen(), Some(index)), |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
                     Ok(ss_table.data_block(index)?)
@@ -40,7 +38,8 @@ impl<'a> SSTableIter<'a> {
                     BlockType::Data(data_block) => Some(data_block),
                     _ => None,
                 })?
-        }.ok_or(KernelError::DataEmpty)?;
+        }
+        .ok_or(KernelError::DataEmpty)?;
 
         Ok(BlockIter::new(block))
     }
@@ -100,19 +99,19 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
+    use crate::kernel::lsm::table::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
+    use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
     use bincode::Options;
     use bytes::Bytes;
+    use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
-    use crate::kernel::lsm::table::ss_table::SSTable;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -137,13 +136,11 @@ mod tests {
             key.append(&mut bincode::options().with_big_endian().serialize(&i)?);
             vec_data.push((Bytes::from(key), Some(value.clone())));
         }
-        let cache = Arc::new(
-            ShardingLruCache::new(
-                config.table_cache_size,
-                16,
-                RandomState::default()
-            )?
-        );
+        let cache = Arc::new(ShardingLruCache::new(
+            config.table_cache_size,
+            16,
+            RandomState::default(),
+        )?);
 
         let ss_table = SSTable::new(
             &sst_factory,
@@ -152,7 +149,7 @@ mod tests {
             1,
             vec_data.clone(),
             0,
-            IoType::Direct
+            IoType::Direct,
         )?;
 
         let mut iterator = SSTableIter::new(&ss_table)?;

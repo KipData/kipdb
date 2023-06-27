@@ -1,6 +1,10 @@
 use crate::kernel::io::{FileExtension, IoFactory};
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::storage::{Config, Gen};
+use crate::kernel::lsm::table::meta::TableMeta;
+use crate::kernel::lsm::table::scope::Scope;
+use crate::kernel::lsm::table::ss_table::loader::TableLoader;
+use crate::kernel::lsm::table::Table;
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
@@ -10,10 +14,6 @@ use itertools::Itertools;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info};
-use crate::kernel::lsm::table::meta::TableMeta;
-use crate::kernel::lsm::table::scope::Scope;
-use crate::kernel::lsm::table::ss_table::loader::TableLoader;
-use crate::kernel::lsm::table::Table;
 
 mod cleaner;
 pub(crate) mod edit;
@@ -292,11 +292,7 @@ impl Version {
     }
 
     /// 获取指定Table索引位置
-    pub(crate) fn find_index_by_level(
-        &self,
-        option_first: Option<i64>,
-        level: usize,
-    ) -> usize {
+    pub(crate) fn find_index_by_level(&self, option_first: Option<i64>, level: usize) -> usize {
         option_first
             .and_then(|gen| self.index(level, gen))
             .unwrap_or(0)

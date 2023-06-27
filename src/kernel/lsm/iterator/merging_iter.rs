@@ -137,22 +137,20 @@ impl MergingIter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
     use crate::kernel::lsm::iterator::{Iter, Seek};
-    use crate::kernel::lsm::mem_table::{
-        InternalKey, KeyValue, MemMap, MemMapIter,
-    };
+    use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemMapIter};
     use crate::kernel::lsm::storage::Config;
-    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::Result;
-    use bytes::Bytes;
-    use std::sync::Arc;
-    use tempfile::TempDir;
     use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
     use crate::kernel::lsm::table::ss_table::SSTable;
+    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
+    use crate::kernel::Result;
+    use bytes::Bytes;
+    use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     #[test]
     fn test_sequential_iterator() -> Result<()> {
@@ -252,13 +250,11 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?;
-        let cache = Arc::new(
-            ShardingLruCache::new(
-                config.table_cache_size,
-                16,
-                RandomState::default()
-            )?
-        );
+        let cache = Arc::new(ShardingLruCache::new(
+            config.table_cache_size,
+            16,
+            RandomState::default(),
+        )?);
 
         let ss_table = SSTable::new(
             &sst_factory,
@@ -267,7 +263,7 @@ mod tests {
             1,
             data_2,
             0,
-            IoType::Direct
+            IoType::Direct,
         )?;
 
         let map_iter = MemMapIter::new(&map);

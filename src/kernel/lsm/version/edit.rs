@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::lsm::table::scope::Scope;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub(crate) enum VersionEdit {

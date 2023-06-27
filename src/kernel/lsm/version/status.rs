@@ -1,6 +1,7 @@
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::lsm::storage::{Config, Gen};
+use crate::kernel::lsm::table::ss_table::loader::TableLoader;
 use crate::kernel::lsm::version::cleaner::Cleaner;
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::{
@@ -14,7 +15,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::RwLock;
 use tracing::info;
-use crate::kernel::lsm::table::ss_table::loader::TableLoader;
 
 /// 用于切换Version的封装Inner
 struct VersionInner {
@@ -32,7 +32,6 @@ pub(crate) struct VersionStatus {
 impl VersionStatus {
     pub(crate) fn load_with_path(config: Config, wal: LogLoader) -> Result<Self> {
         let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
-
 
         let sst_factory = Arc::new(IoFactory::new(sst_path, FileExtension::SSTable)?);
 
@@ -59,11 +58,7 @@ impl VersionStatus {
         let edit_approximate_count = AtomicUsize::new(vec_log.len());
 
         let (clean_tx, clean_rx) = unbounded_channel();
-        let version = Arc::new(Version::load_from_log(
-            vec_log,
-            &ss_table_loader,
-            clean_tx,
-        )?);
+        let version = Arc::new(Version::load_from_log(vec_log, &ss_table_loader, clean_tx)?);
 
         let mut cleaner = Cleaner::new(&ss_table_loader, clean_rx);
 

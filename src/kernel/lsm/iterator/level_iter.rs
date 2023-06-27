@@ -13,15 +13,13 @@ pub(crate) struct LevelIter<'a> {
     level_len: usize,
 
     offset: usize,
-    child_iter: Box<dyn Iter<'a, Item=KeyValue> + 'a>,
+    child_iter: Box<dyn Iter<'a, Item = KeyValue> + 'a>,
 }
 
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
     pub(crate) fn new(version: &'a Version, level: usize) -> Result<LevelIter<'a>> {
-        let table = version
-            .table(level, 0)
-            .ok_or(KernelError::DataEmpty)?;
+        let table = version.table(level, 0).ok_or(KernelError::DataEmpty)?;
         let child_iter = table.iter()?;
         let level_len = version.level_len(level);
 
@@ -89,14 +87,14 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::meta::TableMeta;
+    use crate::kernel::lsm::table::ss_table::loader::TableType;
     use crate::kernel::lsm::version::edit::VersionEdit;
     use crate::kernel::lsm::version::status::VersionStatus;
     use crate::kernel::Result;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::meta::TableMeta;
-    use crate::kernel::lsm::table::ss_table::loader::TableType;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -130,8 +128,14 @@ mod tests {
             }
             let (slice_1, slice_2) = vec_data.split_at(2000);
 
-            let (scope_1, meta_1) = ver_status.loader().create(1, slice_1.to_vec(), 1, TableType::SortedString)?;
-            let (scope_2, meta_2) = ver_status.loader().create(2, slice_2.to_vec(), 1, TableType::Skip)?;
+            let (scope_1, meta_1) =
+                ver_status
+                    .loader()
+                    .create(1, slice_1.to_vec(), 1, TableType::SortedString)?;
+            let (scope_2, meta_2) =
+                ver_status
+                    .loader()
+                    .create(2, slice_2.to_vec(), 1, TableType::Skip)?;
             let fusion_meta = TableMeta::fusion(&vec![meta_1, meta_2]);
 
             let vec_edit = vec![

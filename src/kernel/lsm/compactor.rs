@@ -1,6 +1,9 @@
 use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::storage::{Config, StoreInner};
+use crate::kernel::lsm::table::meta::TableMeta;
+use crate::kernel::lsm::table::scope::Scope;
+use crate::kernel::lsm::table::{collect_gen, Table};
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::Result;
@@ -13,10 +16,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::info;
-use crate::kernel::lsm::table::meta::TableMeta;
-use crate::kernel::lsm::table::scope::Scope;
-use crate::kernel::lsm::table::{collect_gen, Table};
-use crate::kernel::lsm::table::ss_table::loader::TableType;
 
 pub(crate) const LEVEL_0: usize = 0;
 
@@ -77,9 +76,12 @@ impl Compactor {
     /// 请注意：vec_values必须是依照key值有序的
     pub(crate) async fn minor_compaction(&self, gen: i64, values: Vec<KeyValue>) -> Result<()> {
         if !values.is_empty() {
-            let (scope, meta) = self.ver_status()
-                .loader()
-                .create(gen, values, LEVEL_0, TableType::SortedString)?;
+            let (scope, meta) = self.ver_status().loader().create(
+                gen,
+                values,
+                LEVEL_0,
+                self.config().level_table_type[LEVEL_0],
+            )?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
@@ -111,6 +113,9 @@ impl Compactor {
         mut level: usize,
         mut vec_ver_edit: Vec<VersionEdit>,
     ) -> Result<()> {
+        let next_level = level + 1;
+        let config = self.config();
+
         if level > 6 {
             return Err(KernelError::LevelOver);
         }
@@ -125,9 +130,12 @@ impl Compactor {
                 let start = Instant::now();
                 // 并行创建SSTable
                 let ss_table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
-                    self.ver_status()
-                        .loader()
-                        .create(gen, sharding, level + 1, TableType::SortedString)
+                    self.ver_status().loader().create(
+                        gen,
+                        sharding,
+                        next_level,
+                        config.level_table_type[next_level],
+                    )
                 });
                 let vec_ss_table_and_scope: Vec<(Scope, TableMeta)> =
                     future::try_join_all(ss_table_futures).await?;
@@ -136,9 +144,9 @@ impl Compactor {
                 let fusion_meta = TableMeta::fusion(&new_metas);
 
                 vec_ver_edit.append(&mut vec![
-                    VersionEdit::NewFile((new_scopes, level + 1), index, fusion_meta),
+                    VersionEdit::NewFile((new_scopes, next_level), index, fusion_meta),
                     VersionEdit::DeleteFile((del_gens_l, level), del_meta_l),
-                    VersionEdit::DeleteFile((del_gens_ll, level + 1), del_meta_ll),
+                    VersionEdit::DeleteFile((del_gens_ll, next_level), del_meta_ll),
                 ]);
                 info!(
                     "[LsmStore][Major Compaction][recreate_sst][Level: {}][Time: {:?}]",
@@ -151,7 +159,7 @@ impl Compactor {
             }
         }
         self.ver_status()
-            .log_and_apply(vec_ver_edit, self.config().ver_log_snapshot_threshold)
+            .log_and_apply(vec_ver_edit, config.ver_log_snapshot_threshold)
             .await?;
         Ok(())
     }
@@ -179,18 +187,14 @@ impl Compactor {
             let start = Instant::now();
             let scope_l = Scope::fusion(&scopes_l)?;
             // 获取下一级中有重复键值范围的SSTable
-            let (ss_tables_ll, scopes_ll) =
-                version.tables_by_scopes(next_level, &scope_l);
-            let index = version.find_index_by_level(
-                ss_tables_ll.first().map(|sst| sst.gen()),
-                next_level
-            );
+            let (ss_tables_ll, scopes_ll) = version.tables_by_scopes(next_level, &scope_l);
+            let index =
+                version.find_index_by_level(ss_tables_ll.first().map(|sst| sst.gen()), next_level);
 
             // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
             if level == LEVEL_0 {
-                ss_tables_l.append(
-                    &mut version.tables_by_meet_scope(level, |scope| scope.meet(&scope_l)),
-                )
+                ss_tables_l
+                    .append(&mut version.tables_by_meet_scope(level, |scope| scope.meet(&scope_l)))
             }
 
             // 收集需要清除的SSTable
@@ -200,9 +204,7 @@ impl Compactor {
             // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
             // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
             let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => {
-                    version.tables_by_meet_scope(level, |scope| scope.meet(&scope_ll))
-                }
+                Ok(scope_ll) => version.tables_by_meet_scope(level, |scope| scope.meet(&scope_ll)),
                 Err(_) => ss_tables_l,
             }
             .into_iter()
@@ -274,10 +276,7 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, file_size))
     }
 
-    fn table_load_data<F>(
-        table: &&dyn Table,
-        fn_is_filter: F,
-    ) -> Result<Vec<KeyValue>>
+    fn table_load_data<F>(table: &&dyn Table, fn_is_filter: F) -> Result<Vec<KeyValue>>
     where
         F: Fn(&Bytes) -> bool,
     {
@@ -306,17 +305,17 @@ impl Compactor {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::hash_map::RandomState;
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::Compactor;
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
+    use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
     use bytes::Bytes;
+    use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::ss_table::SSTable;
-    use crate::kernel::utils::lru_cache::ShardingLruCache;
 
     #[test]
     fn test_data_merge() -> Result<()> {
@@ -327,13 +326,11 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?;
-        let cache = Arc::new(
-            ShardingLruCache::new(
-                config.block_cache_size,
-                16,
-                RandomState::default()
-            )?
-        );
+        let cache = Arc::new(ShardingLruCache::new(
+            config.block_cache_size,
+            16,
+            RandomState::default(),
+        )?);
         let ss_table_1 = SSTable::new(
             &sst_factory,
             &config,
@@ -345,7 +342,7 @@ mod tests {
                 (Bytes::from_static(b"3"), Some(Bytes::from_static(b"31"))),
             ],
             0,
-            IoType::Direct
+            IoType::Direct,
         )?;
         let ss_table_2 = SSTable::new(
             &sst_factory,
@@ -357,7 +354,7 @@ mod tests {
                 (Bytes::from_static(b"4"), Some(Bytes::from_static(b"4"))),
             ],
             0,
-            IoType::Direct
+            IoType::Direct,
         )?;
         let ss_table_3 = SSTable::new(
             &sst_factory,
@@ -369,7 +366,7 @@ mod tests {
                 (Bytes::from_static(b"2"), Some(Bytes::from_static(b"21"))),
             ],
             1,
-            IoType::Direct
+            IoType::Direct,
         )?;
         let ss_table_4 = SSTable::new(
             &sst_factory,
@@ -382,7 +379,7 @@ mod tests {
                 (Bytes::from_static(b"5"), Some(Bytes::from_static(b"5"))),
             ],
             1,
-            IoType::Direct
+            IoType::Direct,
         )?;
 
         let (_, vec_data) = &tokio_test::block_on(async move {

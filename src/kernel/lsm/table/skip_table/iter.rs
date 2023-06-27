@@ -1,21 +1,18 @@
-use std::collections::Bound;
-use bytes::Bytes;
-use skiplist::skipmap;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::skip_table::SkipTable;
+use bytes::Bytes;
+use skiplist::skipmap;
+use std::collections::Bound;
 
 pub(crate) struct SkipTableIter<'a> {
     inner: Option<skipmap::Iter<'a, Bytes, Option<Bytes>>>,
-    table: &'a SkipTable
+    table: &'a SkipTable,
 }
 
 impl<'a> SkipTableIter<'a> {
     pub(crate) fn new(table: &'a SkipTable) -> SkipTableIter<'a> {
-        let mut iter = SkipTableIter {
-            inner: None,
-            table,
-        };
+        let mut iter = SkipTableIter { inner: None, table };
         iter._seek(Seek::First);
         iter
     }
@@ -26,8 +23,8 @@ impl<'a> SkipTableIter<'a> {
             Seek::Last => None,
             Seek::Backward(key) => Some(self.table.inner.range(
                 Bound::Included(&Bytes::copy_from_slice(key)),
-                Bound::Unbounded
-            ))
+                Bound::Unbounded,
+            )),
         };
     }
 }
@@ -36,7 +33,9 @@ impl<'a> Iter<'a> for SkipTableIter<'a> {
     type Item = KeyValue;
 
     fn next_err(&mut self) -> crate::kernel::Result<Option<Self::Item>> {
-        Ok(self.inner.as_mut()
+        Ok(self
+            .inner
+            .as_mut()
             .map(|iter| iter.next())
             .flatten()
             .map(item_clone))
@@ -50,9 +49,7 @@ impl<'a> Iter<'a> for SkipTableIter<'a> {
         self._seek(seek);
 
         if let Seek::Last = seek {
-            return Ok(self.table.inner
-                .back()
-                .map(item_clone));
+            return Ok(self.table.inner.back().map(item_clone));
         }
 
         if let Some(iter) = self.inner.as_mut() {
@@ -69,11 +66,11 @@ fn item_clone((key, value): (&Bytes, &Option<Bytes>)) -> KeyValue {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use crate::kernel::lsm::iterator::Seek;
     use crate::kernel::lsm::table::skip_table::SkipTable;
     use crate::kernel::lsm::table::Table;
     use crate::kernel::Result;
+    use bytes::Bytes;
 
     #[test]
     fn test_iterator() -> Result<()> {
@@ -96,7 +93,10 @@ mod tests {
 
         assert_eq!(iter.seek(Seek::First)?, Some(vec[0].clone()));
 
-        assert_eq!(iter.seek(Seek::Backward(&vec![b'3']))?, Some(vec[2].clone()));
+        assert_eq!(
+            iter.seek(Seek::Backward(&vec![b'3']))?,
+            Some(vec[2].clone())
+        );
 
         assert_eq!(iter.seek(Seek::Last)?, Some(vec[5].clone()));
 

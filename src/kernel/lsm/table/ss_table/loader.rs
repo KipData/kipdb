@@ -3,25 +3,26 @@ use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{logs_decode, KeyValue};
 use crate::kernel::lsm::storage::Config;
-use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::kernel::Result;
-use itertools::Itertools;
-use std::collections::hash_map::RandomState;
-use std::mem;
-use std::sync::Arc;
-use bytes::Bytes;
-use tracing::warn;
-use crate::kernel::lsm::table::{BoxTable, Table};
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::skip_table::SkipTable;
 use crate::kernel::lsm::table::ss_table::block::BlockCache;
 use crate::kernel::lsm::table::ss_table::SSTable;
+use crate::kernel::lsm::table::{BoxTable, Table};
+use crate::kernel::utils::lru_cache::ShardingLruCache;
+use crate::kernel::Result;
+use bytes::Bytes;
+use itertools::Itertools;
+use std::collections::hash_map::RandomState;
+use std::mem;
+use std::sync::Arc;
+use tracing::warn;
 
-pub(crate) enum TableType {
+#[derive(Copy, Clone, Debug)]
+pub enum TableType {
     SortedString,
     #[allow(dead_code)]
-    Skip
+    Skip,
 }
 
 #[derive(Clone)]
@@ -30,7 +31,7 @@ pub(crate) struct TableLoader {
     factory: Arc<IoFactory>,
     config: Config,
     wal: LogLoader,
-    cache: Arc<BlockCache>
+    cache: Arc<BlockCache>,
 }
 
 impl TableLoader {
@@ -64,12 +65,8 @@ impl TableLoader {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_vec_data(gen, &vec_data)?;
         let table: Box<dyn Table> = match table_type {
-            TableType::SortedString => {
-                Box::new(self.create_ss_table(gen, vec_data, level)?)
-            }
-            TableType::Skip => {
-                Box::new(SkipTable::new(level, gen, vec_data))
-            }
+            TableType::SortedString => Box::new(self.create_ss_table(gen, vec_data, level)?),
+            TableType::Skip => Box::new(SkipTable::new(level, gen, vec_data)),
         };
         let table_meta = TableMeta::from(table.as_ref());
         let _ = self.inner.put(gen, table);
@@ -102,11 +99,17 @@ impl TableLoader {
                 };
 
                 Ok(Box::new(ss_table))
-            }).map(Box::as_ref)
+            })
+            .map(Box::as_ref)
             .ok()
     }
 
-    fn create_ss_table(&self, gen: i64, reload_data: Vec<(Bytes, Option<Bytes>)>, level: usize) -> Result<SSTable> {
+    fn create_ss_table(
+        &self,
+        gen: i64,
+        reload_data: Vec<(Bytes, Option<Bytes>)>,
+        level: usize,
+    ) -> Result<SSTable> {
         SSTable::new(
             &self.factory,
             &self.config,
@@ -114,7 +117,7 @@ impl TableLoader {
             gen,
             reload_data,
             level,
-            IoType::Direct
+            IoType::Direct,
         )
     }
 
@@ -148,13 +151,13 @@ mod tests {
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::{data_to_bytes, DEFAULT_WAL_PATH};
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::Result;
     use bincode::Options;
     use bytes::Bytes;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::ss_table::loader::{TableLoader, TableType};
 
     #[test]
     fn test_ss_table_loader() -> Result<()> {
@@ -197,27 +200,16 @@ mod tests {
 
         let sst_loader = TableLoader::new(config, sst_factory.clone(), log_loader.clone())?;
 
-        let _ = sst_loader.create(
-            1,
-            vec_data.clone(),
-            0,
-            TableType::SortedString
-        )?;
+        let _ = sst_loader.create(1, vec_data.clone(), 0, TableType::SortedString)?;
 
         assert!(sst_loader.remove(&1).is_some());
         assert!(sst_loader.is_emtpy());
 
         let ss_table_loaded = sst_loader.get(1).unwrap();
 
-        assert_eq!(
-            ss_table_loaded.query(&repeat_data.0)?,
-            repeat_data.1
-        );
+        assert_eq!(ss_table_loaded.query(&repeat_data.0)?, repeat_data.1);
         for i in 1..times {
-            assert_eq!(
-                ss_table_loaded.query(&vec_data[i].0)?,
-                Some(value.clone())
-            )
+            assert_eq!(ss_table_loaded.query(&vec_data[i].0)?, Some(value.clone()))
         }
 
         // 模拟SSTable异常而使用Wal进行恢复的情况
@@ -228,15 +220,9 @@ mod tests {
 
         let ss_table_backup = sst_loader.get(1).unwrap();
 
-        assert_eq!(
-            ss_table_backup.query(&repeat_data.0)?,
-            repeat_data.1
-        );
+        assert_eq!(ss_table_backup.query(&repeat_data.0)?, repeat_data.1);
         for i in 1..times {
-            assert_eq!(
-                ss_table_backup.query(&vec_data[i].0)?,
-                Some(value.clone())
-            )
+            assert_eq!(ss_table_backup.query(&vec_data[i].0)?, Some(value.clone()))
         }
         Ok(())
     }

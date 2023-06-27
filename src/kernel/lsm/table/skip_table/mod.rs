@@ -1,17 +1,17 @@
 mod iter;
 
-use bytes::Bytes;
-use skiplist::SkipMap;
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::skip_table::iter::SkipTableIter;
 use crate::kernel::lsm::table::Table;
+use bytes::Bytes;
+use skiplist::SkipMap;
 
 pub(crate) struct SkipTable {
     level: usize,
     gen: i64,
     len: usize,
-    inner: SkipMap<Bytes, Option<Bytes>>
+    inner: SkipMap<Bytes, Option<Bytes>>,
 }
 
 impl SkipTable {
@@ -27,10 +27,7 @@ impl SkipTable {
 
 impl Table for SkipTable {
     fn query(&self, key: &[u8]) -> crate::kernel::Result<Option<Bytes>> {
-        Ok(self.inner
-            .get(key)
-            .cloned()
-            .flatten())
+        Ok(self.inner.get(key).cloned().flatten())
     }
 
     fn len(&self) -> usize {
@@ -49,8 +46,7 @@ impl Table for SkipTable {
         self.level
     }
 
-    fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item=KeyValue> + 'a>> {
+    fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
         Ok(Box::new(SkipTableIter::new(&self)))
     }
 }
-

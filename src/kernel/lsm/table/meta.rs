@@ -1,6 +1,6 @@
+use crate::kernel::lsm::table::Table;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use crate::kernel::lsm::table::Table;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub(crate) struct TableMeta {
