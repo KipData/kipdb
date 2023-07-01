@@ -32,7 +32,7 @@ impl Footer {
 
 #[cfg(test)]
 mod test {
-    use crate::kernel::lsm::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
+    use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
     use crate::kernel::Result;
 
     #[test]

@@ -7,8 +7,8 @@ mod iterator;
 mod log;
 mod mem_table;
 mod mvcc;
-mod ss_table;
 pub mod storage;
+mod table;
 mod trigger;
 mod version;
 

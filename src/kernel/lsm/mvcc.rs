@@ -43,7 +43,7 @@ impl Transaction {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.version.find_data_for_ss_tables(key)? {
+        if let Some(value) = self.version.query(key)? {
             return Ok(Some(value));
         }
 

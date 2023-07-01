@@ -3,7 +3,8 @@ use crate::kernel::lsm::compactor::{CompactTask, Compactor};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
-use crate::kernel::lsm::ss_table::block;
+use crate::kernel::lsm::table::ss_table::block;
+use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version;
 use crate::kernel::lsm::version::status::VersionStatus;
@@ -48,7 +49,7 @@ pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
 pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
 
-pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
+pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 5;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
@@ -140,7 +141,7 @@ impl Storage for LsmStore {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.current_version().await.find_data_for_ss_tables(key)? {
+        if let Some(value) = self.current_version().await.query(key)? {
             return Ok(Some(value));
         }
 
@@ -207,11 +208,8 @@ impl LsmStore {
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;
         let lock_file = lock_or_time_out(&config.path().join(DEFAULT_LOCK_FILE)).await?;
-
         let inner = Arc::new(StoreInner::new(config.clone()).await?);
-
         let mut compactor = Compactor::new(Arc::clone(&inner));
-
         let (task_tx, mut task_rx) = channel(1);
 
         let _ignore = tokio::spawn(async move {
@@ -279,6 +277,9 @@ impl<'a> Guard<'a> {
 pub struct Config {
     /// 数据目录地址
     pub(crate) dir_path: PathBuf,
+    /// 各层级对应Table类型
+    /// Tips: SkipTable仅可使用于Level 0之中，否则会因为Level 0外不支持WAL恢复而导致停机后丢失数据
+    pub(crate) level_table_type: [TableType; 7],
     /// WAL数量阈值
     pub(crate) wal_threshold: usize,
     /// SSTable文件大小
@@ -320,6 +321,7 @@ impl Config {
     pub fn new(path: impl Into<PathBuf> + Send) -> Config {
         Config {
             dir_path: path.into(),
+            level_table_type: [TableType::SortedString; 7],
             wal_threshold: DEFAULT_WAL_THRESHOLD,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             minor_trigger_with_threshold: (
@@ -345,8 +347,20 @@ impl Config {
     }
 
     #[inline]
+    pub fn enable_level_0_memorization(mut self) -> Self {
+        self.level_table_type[0] = TableType::Skip;
+        self
+    }
+
+    #[inline]
     pub fn dir_path(mut self, dir_path: PathBuf) -> Self {
         self.dir_path = dir_path;
+        self
+    }
+
+    #[inline]
+    pub fn level_table_type(mut self, level: usize, table_type: TableType) -> Self {
+        self.level_table_type[level] = table_type;
         self
     }
 
@@ -522,8 +536,9 @@ mod tests {
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-            let config =
-                Config::new(temp_dir.path().to_str().unwrap()).major_threshold_with_sst_size(4);
+            let config = Config::new(temp_dir.path().to_str().unwrap())
+                .major_threshold_with_sst_size(4)
+                .enable_level_0_memorization();
             let kv_store = LsmStore::open_with_config(config).await?;
             let mut vec_kv = Vec::new();
 

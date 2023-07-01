@@ -1,8 +1,8 @@
 use crate::kernel::io::IoWriter;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
-use crate::kernel::lsm::ss_table::block::{Entry, Value};
 use crate::kernel::lsm::storage::{Config, Gen, Sequence};
+use crate::kernel::lsm::table::ss_table::block::{Entry, Value};
 use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 use crate::kernel::Result;
 use bytes::Bytes;

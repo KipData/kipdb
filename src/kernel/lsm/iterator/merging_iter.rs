@@ -140,13 +140,10 @@ mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::iterator::merging_iter::MergingIter;
     use crate::kernel::lsm::iterator::{Iter, Seek};
-    use crate::kernel::lsm::log::LogLoader;
-    use crate::kernel::lsm::mem_table::{
-        InternalKey, KeyValue, MemMap, MemMapIter, DEFAULT_WAL_PATH,
-    };
-    use crate::kernel::lsm::ss_table::iter::SSTableIter;
-    use crate::kernel::lsm::ss_table::loader::SSTableLoader;
+    use crate::kernel::lsm::mem_table::{InternalKey, KeyValue, MemMap, MemMapIter};
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
+    use crate::kernel::lsm::table::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::Result;
@@ -248,30 +245,30 @@ mod tests {
         );
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
         let config = Config::new(temp_dir.into_path());
-
         let sst_factory = IoFactory::new(
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?;
-        let (wal, _, _) = LogLoader::reload(
-            config.path(),
-            (DEFAULT_WAL_PATH, Some(1)),
+        let cache = Arc::new(ShardingLruCache::new(
+            config.table_cache_size,
+            16,
+            RandomState::default(),
+        )?);
+
+        let ss_table = SSTable::new(
+            &sst_factory,
+            &config,
+            Arc::clone(&cache),
+            1,
+            data_2,
+            0,
             IoType::Direct,
-            |_| Ok(()),
         )?;
-        let loader = SSTableLoader::new(config.clone(), Arc::new(sst_factory), wal)?;
-
-        let _ = loader.create(1, data_2, 0)?;
-
-        let ss_table = loader.get(1).unwrap();
-
-        let cache = ShardingLruCache::new(config.block_cache_size, 16, RandomState::default())?;
 
         let map_iter = MemMapIter::new(&map);
 
-        let sst_iter = SSTableIter::new(&ss_table, &cache)?;
+        let sst_iter = SSTableIter::new(&ss_table)?;
 
         let mut sequence_iter = sequence.into_iter();
 

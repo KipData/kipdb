@@ -1,10 +1,10 @@
 use crate::kernel::io::{FileExtension, IoFactory};
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::ss_table::block::BlockCache;
-use crate::kernel::lsm::ss_table::loader::SSTableLoader;
-use crate::kernel::lsm::ss_table::meta::SSTableMeta;
-use crate::kernel::lsm::ss_table::{SSTable, Scope};
 use crate::kernel::lsm::storage::{Config, Gen};
+use crate::kernel::lsm::table::loader::TableLoader;
+use crate::kernel::lsm::table::meta::TableMeta;
+use crate::kernel::lsm::table::scope::Scope;
+use crate::kernel::lsm::table::Table;
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
@@ -47,11 +47,9 @@ fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
 #[derive(Clone)]
 pub(crate) struct Version {
     pub(crate) version_num: u64,
-    /// 稀疏区间数据Block缓存
-    pub(crate) block_cache: Arc<BlockCache>,
-    /// SSTable存储Map
+    /// Table存储Map
     /// 全局共享
-    ss_tables_loader: Arc<SSTableLoader>,
+    table_loader: Arc<TableLoader>,
     /// Level层级Vec
     /// 以索引0为level-0这样的递推，存储文件的gen值
     /// 每个Version各持有各自的Gen矩阵
@@ -83,15 +81,13 @@ impl Version {
     /// 通过一组VersionEdit载入Version
     pub(crate) fn load_from_log(
         vec_log: Vec<VersionEdit>,
-        ss_table_loader: &Arc<SSTableLoader>,
-        block_cache: &Arc<BlockCache>,
+        ss_table_loader: &Arc<TableLoader>,
         clean_tx: UnboundedSender<CleanTag>,
     ) -> Result<Self> {
         let mut version = Self {
             version_num: 0,
-            ss_tables_loader: Arc::clone(ss_table_loader),
+            table_loader: Arc::clone(ss_table_loader),
             level_slice: Self::level_slice_new(),
-            block_cache: Arc::clone(block_cache),
             meta_data: VersionMeta {
                 size_of_disk: 0,
                 len: 0,
@@ -109,13 +105,11 @@ impl Version {
     ///
     /// Tips: 当此处像Cleaner发送Tag::Add时，此时的version中不需要的gens
     /// 因此每次删除都是删除此Version的前一位所需要删除的Version
-    /// 也就是可能存在一次Version的冗余SSTable
+    /// 也就是可能存在一次Version的冗余Table
     /// 可能是个确定，但是Minor Compactor比较起来更加频繁，也就是大多数情况不会冗余，因此我觉得影响较小
     /// 也可以算作是一种Major Compaction异常时的备份？
     pub(crate) fn apply(&mut self, vec_version_edit: Vec<VersionEdit>) -> Result<()> {
         let mut del_gens = Vec::new();
-        // 避免日志重溯时对最终状态不存在的SSTable进行数据统计处理
-        // 导致SSTableMap不存在此SSTable而抛出`KvsError::SSTableLostError`
         let mut vec_statistics_sst_meta = Vec::new();
 
         for version_edit in vec_version_edit {
@@ -129,7 +123,7 @@ impl Version {
                 VersionEdit::NewFile((vec_scope, level), index, sst_meta) => {
                     vec_statistics_sst_meta.push(EditType::Add(sst_meta));
 
-                    // Level 0中的SSTable绝对是以gen为优先级
+                    // Level 0中的Table绝对是以gen为优先级
                     // Level N中则不以gen为顺序，此处对gen排序是因为单次NewFile中的gen肯定是有序的
                     let scope_iter = vec_scope.into_iter().sorted_by_key(Scope::get_gen);
                     if level == LEVEL_0 {
@@ -170,11 +164,11 @@ impl Version {
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
     pub(crate) fn to_vec_edit(&self) -> Vec<VersionEdit> {
-        fn sst_meta_with_level(level: usize, size_of_disk: u64, len: usize) -> SSTableMeta {
+        fn sst_meta_by_level(level: usize, size_of_disk: u64, len: usize) -> TableMeta {
             if LEVEL_0 == level {
-                SSTableMeta { size_of_disk, len }
+                TableMeta { size_of_disk, len }
             } else {
-                SSTableMeta::default()
+                TableMeta::default()
             }
         }
 
@@ -186,30 +180,30 @@ impl Version {
                     VersionEdit::NewFile(
                         (vec_scope.clone(), level),
                         0,
-                        sst_meta_with_level(level, self.size_of_disk(), self.len()),
+                        sst_meta_by_level(level, self.size_of_disk(), self.len()),
                     )
                 })
             })
             .collect_vec()
     }
 
-    pub(crate) fn get_ss_table(&self, level: usize, offset: usize) -> Option<&SSTable> {
+    pub(crate) fn table(&self, level: usize, offset: usize) -> Option<&dyn Table> {
         self.level_slice[level]
             .get(offset)
-            .and_then(|scope| self.ss_tables_loader.get(scope.get_gen()))
+            .and_then(|scope| self.table_loader.get(scope.get_gen()))
     }
 
-    /// 只限定获取Level 0的SSTable
+    /// 只限定获取Level 0的Table
     ///
     /// Tips：不鼓励全量获取其他Level
-    pub(crate) fn get_ss_tables_with_level_0(&self) -> Vec<&SSTable> {
+    pub(crate) fn tables_by_level_0(&self) -> Vec<&dyn Table> {
         self.level_slice[LEVEL_0]
             .iter()
-            .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
+            .filter_map(|scope| self.table_loader.get(scope.get_gen()))
             .collect_vec()
     }
 
-    pub(crate) fn get_index(&self, level: usize, source_gen: i64) -> Option<usize> {
+    pub(crate) fn index(&self, level: usize, source_gen: i64) -> Option<usize> {
         self.level_slice[level]
             .iter()
             .enumerate()
@@ -217,11 +211,11 @@ impl Version {
             .map(|(index, _)| index)
     }
 
-    pub(crate) fn first_ss_tables(
+    pub(crate) fn first_tables(
         &self,
         level: usize,
         size: usize,
-    ) -> Option<(Vec<&SSTable>, Vec<Scope>)> {
+    ) -> Option<(Vec<&dyn Table>, Vec<Scope>)> {
         if self.level_slice[level].is_empty() {
             return None;
         }
@@ -231,7 +225,7 @@ impl Version {
                 .iter()
                 .take(size)
                 .filter_map(|scope| {
-                    self.ss_tables_loader
+                    self.table_loader
                         .get(scope.get_gen())
                         .map(|ss_table| (ss_table, scope.clone()))
                 })
@@ -239,57 +233,55 @@ impl Version {
         )
     }
 
-    /// 获取指定level中与scope冲突的SSTables和Scopes
-    pub(crate) fn get_meet_scope_ss_tables_with_scopes(
+    /// 获取指定level中与scope冲突的Tables和Scopes
+    pub(crate) fn tables_by_scopes(
         &self,
         level: usize,
         target_scope: &Scope,
-    ) -> (Vec<&SSTable>, Vec<Scope>) {
+    ) -> (Vec<&dyn Table>, Vec<Scope>) {
         self.level_slice[level]
             .iter()
             .filter(|scope| scope.meet(target_scope))
             .filter_map(|scope| {
-                self.ss_tables_loader
+                self.table_loader
                     .get(scope.get_gen())
                     .map(|ss_table| (ss_table, scope.clone()))
             })
             .unzip()
     }
 
-    /// 获取指定level中与scope冲突的SSTables
-    pub(crate) fn get_meet_scope_ss_tables<F>(&self, level: usize, fn_meet: F) -> Vec<&SSTable>
+    /// 获取指定level中与scope冲突的Tables
+    pub(crate) fn tables_by_meet_scope<F>(&self, level: usize, fn_meet: F) -> Vec<&dyn Table>
     where
         F: Fn(&Scope) -> bool,
     {
         self.level_slice[level]
             .iter()
             .filter(|scope| fn_meet(scope))
-            .filter_map(|scope| self.ss_tables_loader.get(scope.get_gen()))
+            .filter_map(|scope| self.table_loader.get(scope.get_gen()))
             .collect_vec()
     }
 
-    /// 使用Key从现有SSTables中获取对应的数据
-    pub(crate) fn find_data_for_ss_tables(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let ss_table_loader = &self.ss_tables_loader;
-        let block_cache = &self.block_cache;
-
-        // Level 0的SSTable是无序且SSTable间的数据是可能重复的,因此需要遍历
+    /// 使用Key从现有Tables中获取对应的数据
+    pub(crate) fn query(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        let table_loader = &self.table_loader;
+        // Level 0的Table是无序且Table间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
-            if scope.meet_with_key(key) {
-                if let Some(ss_table) = ss_table_loader.get(scope.get_gen()) {
-                    if let Some(value) = ss_table.query_with_key(key, block_cache)? {
+            if scope.meet_by_key(key) {
+                if let Some(ss_table) = table_loader.get(scope.get_gen()) {
+                    if let Some(value) = ss_table.query(key)? {
                         return Ok(Some(value));
                     }
                 }
             }
         }
-        // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的SSTable
+        // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的Table
         for level in 1..7 {
             let offset = self.query_meet_index(key, level);
 
             if let Some(scope) = self.level_slice[level].get(offset) {
-                return if let Some(ss_table) = ss_table_loader.get(scope.get_gen()) {
-                    ss_table.query_with_key(key, block_cache)
+                return if let Some(ss_table) = table_loader.get(scope.get_gen()) {
+                    ss_table.query(key)
                 } else {
                     Ok(None)
                 };
@@ -299,13 +291,20 @@ impl Version {
         Ok(None)
     }
 
+    /// 获取指定Table索引位置
+    pub(crate) fn find_index_by_level(&self, option_first: Option<i64>, level: usize) -> usize {
+        option_first
+            .and_then(|gen| self.index(level, gen))
+            .unwrap_or(0)
+    }
+
     pub(crate) fn query_meet_index(&self, key: &[u8], level: usize) -> usize {
         self.level_slice[level]
             .binary_search_by(|scope| scope.start.as_ref().cmp(key))
             .unwrap_or_else(|index| index.saturating_sub(1))
     }
 
-    /// 判断是否溢出指定的SSTable数量
+    /// 判断是否溢出指定的Table数量
     pub(crate) fn is_threshold_exceeded_major(&self, config: &Config, level: usize) -> bool {
         self.level_slice[level].len()
             >= (config.major_threshold_with_sst_size

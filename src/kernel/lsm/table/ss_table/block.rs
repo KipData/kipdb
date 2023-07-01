@@ -660,7 +660,7 @@ fn longest_shared_len<T>(sharding: Vec<&KeyValue<T>>) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::ss_table::block::{
+    use crate::kernel::lsm::table::ss_table::block::{
         Block, BlockBuilder, BlockItem, BlockOptions, CompressType, Entry, Index, Value,
     };
     use crate::kernel::utils::lru_cache::LruCache;

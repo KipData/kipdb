@@ -1,6 +1,7 @@
 use crate::kernel::io::IoType;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::storage::Config;
+use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;
@@ -32,11 +33,19 @@ fn test_version_clean() -> Result<()> {
 
         let sst_loader = ver_status.loader().clone();
 
-        let (scope_1, meta_1) =
-            sst_loader.create(1, vec![(Bytes::from_static(b"test"), None)], 0)?;
+        let (scope_1, meta_1) = sst_loader.create(
+            1,
+            vec![(Bytes::from_static(b"test"), None)],
+            0,
+            TableType::SortedString,
+        )?;
 
-        let (scope_2, meta_2) =
-            sst_loader.create(2, vec![(Bytes::from_static(b"test"), None)], 0)?;
+        let (scope_2, meta_2) = sst_loader.create(
+            2,
+            vec![(Bytes::from_static(b"test"), None)],
+            0,
+            TableType::SortedString,
+        )?;
 
         let vec_edit_1 = vec![VersionEdit::NewFile((vec![scope_1], 0), 0, meta_1)];
 
@@ -74,25 +83,25 @@ fn test_version_clean() -> Result<()> {
             ]
         );
 
-        assert!(sst_loader.is_sst_file_exist(1)?);
-        assert!(sst_loader.is_sst_file_exist(2)?);
+        assert!(sst_loader.is_table_file_exist(1)?);
+        assert!(sst_loader.is_table_file_exist(2)?);
 
         drop(version_2);
 
-        assert!(sst_loader.is_sst_file_exist(1)?);
-        assert!(sst_loader.is_sst_file_exist(2)?);
+        assert!(sst_loader.is_table_file_exist(1)?);
+        assert!(sst_loader.is_table_file_exist(2)?);
 
         drop(version_1);
         time::sleep(Duration::from_secs(1)).await;
 
-        assert!(!sst_loader.is_sst_file_exist(1)?);
-        assert!(sst_loader.is_sst_file_exist(2)?);
+        assert!(!sst_loader.is_table_file_exist(1)?);
+        assert!(sst_loader.is_table_file_exist(2)?);
 
         drop(ver_status);
         time::sleep(Duration::from_secs(1)).await;
 
-        assert!(!sst_loader.is_sst_file_exist(1)?);
-        assert!(!sst_loader.is_sst_file_exist(2)?);
+        assert!(!sst_loader.is_table_file_exist(1)?);
+        assert!(!sst_loader.is_table_file_exist(2)?);
 
         Ok(())
     })
@@ -116,15 +125,19 @@ fn test_version_apply_and_log() -> Result<()> {
         // 因为VersionStatus检测无Log时会扫描当前文件夹下的SSTable进行重组以进行容灾
         let ver_status_1 = VersionStatus::load_with_path(config.clone(), wal.clone())?;
 
-        let (scope_1, meta_1) =
-            ver_status_1
-                .loader()
-                .create(1, vec![(Bytes::from_static(b"test"), None)], 0)?;
+        let (scope_1, meta_1) = ver_status_1.loader().create(
+            1,
+            vec![(Bytes::from_static(b"test"), None)],
+            0,
+            TableType::SortedString,
+        )?;
 
-        let (scope_2, meta_2) =
-            ver_status_1
-                .loader()
-                .create(2, vec![(Bytes::from_static(b"test"), None)], 0)?;
+        let (scope_2, meta_2) = ver_status_1.loader().create(
+            2,
+            vec![(Bytes::from_static(b"test"), None)],
+            0,
+            TableType::SortedString,
+        )?;
 
         let vec_edit = vec![
             VersionEdit::NewFile((vec![scope_1], 0), 0, meta_1),
@@ -134,15 +147,19 @@ fn test_version_apply_and_log() -> Result<()> {
 
         ver_status_1.log_and_apply(vec_edit, 10).await?;
 
-        let (scope_3, meta_3) =
-            ver_status_1
-                .loader()
-                .create(3, vec![(Bytes::from_static(b"test3"), None)], 0)?;
+        let (scope_3, meta_3) = ver_status_1.loader().create(
+            3,
+            vec![(Bytes::from_static(b"test3"), None)],
+            0,
+            TableType::SortedString,
+        )?;
 
-        let (scope_4, meta_4) =
-            ver_status_1
-                .loader()
-                .create(4, vec![(Bytes::from_static(b"test4"), None)], 0)?;
+        let (scope_4, meta_4) = ver_status_1.loader().create(
+            4,
+            vec![(Bytes::from_static(b"test4"), None)],
+            0,
+            TableType::SortedString,
+        )?;
 
         let vec_edit2 = vec![
             VersionEdit::NewFile((vec![scope_3], 0), 0, meta_3),

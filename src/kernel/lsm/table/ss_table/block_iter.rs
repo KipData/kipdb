@@ -1,5 +1,5 @@
 use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
-use crate::kernel::lsm::ss_table::block::{Block, BlockItem, Entry};
+use crate::kernel::lsm::table::ss_table::block::{Block, BlockItem, Entry};
 use crate::kernel::Result;
 use bytes::Bytes;
 
@@ -102,8 +102,8 @@ where
 #[cfg(test)]
 mod tests {
     use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
-    use crate::kernel::lsm::ss_table::block::{Block, Value, DEFAULT_DATA_RESTART_INTERVAL};
-    use crate::kernel::lsm::ss_table::block_iter::BlockIter;
+    use crate::kernel::lsm::table::ss_table::block::{Block, Value, DEFAULT_DATA_RESTART_INTERVAL};
+    use crate::kernel::lsm::table::ss_table::block_iter::BlockIter;
     use crate::kernel::Result;
     use bincode::Options;
     use bytes::Bytes;

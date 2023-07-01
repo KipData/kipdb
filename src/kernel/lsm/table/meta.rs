@@ -1,22 +1,21 @@
-use crate::kernel::lsm::ss_table::SSTable;
+use crate::kernel::lsm::table::Table;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use std::borrow::Borrow;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq, Default)]
-pub(crate) struct SSTableMeta {
+pub(crate) struct TableMeta {
     pub(crate) size_of_disk: u64,
     pub(crate) len: usize,
 }
 
-impl SSTableMeta {
-    pub(crate) fn fusion(metas: &[SSTableMeta]) -> Self {
-        let mut meta = SSTableMeta {
+impl TableMeta {
+    pub(crate) fn fusion(metas: &[TableMeta]) -> Self {
+        let mut meta = TableMeta {
             size_of_disk: 0,
             len: 0,
         };
 
-        for SSTableMeta { size_of_disk, len } in metas {
+        for TableMeta { size_of_disk, len } in metas {
             meta.len += len;
             meta.size_of_disk += size_of_disk;
         }
@@ -25,26 +24,23 @@ impl SSTableMeta {
     }
 }
 
-impl From<&SSTable> for SSTableMeta {
-    fn from(value: &SSTable) -> Self {
-        SSTableMeta {
+impl From<&dyn Table> for TableMeta {
+    fn from(value: &dyn Table) -> Self {
+        TableMeta {
             size_of_disk: value.size_of_disk(),
             len: value.len(),
         }
     }
 }
 
-impl<T> From<&[T]> for SSTableMeta
-where
-    T: Borrow<SSTable>,
-{
-    fn from(value: &[T]) -> Self {
-        let mut sst_meta = SSTableMeta {
+impl From<&[&dyn Table]> for TableMeta {
+    fn from(value: &[&dyn Table]) -> Self {
+        let mut sst_meta = TableMeta {
             size_of_disk: 0,
             len: 0,
         };
 
-        for sst in value.iter().map(T::borrow).unique_by(|sst| sst.get_gen()) {
+        for sst in value.iter().unique_by(|sst| sst.gen()) {
             sst_meta.len += sst.len();
             sst_meta.size_of_disk += sst.size_of_disk();
         }

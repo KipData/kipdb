@@ -1,7 +1,6 @@
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
@@ -14,16 +13,14 @@ pub(crate) struct LevelIter<'a> {
     level_len: usize,
 
     offset: usize,
-    sst_iter: SSTableIter<'a>,
+    child_iter: Box<dyn Iter<'a, Item = KeyValue> + 'a>,
 }
 
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
     pub(crate) fn new(version: &'a Version, level: usize) -> Result<LevelIter<'a>> {
-        let ss_table = version
-            .get_ss_table(level, 0)
-            .ok_or(KernelError::DataEmpty)?;
-        let sst_iter = SSTableIter::new(ss_table, &version.block_cache)?;
+        let table = version.table(level, 0).ok_or(KernelError::DataEmpty)?;
+        let child_iter = table.iter()?;
         let level_len = version.level_len(level);
 
         Ok(Self {
@@ -31,16 +28,16 @@ impl<'a> LevelIter<'a> {
             level,
             level_len,
             offset: 0,
-            sst_iter,
+            child_iter,
         })
     }
 
-    fn sst_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
+    fn child_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
         self.offset = offset;
         if self.is_valid() {
-            if let Some(ss_table) = self.version.get_ss_table(self.level, offset) {
-                self.sst_iter = SSTableIter::new(ss_table, &self.version.block_cache)?;
-                return self.sst_iter.seek(seek);
+            if let Some(table) = self.version.table(self.level, offset) {
+                self.child_iter = table.iter()?;
+                return self.child_iter.seek(seek);
             }
         }
 
@@ -53,22 +50,7 @@ impl<'a> LevelIter<'a> {
         if level == LEVEL_0 {
             return Err(KernelError::NotSupport(LEVEL_0_SEEK_MESSAGE));
         }
-        self.sst_iter_seek(seek, self.version.query_meet_index(key, level))
-    }
-}
-
-impl<'a> ForwardIter<'a> for LevelIter<'a> {
-    fn prev_err(&mut self) -> Result<Option<Self::Item>> {
-        match self.sst_iter.prev_err()? {
-            None => {
-                if self.offset > 0 {
-                    self.sst_iter_seek(Seek::Last, self.offset - 1)
-                } else {
-                    Ok(None)
-                }
-            }
-            Some(item) => Ok(Some(item)),
-        }
+        self.child_iter_seek(seek, self.version.query_meet_index(key, level))
     }
 }
 
@@ -76,8 +58,8 @@ impl<'a> Iter<'a> for LevelIter<'a> {
     type Item = KeyValue;
 
     fn next_err(&mut self) -> Result<Option<Self::Item>> {
-        match self.sst_iter.next_err()? {
-            None => self.sst_iter_seek(Seek::First, self.offset + 1),
+        match self.child_iter.next_err()? {
+            None => self.child_iter_seek(Seek::First, self.offset + 1),
             Some(item) => Ok(Some(item)),
         }
     }
@@ -90,8 +72,8 @@ impl<'a> Iter<'a> for LevelIter<'a> {
     /// 因为Level 0中的SSTable并非有序排列，其中数据范围是可能交错的
     fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
         match seek {
-            Seek::First => self.sst_iter_seek(Seek::First, 0),
-            Seek::Last => self.sst_iter_seek(Seek::Last, self.level_len - 1),
+            Seek::First => self.child_iter_seek(Seek::First, 0),
+            Seek::Last => self.child_iter_seek(Seek::Last, self.level_len - 1),
             Seek::Backward(key) => self.seek_ward(key, seek),
         }
     }
@@ -101,11 +83,12 @@ impl<'a> Iter<'a> for LevelIter<'a> {
 mod tests {
     use crate::kernel::io::IoType;
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
-    use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
-    use crate::kernel::lsm::ss_table::meta::SSTableMeta;
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::meta::TableMeta;
+    use crate::kernel::lsm::table::TableType;
     use crate::kernel::lsm::version::edit::VersionEdit;
     use crate::kernel::lsm::version::status::VersionStatus;
     use crate::kernel::Result;
@@ -145,16 +128,22 @@ mod tests {
             }
             let (slice_1, slice_2) = vec_data.split_at(2000);
 
-            let (scope_1, meta_1) = ver_status.loader().create(1, slice_1.to_vec(), 1)?;
-            let (scope_2, meta_2) = ver_status.loader().create(2, slice_2.to_vec(), 1)?;
-            let fusion_meta = SSTableMeta::fusion(&vec![meta_1, meta_2]);
+            let (scope_1, meta_1) =
+                ver_status
+                    .loader()
+                    .create(1, slice_1.to_vec(), 1, TableType::SortedString)?;
+            let (scope_2, meta_2) =
+                ver_status
+                    .loader()
+                    .create(2, slice_2.to_vec(), 1, TableType::Skip)?;
+            let fusion_meta = TableMeta::fusion(&vec![meta_1, meta_2]);
 
             let vec_edit = vec![
                 // Tips: 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
                 VersionEdit::NewFile(
                     (vec![scope_1.clone()], 0),
                     0,
-                    SSTableMeta {
+                    TableMeta {
                         size_of_disk: 0,
                         len: 0,
                     },
@@ -169,10 +158,6 @@ mod tests {
             let mut iterator = LevelIter::new(&version, 1)?;
             for i in 0..times {
                 assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
-            }
-
-            for i in (0..times - 1).rev() {
-                assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
             }
 
             assert_eq!(
