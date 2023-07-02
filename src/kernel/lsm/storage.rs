@@ -1,8 +1,9 @@
 use crate::kernel::io::IoType;
-use crate::kernel::lsm::compactor::{CompactTask, Compactor};
+use crate::kernel::lsm::compactor::{CompactTask, Compactor, LEVEL_0};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
+use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::ss_table::block;
 use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::trigger::TriggerType;
@@ -65,7 +66,7 @@ static GEN_BUF: AtomicI64 = AtomicI64::new(0);
 
 /// 基于LSM的KV Store存储内核
 /// Leveled Compaction压缩算法
-pub struct LsmStore {
+pub struct KipStorage {
     inner: Arc<StoreInner>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
@@ -102,7 +103,7 @@ impl StoreInner {
 }
 
 #[async_trait]
-impl Storage for LsmStore {
+impl Storage for KipStorage {
     #[inline]
     fn name() -> &'static str
     where
@@ -113,7 +114,7 @@ impl Storage for LsmStore {
 
     #[inline]
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
-        LsmStore::open_with_config(Config::new(path.into())).await
+        KipStorage::open_with_config(Config::new(path.into())).await
     }
 
     #[inline]
@@ -173,7 +174,7 @@ impl Storage for LsmStore {
     }
 }
 
-impl Drop for LsmStore {
+impl Drop for KipStorage {
     #[inline]
     #[allow(clippy::expect_used)]
     fn drop(&mut self) {
@@ -181,7 +182,7 @@ impl Drop for LsmStore {
     }
 }
 
-impl LsmStore {
+impl KipStorage {
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         if self.mem_table().insert_data(data)? {
@@ -211,14 +212,25 @@ impl LsmStore {
         let (task_tx, mut task_rx) = channel(1);
 
         let _ignore = tokio::spawn(async move {
-            while let Some(CompactTask::Flush(option_tx)) = task_rx.recv().await {
-                if let Err(err) = compactor.check_then_compaction(option_tx).await {
-                    error!("[Compactor][compaction][error happen]: {:?}", err);
+            while let Some(task) = task_rx.recv().await {
+                match task {
+                    CompactTask::Manual(scope) => {
+                        if let Err(err) =
+                            compactor.major_compaction(LEVEL_0, scope, Vec::new()).await
+                        {
+                            error!("[Compactor][manual compaction][error happen]: {:?}", err);
+                        }
+                    }
+                    CompactTask::Flush(option_tx) => {
+                        if let Err(err) = compactor.check_then_compaction(option_tx).await {
+                            error!("[Compactor][compaction][error happen]: {:?}", err);
+                        }
+                    }
                 }
             }
         });
 
-        Ok(LsmStore {
+        Ok(KipStorage {
             inner,
             lock_file,
             compactor_tx: task_tx,
@@ -256,6 +268,15 @@ impl LsmStore {
             _inner: self.mem_table().inner_with_lock(),
             _version: version,
         })
+    }
+
+    #[inline]
+    pub async fn manual_compaction(&self, min: Bytes, max: Bytes) -> Result<()> {
+        self.compactor_tx
+            .send(CompactTask::Manual(Scope::from_key(0, min, max)))
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -469,7 +490,7 @@ impl Gen {
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::storage::{Config, Gen, LsmStore, Sequence};
+    use crate::kernel::lsm::storage::{Config, Gen, KipStorage, Sequence};
     use crate::kernel::{Result, Storage};
     use bytes::Bytes;
     use itertools::Itertools;
@@ -525,7 +546,7 @@ mod tests {
             let config = Config::new(temp_dir.path().to_str().unwrap())
                 .major_threshold_with_sst_size(4)
                 .enable_level_0_memorization();
-            let kv_store = LsmStore::open_with_config(config).await?;
+            let kv_store = KipStorage::open_with_config(config).await?;
             let mut vec_kv = Vec::new();
 
             for i in 0..times {

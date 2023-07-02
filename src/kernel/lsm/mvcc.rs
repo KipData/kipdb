@@ -161,7 +161,7 @@ impl Transaction {
 /// TODO: 更多的Test Case
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::storage::{Config, LsmStore};
+    use crate::kernel::lsm::storage::{Config, KipStorage};
     use crate::kernel::{Result, Storage};
     use bincode::Options;
     use bytes::Bytes;
@@ -181,7 +181,7 @@ mod tests {
             there with a sign.";
 
             let config = Config::new(temp_dir.into_path()).major_threshold_with_sst_size(4);
-            let kv_store = LsmStore::open_with_config(config).await?;
+            let kv_store = KipStorage::open_with_config(config).await?;
 
             let mut vec_kv = Vec::new();
 

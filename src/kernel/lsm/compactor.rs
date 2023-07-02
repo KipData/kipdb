@@ -29,6 +29,7 @@ pub(crate) type DelNodeTuple = (DelNode, DelNode);
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
+    Manual(Scope),
     Flush(Option<oneshot::Sender<()>>),
 }
 
@@ -184,19 +185,15 @@ impl Compactor {
         // 类似罗马数字
         let start = Instant::now();
         // 获取下一级中有重复键值范围的SSTable
-        let (tables_ll, scopes_ll) =
-            version.tables_by_scopes(next_level, scope);
-        let index = version.find_index_by_level(
-            tables_ll.first().map(|sst| sst.gen()),
-            next_level,
-        );
+        let (tables_ll, scopes_ll) = version.tables_by_scopes(next_level, scope);
+        let index = version.find_index_by_level(tables_ll.first().map(|sst| sst.gen()), next_level);
 
         // 此处没有chain tables_l是因为在tables_ll是由tables_l检测冲突而获取到的
         // 因此使用tables_ll向上检测冲突时获取的集合应当含有tables_l的元素
-        let merge_scope = Scope::fusion(&scopes_ll)
-            .unwrap_or(scope.clone());
+        let merge_scope = Scope::fusion(&scopes_ll).unwrap_or(scope.clone());
 
-        let tables_l = version.tables_by_meet_scope(level, |scope| scope.meet(&merge_scope))
+        let tables_l = version
+            .tables_by_meet_scope(level, |scope| scope.meet(&merge_scope))
             .into_iter()
             .unique_by(|sst| sst.gen())
             .collect_vec();
@@ -205,16 +202,12 @@ impl Compactor {
         let del_gen_ll = collect_gen(&tables_ll)?;
 
         // 数据合并并切片
-        let vec_merge_sharding = Self::data_merge_and_sharding(
-            tables_l,
-            tables_ll,
-            config.sst_file_size,
-        )
-            .await?;
+        let vec_merge_sharding =
+            Self::data_merge_and_sharding(tables_l, tables_ll, config.sst_file_size).await?;
         info!(
-                "[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]",
-                start.elapsed()
-            );
+            "[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]",
+            start.elapsed()
+        );
 
         Ok(Some((index, (del_gen_l, del_gen_ll), vec_merge_sharding)))
     }

@@ -21,26 +21,18 @@ impl Scope {
     }
 
     /// 由KeyValue组成的Key构成scope
-    pub(crate) fn from_data(gen: i64, first: &KeyValue, last: &KeyValue) -> Self {
+    pub(crate) fn from_key(gen: i64, first: Bytes, last: Bytes) -> Self {
         Scope {
-            start: first.0.clone(),
-            end: last.0.clone(),
+            start: first,
+            end: last,
             gen,
         }
     }
 
     /// 将多个scope重组融合成一个scope
     pub(crate) fn fusion(scopes: &[Scope]) -> Option<Self> {
-        let start = scopes
-            .iter()
-            .map(|scope| &scope.start)
-            .min()?
-            .clone();
-        let end = scopes
-            .iter()
-            .map(|scope| &scope.end)
-            .max()?
-            .clone();
+        let start = scopes.iter().map(|scope| &scope.start).min()?.clone();
+        let end = scopes.iter().map(|scope| &scope.end).max()?.clone();
 
         Some(Scope { start, end, gen: 0 })
     }
@@ -76,8 +68,8 @@ impl Scope {
     #[allow(clippy::pattern_type_mismatch)]
     pub(crate) fn from_vec_data(gen: i64, vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
         match vec_mem_data.as_slice() {
-            [first, .., last] => Ok(Self::from_data(gen, first, last)),
-            [one] => Ok(Self::from_data(gen, one, one)),
+            [first, .., last] => Ok(Self::from_key(gen, first.0.clone(), last.0.clone())),
+            [one] => Ok(Self::from_key(gen, one.0.clone(), one.0.clone())),
             _ => Err(KernelError::DataEmpty),
         }
     }

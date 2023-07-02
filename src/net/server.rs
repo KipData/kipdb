@@ -1,4 +1,4 @@
-use crate::kernel::lsm::storage::LsmStore;
+use crate::kernel::lsm::storage::KipStorage;
 use crate::kernel::{options_none, ByteUtils, CommandData, Storage};
 use crate::net::connection::Connection;
 use crate::net::shutdown::Shutdown;
@@ -21,7 +21,7 @@ const MAX_CONNECTIONS: usize = 250;
 /// 服务器监听器
 /// 用于监听端口的连接并分发给Handler进行多线程处理连接
 pub struct Listener {
-    kv_store_root: Arc<LsmStore>,
+    kv_store_root: Arc<KipStorage>,
     listener: TcpListener,
     limit_connections: Arc<Semaphore>,
     notify_shutdown: broadcast::Sender<()>,
@@ -32,7 +32,7 @@ pub struct Listener {
 /// 连接处理器
 /// 用于每个连接的响应处理
 struct Handler {
-    kv_store: Arc<LsmStore>,
+    kv_store: Arc<KipStorage>,
     connection: Connection,
     shutdown: Shutdown,
     // 用于与Listener保持连接而感应是否全部关闭
@@ -41,7 +41,7 @@ struct Handler {
 
 #[inline]
 pub async fn run(listener: TcpListener, shutdown: impl Future) -> Result<()> {
-    let kv_store_root = Arc::new(LsmStore::open("./data").await?);
+    let kv_store_root = Arc::new(KipStorage::open("./data").await?);
     let (notify_shutdown, _) = broadcast::channel(1);
     let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
 
