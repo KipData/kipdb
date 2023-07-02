@@ -47,9 +47,7 @@ pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
-pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
-
-pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 5;
+pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
@@ -288,11 +286,6 @@ pub struct Config {
     pub(crate) minor_trigger_with_threshold: (TriggerType, usize),
     /// Major压缩触发阈值
     pub(crate) major_threshold_with_sst_size: usize,
-    /// Major压缩选定文件数
-    /// Major压缩时通过选定个别SSTable(即该配置项)进行下一级的SSTable选定，
-    /// 并将确定范围的下一级SSTable再次对当前等级的SSTable进行范围判定，
-    /// 找到最合理的上下级数据范围并压缩
-    pub(crate) major_select_file_size: usize,
     /// 每级SSTable数量倍率
     pub(crate) level_sst_magnification: usize,
     /// 布隆过滤器 期望的错误概率
@@ -329,7 +322,6 @@ impl Config {
                 DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM,
             ),
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
-            major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
             block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
@@ -407,12 +399,6 @@ impl Config {
     #[inline]
     pub fn major_threshold_with_sst_size(mut self, major_threshold_with_sst_size: usize) -> Self {
         self.major_threshold_with_sst_size = major_threshold_with_sst_size;
-        self
-    }
-
-    #[inline]
-    pub fn major_select_file_size(mut self, major_select_file_size: usize) -> Self {
-        self.major_select_file_size = major_select_file_size;
         self
     }
 

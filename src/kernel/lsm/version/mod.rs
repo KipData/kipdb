@@ -117,7 +117,7 @@ impl Version {
                 VersionEdit::DeleteFile((mut vec_gen, level), sst_meta) => {
                     vec_statistics_sst_meta.push(EditType::Del(sst_meta));
 
-                    self.level_slice[level].retain(|scope| !vec_gen.contains(&scope.get_gen()));
+                    self.level_slice[level].retain(|scope| !vec_gen.contains(&scope.gen()));
                     del_gens.append(&mut vec_gen);
                 }
                 VersionEdit::NewFile((vec_scope, level), index, sst_meta) => {
@@ -125,7 +125,7 @@ impl Version {
 
                     // Level 0中的Table绝对是以gen为优先级
                     // Level N中则不以gen为顺序，此处对gen排序是因为单次NewFile中的gen肯定是有序的
-                    let scope_iter = vec_scope.into_iter().sorted_by_key(Scope::get_gen);
+                    let scope_iter = vec_scope.into_iter().sorted_by_key(Scope::gen);
                     if level == LEVEL_0 {
                         for scope in scope_iter {
                             self.level_slice[level].push(scope);
@@ -190,7 +190,7 @@ impl Version {
     pub(crate) fn table(&self, level: usize, offset: usize) -> Option<&dyn Table> {
         self.level_slice[level]
             .get(offset)
-            .and_then(|scope| self.table_loader.get(scope.get_gen()))
+            .and_then(|scope| self.table_loader.get(scope.gen()))
     }
 
     /// 只限定获取Level 0的Table
@@ -199,7 +199,7 @@ impl Version {
     pub(crate) fn tables_by_level_0(&self) -> Vec<&dyn Table> {
         self.level_slice[LEVEL_0]
             .iter()
-            .filter_map(|scope| self.table_loader.get(scope.get_gen()))
+            .filter_map(|scope| self.table_loader.get(scope.gen()))
             .collect_vec()
     }
 
@@ -207,30 +207,8 @@ impl Version {
         self.level_slice[level]
             .iter()
             .enumerate()
-            .find(|(_, scope)| source_gen.eq(&scope.get_gen()))
+            .find(|(_, scope)| source_gen.eq(&scope.gen()))
             .map(|(index, _)| index)
-    }
-
-    pub(crate) fn first_tables(
-        &self,
-        level: usize,
-        size: usize,
-    ) -> Option<(Vec<&dyn Table>, Vec<Scope>)> {
-        if self.level_slice[level].is_empty() {
-            return None;
-        }
-
-        Some(
-            self.level_slice[level]
-                .iter()
-                .take(size)
-                .filter_map(|scope| {
-                    self.table_loader
-                        .get(scope.get_gen())
-                        .map(|ss_table| (ss_table, scope.clone()))
-                })
-                .unzip(),
-        )
     }
 
     /// 获取指定level中与scope冲突的Tables和Scopes
@@ -244,7 +222,7 @@ impl Version {
             .filter(|scope| scope.meet(target_scope))
             .filter_map(|scope| {
                 self.table_loader
-                    .get(scope.get_gen())
+                    .get(scope.gen())
                     .map(|ss_table| (ss_table, scope.clone()))
             })
             .unzip()
@@ -258,7 +236,7 @@ impl Version {
         self.level_slice[level]
             .iter()
             .filter(|scope| fn_meet(scope))
-            .filter_map(|scope| self.table_loader.get(scope.get_gen()))
+            .filter_map(|scope| self.table_loader.get(scope.gen()))
             .collect_vec()
     }
 
@@ -268,7 +246,7 @@ impl Version {
         // Level 0的Table是无序且Table间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
             if scope.meet_by_key(key) {
-                if let Some(ss_table) = table_loader.get(scope.get_gen()) {
+                if let Some(ss_table) = table_loader.get(scope.gen()) {
                     if let Some(value) = ss_table.query(key)? {
                         return Ok(Some(value));
                     }
@@ -280,7 +258,7 @@ impl Version {
             let offset = self.query_meet_index(key, level);
 
             if let Some(scope) = self.level_slice[level].get(offset) {
-                return if let Some(ss_table) = table_loader.get(scope.get_gen()) {
+                return if let Some(ss_table) = table_loader.get(scope.gen()) {
                     ss_table.query(key)
                 } else {
                     Ok(None)

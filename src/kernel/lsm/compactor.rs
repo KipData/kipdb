@@ -86,6 +86,7 @@ impl Compactor {
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
                 LEVEL_0,
+                scope.clone(),
                 vec![VersionEdit::NewFile((vec![scope], 0), 0, meta)],
             )
             .await?;
@@ -95,13 +96,12 @@ impl Compactor {
 
     /// Major压缩，负责将不同Level之间的数据向下层压缩转移
     /// 目前Major压缩的大体步骤是
-    /// 1. 获取当前Version，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
-    /// 2. vec_ss_table_l的每个SSTable中的scope属性进行融合，并以此获取下一Level与该scope相交的SSTable，命名为vec_ss_table_l_1
-    /// 3. 获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
-    /// 4. vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
-    /// 6. 并行将每个分片各自生成SSTable
-    /// 7. 生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
-    /// 8. 将变更的SSTable插入至vec_ver_edit以持久化
+    /// 1. 获取当前Version，通过传入的指定Scope得到下一Level与该scope相交的SSTable，命名为tables_ll
+    /// 2. 获取的tables_ll向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
+    /// 3. tables_l与tables_ll之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
+    /// 4. 并行将每个分片各自生成SSTable
+    /// 5. 生成的SSTables插入到tables_l的第一个SSTable位置，并将tables_l和tables_ll的SSTable删除
+    /// 6. 将变更的SSTable插入至vec_ver_edit以持久化
     /// Final: 将vec_ver_edit中的数据进行log_and_apply生成新的Version作为最新状态
     ///
     /// 经过压缩测试，Level 1的SSTable总是较多，根据原理推断：
@@ -111,6 +111,7 @@ impl Compactor {
     pub(crate) async fn major_compaction(
         &self,
         mut level: usize,
+        scope: Scope,
         mut vec_ver_edit: Vec<VersionEdit>,
     ) -> Result<()> {
         let next_level = level + 1;
@@ -125,11 +126,11 @@ impl Compactor {
                 index,
                 ((del_gens_l, del_meta_l), (del_gens_ll, del_meta_ll)),
                 vec_sharding,
-            )) = self.data_loading_with_level(level).await?
+            )) = self.data_loading_with_level(level, &scope).await?
             {
                 let start = Instant::now();
                 // 并行创建SSTable
-                let ss_table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
+                let table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
                     self.ver_status().loader().create(
                         gen,
                         sharding,
@@ -137,10 +138,10 @@ impl Compactor {
                         config.level_table_type[next_level],
                     )
                 });
-                let vec_ss_table_and_scope: Vec<(Scope, TableMeta)> =
-                    future::try_join_all(ss_table_futures).await?;
+                let vec_table_and_scope: Vec<(Scope, TableMeta)> =
+                    future::try_join_all(table_futures).await?;
                 let (new_scopes, new_metas): (Vec<Scope>, Vec<TableMeta>) =
-                    vec_ss_table_and_scope.into_iter().unzip();
+                    vec_table_and_scope.into_iter().unzip();
                 let fusion_meta = TableMeta::fusion(&new_metas);
 
                 vec_ver_edit.append(&mut vec![
@@ -168,10 +169,10 @@ impl Compactor {
     async fn data_loading_with_level(
         &self,
         level: usize,
+        scope: &Scope,
     ) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
         let version = self.ver_status().current().await;
         let config = self.config();
-        let major_select_file_size = config.major_select_file_size;
         let next_level = level + 1;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
@@ -179,55 +180,43 @@ impl Compactor {
             return Ok(None);
         }
 
-        // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
+        // 此处vec_table_l指此level的Vec<SSTable>, vec_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
-        if let Some((mut ss_tables_l, scopes_l)) =
-            version.first_tables(level, major_select_file_size)
-        {
-            let start = Instant::now();
-            let scope_l = Scope::fusion(&scopes_l)?;
-            // 获取下一级中有重复键值范围的SSTable
-            let (ss_tables_ll, scopes_ll) = version.tables_by_scopes(next_level, &scope_l);
-            let index =
-                version.find_index_by_level(ss_tables_ll.first().map(|sst| sst.gen()), next_level);
+        let start = Instant::now();
+        // 获取下一级中有重复键值范围的SSTable
+        let (tables_ll, scopes_ll) =
+            version.tables_by_scopes(next_level, scope);
+        let index = version.find_index_by_level(
+            tables_ll.first().map(|sst| sst.gen()),
+            next_level,
+        );
 
-            // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
-            if level == LEVEL_0 {
-                ss_tables_l
-                    .append(&mut version.tables_by_meet_scope(level, |scope| scope.meet(&scope_l)))
-            }
+        // 此处没有chain tables_l是因为在tables_ll是由tables_l检测冲突而获取到的
+        // 因此使用tables_ll向上检测冲突时获取的集合应当含有tables_l的元素
+        let merge_scope = Scope::fusion(&scopes_ll)
+            .unwrap_or(scope.clone());
 
-            // 收集需要清除的SSTable
-            let del_gen_l = collect_gen(&ss_tables_l)?;
-            let del_gen_ll = collect_gen(&ss_tables_ll)?;
-
-            // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
-            // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
-            let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => version.tables_by_meet_scope(level, |scope| scope.meet(&scope_ll)),
-                Err(_) => ss_tables_l,
-            }
+        let tables_l = version.tables_by_meet_scope(level, |scope| scope.meet(&merge_scope))
             .into_iter()
             .unique_by(|sst| sst.gen())
             .collect_vec();
+        // 收集需要清除的SSTable
+        let del_gen_l = collect_gen(&tables_l)?;
+        let del_gen_ll = collect_gen(&tables_ll)?;
 
-            // 数据合并并切片
-            let vec_merge_sharding = Self::data_merge_and_sharding(
-                ss_tables_l_final,
-                ss_tables_ll,
-                config.sst_file_size,
-            )
+        // 数据合并并切片
+        let vec_merge_sharding = Self::data_merge_and_sharding(
+            tables_l,
+            tables_ll,
+            config.sst_file_size,
+        )
             .await?;
-
-            info!(
+        info!(
                 "[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]",
                 start.elapsed()
             );
 
-            Ok(Some((index, (del_gen_l, del_gen_ll), vec_merge_sharding)))
-        } else {
-            Ok(None)
-        }
+        Ok(Some((index, (del_gen_l, del_gen_ll), vec_merge_sharding)))
     }
 
     /// 以SSTables的数据归并再排序后切片，获取以KeyValue的Key值由小到大的切片排序

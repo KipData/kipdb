@@ -16,7 +16,7 @@ pub(crate) struct Scope {
 }
 
 impl Scope {
-    pub(crate) fn get_gen(&self) -> i64 {
+    pub(crate) fn gen(&self) -> i64 {
         self.gen
     }
 
@@ -30,25 +30,19 @@ impl Scope {
     }
 
     /// 将多个scope重组融合成一个scope
-    pub(crate) fn fusion(scopes: &[Scope]) -> Result<Self> {
-        if !scopes.is_empty() {
-            let start = scopes
-                .iter()
-                .map(|scope| &scope.start)
-                .min()
-                .ok_or(KernelError::DataEmpty)?
-                .clone();
-            let end = scopes
-                .iter()
-                .map(|scope| &scope.end)
-                .max()
-                .ok_or(KernelError::DataEmpty)?
-                .clone();
+    pub(crate) fn fusion(scopes: &[Scope]) -> Option<Self> {
+        let start = scopes
+            .iter()
+            .map(|scope| &scope.start)
+            .min()?
+            .clone();
+        let end = scopes
+            .iter()
+            .map(|scope| &scope.end)
+            .max()?
+            .clone();
 
-            Ok(Scope { start, end, gen: 0 })
-        } else {
-            Err(KernelError::DataEmpty)
-        }
+        Some(Scope { start, end, gen: 0 })
     }
 
     /// 判断scope之间是否相交
