@@ -130,13 +130,6 @@ impl Storage for LsmStore {
     }
 
     #[inline]
-    async fn flush_async(&self) -> Result<()> {
-        self.compactor_tx.send(CompactTask::Flush(None)).await?;
-
-        Ok(())
-    }
-
-    #[inline]
     async fn set(&self, key: &[u8], value: Bytes) -> Result<()> {
         self.append_cmd_data((Bytes::copy_from_slice(key), Some(value)))
             .await
@@ -265,6 +258,14 @@ impl LsmStore {
             _inner: self.mem_table().inner_with_lock(),
             _version: version,
         })
+    }
+
+    #[allow(dead_code)]
+    #[inline] 
+    async fn flush_background(&self) -> Result<()> {
+        self.compactor_tx.send(CompactTask::Flush(None)).await?;
+
+        Ok(())
     }
 }
 

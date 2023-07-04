@@ -37,9 +37,6 @@ pub trait Storage: Send + Sync + 'static + Sized {
     /// 强制将数据刷入硬盘
     async fn flush(&self) -> Result<()>;
 
-    ///  异步将数据刷入硬盘
-    async fn flush_async(&self) -> Result<()>;
-
     /// 设置键值对
     async fn set(&self, key: &[u8], value: Bytes) -> Result<()>;
 

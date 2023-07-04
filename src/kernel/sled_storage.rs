@@ -30,13 +30,7 @@ impl Storage for SledStore {
 
     #[inline]
     async fn flush(&self) -> crate::kernel::Result<()> {
-        let _ignore = self.data_base.flush()?;
-        Ok(())
-    }
-
-    #[inline]
-    async fn flush_async(&self) -> crate::kernel::Result<()> {
-        let _ignore = self.data_base.flush_async();
+        let _ignore = self.data_base.flush_async().await?;
         Ok(())
     }
 
