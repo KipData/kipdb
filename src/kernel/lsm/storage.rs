@@ -259,6 +259,13 @@ impl LsmStore {
             _version: version,
         })
     }
+
+    #[allow(dead_code)]
+    async fn flush_background(&self) -> Result<()> {
+        self.compactor_tx.send(CompactTask::Flush(None)).await?;
+
+        Ok(())
+    }
 }
 
 pub struct Guard<'a> {
