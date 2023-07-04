@@ -35,6 +35,12 @@ impl Storage for SledStore {
     }
 
     #[inline]
+    async fn flush_async(&self) -> crate::kernel::Result<()> {
+        let _ignore = self.data_base.flush_async();
+        Ok(())
+    }
+
+    #[inline]
     async fn set(&self, key: &[u8], value: Bytes) -> crate::kernel::Result<()> {
         let _ignore = self.data_base.insert(key, value.to_vec())?;
         Ok(())
