@@ -261,7 +261,6 @@ impl LsmStore {
     }
 
     #[allow(dead_code)]
-    #[inline] 
     async fn flush_background(&self) -> Result<()> {
         self.compactor_tx.send(CompactTask::Flush(None)).await?;
 
