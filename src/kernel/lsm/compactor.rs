@@ -12,6 +12,7 @@ use bytes::Bytes;
 use futures::future;
 use itertools::Itertools;
 use std::collections::HashSet;
+use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -115,14 +116,16 @@ impl Compactor {
         scope: Scope,
         mut vec_ver_edit: Vec<VersionEdit>,
     ) -> Result<()> {
-        let next_level = level + 1;
         let config = self.config();
+        let mut is_over = false;
 
         if level > 6 {
             return Err(KernelError::LevelOver);
         }
 
-        while level < 7 {
+        while level < 7 && !is_over {
+            let next_level = level + 1;
+
             if let Some((
                 index,
                 ((del_gens_l, del_meta_l), (del_gens_ll, del_meta_ll)),
@@ -157,12 +160,17 @@ impl Compactor {
                 );
                 level += 1;
             } else {
-                break;
+                is_over = true;
+            }
+            if !vec_ver_edit.is_empty() {
+                self.ver_status()
+                    .log_and_apply(
+                        mem::take(&mut vec_ver_edit),
+                        config.ver_log_snapshot_threshold,
+                    )
+                    .await?;
             }
         }
-        self.ver_status()
-            .log_and_apply(vec_ver_edit, config.ver_log_snapshot_threshold)
-            .await?;
         Ok(())
     }
 
@@ -170,7 +178,7 @@ impl Compactor {
     async fn data_loading_with_level(
         &self,
         level: usize,
-        scope: &Scope,
+        target: &Scope,
     ) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
         let version = self.ver_status().current().await;
         let config = self.config();
@@ -184,19 +192,14 @@ impl Compactor {
         // 此处vec_table_l指此level的Vec<SSTable>, vec_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
         let start = Instant::now();
-        // 获取下一级中有重复键值范围的SSTable
-        let (tables_ll, scopes_ll) = version.tables_by_scopes(next_level, scope);
-        let index = version.find_index_by_level(tables_ll.first().map(|sst| sst.gen()), next_level);
 
-        // 此处没有chain tables_l是因为在tables_ll是由tables_l检测冲突而获取到的
-        // 因此使用tables_ll向上检测冲突时获取的集合应当含有tables_l的元素
-        let merge_scope = Scope::fusion(&scopes_ll).unwrap_or(scope.clone());
+        // 获取此级中有重复键值范围的SSTable
+        let (tables_l, scopes_l, _) = version.tables_by_scopes(level, target);
+        // 因此使用tables_l向下检测冲突时获取的集合应当含有tables_ll的元素
+        let fusion_scope_l = Scope::fusion(&scopes_l).unwrap_or(target.clone());
+        // 通过tables_l的scope获取下一级的父集
+        let (tables_ll, _, index) = version.tables_by_scopes(next_level, &fusion_scope_l);
 
-        let tables_l = version
-            .tables_by_meet_scope(level, |scope| scope.meet(&merge_scope))
-            .into_iter()
-            .unique_by(|sst| sst.gen())
-            .collect_vec();
         // 收集需要清除的SSTable
         let del_gen_l = collect_gen(&tables_l)?;
         let del_gen_ll = collect_gen(&tables_ll)?;

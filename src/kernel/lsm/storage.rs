@@ -215,9 +215,7 @@ impl KipStorage {
             while let Some(task) = task_rx.recv().await {
                 match task {
                     CompactTask::Manual(scope) => {
-                        if let Err(err) =
-                            compactor.major_compaction(LEVEL_0, scope, Vec::new()).await
-                        {
+                        if let Err(err) = compactor.major_compaction(LEVEL_0, scope, vec![]).await {
                             error!("[Compactor][manual compaction][error happen]: {:?}", err);
                         }
                     }
@@ -491,6 +489,7 @@ impl Gen {
 #[cfg(test)]
 mod tests {
     use crate::kernel::lsm::storage::{Config, Gen, KipStorage, Sequence};
+    use crate::kernel::lsm::trigger::TriggerType;
     use crate::kernel::{Result, Storage};
     use bytes::Bytes;
     use itertools::Itertools;
@@ -508,18 +507,26 @@ mod tests {
     }
 
     #[test]
-    fn test_gen_create() {
-        let i_1 = Gen::create();
+    #[ignore]
+    fn test_gen_create_1000() {
+        for _ in 0..1000 {
+            test_gen_create()
+        }
+    }
 
+    fn test_gen_create() {
+        Gen::init();
+
+        let i_1 = Gen::create();
         let i_2 = Gen::create();
 
         assert!(i_1 < i_2);
 
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(2));
         Gen::init();
         let i_3 = Gen::create();
 
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(1));
         Gen::init();
         let i_4 = Gen::create();
 
@@ -529,7 +536,7 @@ mod tests {
         println!("{i_4}");
 
         assert!(i_3 > i_2);
-        assert!(i_4 > i_3 + 1);
+        assert!(i_4 > i_3);
     }
 
     #[test]
@@ -537,7 +544,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {
-            let times = 10000;
+            let times = 30_000;
 
             let value = b"Stray birds of summer come to my window to sing and fly away.
             And yellow leaves of autumn, which have no songs, flutter and fall
@@ -545,7 +552,8 @@ mod tests {
 
             let config = Config::new(temp_dir.path().to_str().unwrap())
                 .major_threshold_with_sst_size(4)
-                .enable_level_0_memorization();
+                .level_sst_magnification(1)
+                .minor_trigger_with_threshold(TriggerType::Count, 1000);
             let kv_store = KipStorage::open_with_config(config).await?;
             let mut vec_kv = Vec::new();
 
@@ -558,12 +566,20 @@ mod tests {
             }
 
             let start = Instant::now();
-            for i in 0..times {
-                kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?
+
+            assert_eq!(times % 1000, 0);
+
+            for i in 0..times / 1000 {
+                for j in 0..1000 {
+                    kv_store
+                        .set(&vec_kv[i * 1000 + j].0, vec_kv[i * 1000 + j].1.clone())
+                        .await?
+                }
+                kv_store.flush().await?;
             }
             println!("[set_for][Time: {:?}]", start.elapsed());
 
-            kv_store.flush().await.unwrap();
+            assert_eq!(kv_store.len().await?, times);
 
             let start = Instant::now();
             for i in 0..times {

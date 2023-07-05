@@ -32,34 +32,26 @@ pub(crate) struct VersionStatus {
 impl VersionStatus {
     pub(crate) fn load_with_path(config: Config, wal: LogLoader) -> Result<Self> {
         let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
-
         let sst_factory = Arc::new(IoFactory::new(sst_path, FileExtension::SSTable)?);
-
         let ss_table_loader = Arc::new(TableLoader::new(
             config.clone(),
             Arc::clone(&sst_factory),
             wal,
         )?);
-
         let log_factory = Arc::new(IoFactory::new(
             config.path().join(DEFAULT_VERSION_PATH),
             FileExtension::Log,
         )?);
-
         let (ver_log_loader, vec_batch_log, log_gen) = LogLoader::reload(
             config.path(),
             (DEFAULT_VERSION_PATH, Some(snapshot_gen(&log_factory)?)),
             IoType::Direct,
             |bytes| Ok(bincode::deserialize::<Vec<VersionEdit>>(bytes)?),
         )?;
-
         let vec_log = vec_batch_log.into_iter().flatten().collect_vec();
-
         let edit_approximate_count = AtomicUsize::new(vec_log.len());
-
         let (clean_tx, clean_rx) = unbounded_channel();
         let version = Arc::new(Version::load_from_log(vec_log, &ss_table_loader, clean_tx)?);
-
         let mut cleaner = Cleaner::new(&ss_table_loader, clean_rx);
 
         let _ignore = tokio::spawn(async move {

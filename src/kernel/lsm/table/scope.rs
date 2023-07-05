@@ -37,13 +37,15 @@ impl Scope {
         Some(Scope { start, end, gen: 0 })
     }
 
-    /// 判断scope之间是否相交
+    /// 判断scope之间是否相交或包含
     pub(crate) fn meet(&self, target: &Scope) -> bool {
         (self.start.le(&target.start) && self.end.ge(&target.start))
             || (self.start.le(&target.end) && self.end.ge(&target.end))
+            || (self.start.le(&target.start)) && self.end.ge(&target.end)
+            || (self.start.ge(&target.start)) && self.end.le(&target.end)
     }
 
-    /// 判断key与Scope是否相交
+    /// 判断key与Scope是否相交或包含
     pub(crate) fn meet_by_key(&self, key: &[u8]) -> bool {
         self.start.as_ref().le(key) && self.end.as_ref().ge(key)
     }
@@ -64,9 +66,9 @@ impl Scope {
         is_min_inside && is_max_inside
     }
 
-    /// 由一组KeyValue组成一个scope
+    /// 由一组有序KeyValue组成一个scope
     #[allow(clippy::pattern_type_mismatch)]
-    pub(crate) fn from_vec_data(gen: i64, vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
+    pub(crate) fn from_sorted_vec_data(gen: i64, vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => Ok(Self::from_key(gen, first.0.clone(), last.0.clone())),
             [one] => Ok(Self::from_key(gen, one.0.clone(), one.0.clone())),

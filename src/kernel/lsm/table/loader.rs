@@ -56,7 +56,7 @@ impl TableLoader {
         table_type: TableType,
     ) -> Result<(Scope, TableMeta)> {
         // 获取数据的Key涵盖范围
-        let scope = Scope::from_vec_data(gen, &vec_data)?;
+        let scope = Scope::from_sorted_vec_data(gen, &vec_data)?;
         let table: Box<dyn Table> = match table_type {
             TableType::SortedString => Box::new(self.create_ss_table(gen, vec_data, level)?),
             TableType::Skip => Box::new(SkipTable::new(level, gen, vec_data)),

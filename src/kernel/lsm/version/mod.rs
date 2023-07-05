@@ -203,41 +203,29 @@ impl Version {
             .collect_vec()
     }
 
-    pub(crate) fn index(&self, level: usize, source_gen: i64) -> Option<usize> {
-        self.level_slice[level]
-            .iter()
-            .enumerate()
-            .find(|(_, scope)| source_gen.eq(&scope.gen()))
-            .map(|(index, _)| index)
-    }
-
     /// 获取指定level中与scope冲突的Tables和Scopes
     pub(crate) fn tables_by_scopes(
         &self,
         level: usize,
         target_scope: &Scope,
-    ) -> (Vec<&dyn Table>, Vec<Scope>) {
-        self.level_slice[level]
-            .iter()
-            .filter(|scope| scope.meet(target_scope))
-            .filter_map(|scope| {
-                self.table_loader
-                    .get(scope.gen())
-                    .map(|ss_table| (ss_table, scope.clone()))
-            })
-            .unzip()
-    }
+    ) -> (Vec<&dyn Table>, Vec<Scope>, usize) {
+        let mut first_index = None;
 
-    /// 获取指定level中与scope冲突的Tables
-    pub(crate) fn tables_by_meet_scope<F>(&self, level: usize, fn_meet: F) -> Vec<&dyn Table>
-    where
-        F: Fn(&Scope) -> bool,
-    {
-        self.level_slice[level]
+        let (tables, scopes): (Vec<&dyn Table>, Vec<Scope>) = self.level_slice[level]
             .iter()
-            .filter(|scope| fn_meet(scope))
-            .filter_map(|scope| self.table_loader.get(scope.gen()))
-            .collect_vec()
+            .enumerate()
+            .filter(|(_, scope)| scope.meet(target_scope))
+            .filter_map(|(index, scope)| {
+                self.table_loader.get(scope.gen()).map(|ss_table| {
+                    if first_index.is_none() {
+                        first_index = Some(index);
+                    }
+                    (ss_table, scope.clone())
+                })
+            })
+            .unzip();
+
+        (tables, scopes, first_index.unwrap_or(0))
     }
 
     /// 使用Key从现有Tables中获取对应的数据
@@ -245,12 +233,8 @@ impl Version {
         let table_loader = &self.table_loader;
         // Level 0的Table是无序且Table间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
-            if scope.meet_by_key(key) {
-                if let Some(ss_table) = table_loader.get(scope.gen()) {
-                    if let Some(value) = ss_table.query(key)? {
-                        return Ok(Some(value));
-                    }
-                }
+            if let Some(value) = Self::query_by_scope(key, table_loader, scope)? {
+                return Ok(Some(value));
             }
         }
         // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的Table
@@ -258,22 +242,29 @@ impl Version {
             let offset = self.query_meet_index(key, level);
 
             if let Some(scope) = self.level_slice[level].get(offset) {
-                return if let Some(ss_table) = table_loader.get(scope.gen()) {
-                    ss_table.query(key)
-                } else {
-                    Ok(None)
-                };
+                if let Some(value) = Self::query_by_scope(key, table_loader, scope)? {
+                    return Ok(Some(value));
+                }
             }
         }
 
         Ok(None)
     }
 
-    /// 获取指定Table索引位置
-    pub(crate) fn find_index_by_level(&self, option_first: Option<i64>, level: usize) -> usize {
-        option_first
-            .and_then(|gen| self.index(level, gen))
-            .unwrap_or(0)
+    fn query_by_scope(
+        key: &[u8],
+        table_loader: &Arc<TableLoader>,
+        scope: &Scope,
+    ) -> Result<Option<Bytes>> {
+        if scope.meet_by_key(key) {
+            if let Some(ss_table) = table_loader.get(scope.gen()) {
+                if let Some(value) = ss_table.query(key)? {
+                    return Ok(Some(value));
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     pub(crate) fn query_meet_index(&self, key: &[u8], level: usize) -> usize {
