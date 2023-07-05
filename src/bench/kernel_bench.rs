@@ -63,7 +63,7 @@ fn bulk_load<T: Storage>(c: &mut Criterion) {
 
     let mut bench = |key_len, val_len| {
         let db = rt.block_on(async {
-            T::open(format!("bulk_k{}_v{}", key_len, val_len))
+            T::open(format!("{}: bulk_k{}_v{}", T::name(), key_len, val_len))
                 .await
                 .unwrap()
         });
@@ -101,7 +101,9 @@ fn monotonic_crud<T: Storage>(c: &mut Criterion) {
         .build()
         .unwrap();
     rt.block_on(async {
-        let db = T::open("monotonic_crud").await.unwrap();
+        let db = T::open(format!("{}: monotonic_crud", T::name()))
+            .await
+            .unwrap();
 
         c.bench_function(&format!("Store: {}, monotonic inserts", T::name()), |b| {
             let count = AtomicU32::new(0_u32);
@@ -140,7 +142,9 @@ fn random_crud<T: Storage>(c: &mut Criterion) {
         .build()
         .unwrap();
     rt.block_on(async {
-        let db = T::open("random_crud").await.unwrap();
+        let db = T::open(format!("{}: random_crud", T::name()))
+            .await
+            .unwrap();
 
         c.bench_function(&format!("Store: {}, random inserts", T::name()), |b| {
             b.iter(|| async {
