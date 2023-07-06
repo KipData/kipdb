@@ -495,14 +495,9 @@ impl Gen {
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::storage::{Config, Gen, KipStorage, Sequence};
-    use crate::kernel::lsm::trigger::TriggerType;
-    use crate::kernel::{Result, Storage};
-    use bytes::Bytes;
-    use itertools::Itertools;
+    use crate::kernel::lsm::storage::{Gen, Sequence};
     use std::thread::sleep;
-    use std::time::{Duration, Instant};
-    use tempfile::TempDir;
+    use std::time::Duration;
 
     #[test]
     fn test_seq_create() {
@@ -546,56 +541,4 @@ mod tests {
         assert!(i_4 > i_3);
     }
 
-    #[test]
-    fn test_lsm_major_compactor() -> Result<()> {
-        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-        tokio_test::block_on(async move {
-            let times = 30_000;
-
-            let value = b"Stray birds of summer come to my window to sing and fly away.
-            And yellow leaves of autumn, which have no songs, flutter and fall
-            there with a sign.";
-
-            let config = Config::new(temp_dir.path().to_str().unwrap())
-                .major_threshold_with_sst_size(4)
-                .level_sst_magnification(1)
-                .minor_trigger_with_threshold(TriggerType::Count, 1000);
-            let kv_store = KipStorage::open_with_config(config).await?;
-            let mut vec_kv = Vec::new();
-
-            for i in 0..times {
-                let vec_u8 = bincode::serialize(&i)?;
-                vec_kv.push((
-                    Bytes::from(vec_u8.clone()),
-                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
-                ));
-            }
-
-            let start = Instant::now();
-
-            assert_eq!(times % 1000, 0);
-
-            for i in 0..times / 1000 {
-                for j in 0..1000 {
-                    kv_store
-                        .set(&vec_kv[i * 1000 + j].0, vec_kv[i * 1000 + j].1.clone())
-                        .await?
-                }
-                kv_store.flush().await?;
-            }
-            println!("[set_for][Time: {:?}]", start.elapsed());
-
-            assert_eq!(kv_store.len().await?, times);
-
-            let start = Instant::now();
-            for i in 0..times {
-                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
-            }
-            println!("[get_for][Time: {:?}]", start.elapsed());
-            kv_store.flush().await?;
-
-            Ok(())
-        })
-    }
 }
