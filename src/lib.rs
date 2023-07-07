@@ -47,7 +47,6 @@ clippy::dbg_macro,
 clippy::decimal_literal_representation,
 // clippy::default_numeric_fallback, too verbose when dealing with numbers
 clippy::disallowed_script_idents,
-clippy::else_if_without_else,
 clippy::exit,
 clippy::expect_used,
 clippy::filetype_is_file,

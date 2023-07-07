@@ -1,6 +1,7 @@
 use crate::kernel::lsm::compactor::CompactTask;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
+use crate::kernel::lsm::query_and_compaction;
 use crate::kernel::lsm::storage::{Sequence, StoreInner};
 use crate::kernel::lsm::version::iter::VersionIter;
 use crate::kernel::lsm::version::Version;
@@ -13,7 +14,6 @@ use std::collections::Bound;
 use std::iter::Map;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
 
 type MapIter<'a> = Map<
@@ -43,7 +43,7 @@ impl Transaction {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.version.query(key)? {
+        if let Some(value) = query_and_compaction(key, &self.version, &self.compactor_tx)? {
             return Ok(Some(value));
         }
 
@@ -118,11 +118,9 @@ impl Transaction {
 
         let mem_table = self.mem_table();
         if mem_table.insert_batch_data(batch_data, Sequence::create())? {
-            if let Err(TrySendError::Closed(_)) =
-                self.compactor_tx.try_send(CompactTask::Flush(None))
-            {
-                return Err(KernelError::ChannelClose);
-            }
+            self.compactor_tx
+                .try_send(CompactTask::Flush(None))
+                .map_err(|_| KernelError::ChannelClose)?;
         }
 
         let _ = mem_table.tx_count.fetch_sub(1, Ordering::Release);

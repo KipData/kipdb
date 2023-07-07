@@ -1,5 +1,5 @@
 use crate::kernel::io::IoType;
-use crate::kernel::lsm::compactor::{CompactTask, Compactor, LEVEL_0};
+use crate::kernel::lsm::compactor::{CompactTask, Compactor};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
@@ -7,9 +7,9 @@ use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::ss_table::block;
 use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::trigger::TriggerType;
-use crate::kernel::lsm::version;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;
+use crate::kernel::lsm::{query_and_compaction, version};
 use crate::kernel::Result;
 use crate::kernel::{lock_or_time_out, Storage, DEFAULT_LOCK_FILE};
 use crate::KernelError;
@@ -23,7 +23,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tracing::{error, info};
@@ -140,7 +139,8 @@ impl Storage for KipStorage {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.current_version().await.query(key)? {
+        let version = self.current_version().await;
+        if let Some(value) = query_and_compaction(key, &version, &self.compactor_tx)? {
             return Ok(Some(value));
         }
 
@@ -186,11 +186,9 @@ impl KipStorage {
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         if self.mem_table().insert_data(data)? {
-            if let Err(TrySendError::Closed(_)) =
-                self.compactor_tx.try_send(CompactTask::Flush(None))
-            {
-                return Err(KernelError::ChannelClose);
-            }
+            self.compactor_tx
+                .try_send(CompactTask::Flush(None))
+                .map_err(|_| KernelError::ChannelClose)?;
         }
 
         Ok(())
@@ -214,8 +212,8 @@ impl KipStorage {
         let _ignore = tokio::spawn(async move {
             while let Some(task) = task_rx.recv().await {
                 match task {
-                    CompactTask::Manual(scope) => {
-                        if let Err(err) = compactor.major_compaction(LEVEL_0, scope, vec![]).await {
+                    CompactTask::Seek(scope, level) => {
+                        if let Err(err) = compactor.major_compaction(level, scope, vec![]).await {
                             error!("[Compactor][manual compaction][error happen]: {:?}", err);
                         }
                     }
@@ -269,10 +267,12 @@ impl KipStorage {
     }
 
     #[inline]
-    pub async fn manual_compaction(&self, min: Bytes, max: Bytes) -> Result<()> {
-        self.compactor_tx
-            .send(CompactTask::Manual(Scope::from_key(0, min, max)))
-            .await?;
+    pub async fn manual_compaction(&self, min: Bytes, max: Bytes, level: usize) -> Result<()> {
+        if min <= max {
+            self.compactor_tx
+                .send(CompactTask::Seek(Scope::from_range(0, min, max), level))
+                .await?;
+        }
 
         Ok(())
     }
@@ -540,5 +540,4 @@ mod tests {
         assert!(i_3 > i_2);
         assert!(i_4 > i_3);
     }
-
 }

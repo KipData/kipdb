@@ -30,7 +30,7 @@ pub(crate) type DelNodeTuple = (DelNode, DelNode);
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
-    Manual(Scope),
+    Seek(Scope, usize),
     Flush(Option<oneshot::Sender<()>>),
 }
 
@@ -288,23 +288,24 @@ impl Compactor {
     }
 }
 
+/// TODO: Manual\Seek Compaction测试
 #[cfg(test)]
 mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::{Compactor, LEVEL_0};
     use crate::kernel::lsm::storage::{Config, KipStorage};
+    use crate::kernel::lsm::table::scope::Scope;
     use crate::kernel::lsm::table::ss_table::SSTable;
+    use crate::kernel::lsm::trigger::TriggerType;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::{Result, Storage};
     use bytes::Bytes;
+    use itertools::Itertools;
     use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use std::time::Instant;
-    use itertools::Itertools;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::scope::Scope;
-    use crate::kernel::lsm::trigger::TriggerType;
 
     #[test]
     fn test_lsm_major_compactor() -> Result<()> {
@@ -353,12 +354,14 @@ mod tests {
             let level_slice = &version.level_slice;
             println!("Level_Slice: {:#?}", level_slice);
             assert!(!level_slice[0].is_empty());
-            assert!(!level_slice[1].is_empty()
-                || !level_slice[2].is_empty()
-                || !level_slice[3].is_empty()
-                || !level_slice[4].is_empty()
-                || !level_slice[5].is_empty()
-                || !level_slice[6].is_empty());
+            assert!(
+                !level_slice[1].is_empty()
+                    || !level_slice[2].is_empty()
+                    || !level_slice[3].is_empty()
+                    || !level_slice[4].is_empty()
+                    || !level_slice[5].is_empty()
+                    || !level_slice[6].is_empty()
+            );
 
             for (level, slice) in level_slice.into_iter().enumerate() {
                 if !slice.is_empty() && level != LEVEL_0 {

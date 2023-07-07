@@ -1,6 +1,12 @@
-use crate::kernel::lsm::compactor::MergeShardingVec;
+use crate::kernel::lsm::compactor::{CompactTask, MergeShardingVec};
 use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
 use crate::kernel::lsm::storage::Gen;
+use crate::kernel::lsm::table::scope::Scope;
+use crate::kernel::lsm::version::{SeekOption, Version};
+use crate::kernel::Result;
+use crate::KernelError;
+use bytes::Bytes;
+use tokio::sync::mpsc::Sender;
 
 mod compactor;
 mod iterator;
@@ -43,4 +49,24 @@ fn data_sharding(mut vec_data: Vec<KeyValue>, file_size: usize) -> MergeSharding
     // 过滤掉没有数据的切片
     vec_sharding.retain(|(_, vec)| !vec.is_empty());
     vec_sharding
+}
+
+/// 使用Version进行Key查询，当触发Seek Miss的阈值时，
+/// 使用其第一次Miss的Level进行Seek Compaction
+fn query_and_compaction(
+    key: &[u8],
+    version: &Version,
+    compactor_tx: &Sender<CompactTask>,
+) -> Result<Option<Bytes>> {
+    match version.query(key)? {
+        SeekOption::Hit(value) => return Ok(Some(value)),
+        SeekOption::Miss(Some(level)) => {
+            let scope = Scope::from_key(key);
+            compactor_tx
+                .try_send(CompactTask::Seek(scope, level))
+                .map_err(|_| KernelError::ChannelClose)?;
+        }
+        _ => (),
+    }
+    Ok(None)
 }

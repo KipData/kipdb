@@ -29,6 +29,11 @@ pub(crate) const DEFAULT_VERSION_LOG_THRESHOLD: usize = 233;
 
 pub(crate) type LevelSlice = [Vec<Scope>; 7];
 
+pub(crate) enum SeekOption<T> {
+    Hit(T),
+    Miss(Option<usize>),
+}
+
 fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
     if let Ok(gen_list) = sorted_gen_list(factory.get_path(), FileExtension::Log) {
         return Ok(match *gen_list.as_slice() {
@@ -229,42 +234,50 @@ impl Version {
     }
 
     /// 使用Key从现有Tables中获取对应的数据
-    pub(crate) fn query(&self, key: &[u8]) -> Result<Option<Bytes>> {
+    pub(crate) fn query(&self, key: &[u8]) -> Result<SeekOption<Bytes>> {
         let table_loader = &self.table_loader;
         // Level 0的Table是无序且Table间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
-            if let Some(value) = Self::query_by_scope(key, table_loader, scope)? {
-                return Ok(Some(value));
+            if let SeekOption::Hit(value) = Self::query_by_scope(key, table_loader, scope)? {
+                return Ok(SeekOption::Hit(value));
             }
         }
+        // 仅仅记录第一个key与SSTable的scope meet且seek miss的level
+        let mut seek_miss_level = None;
         // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的Table
         for level in 1..7 {
             let offset = self.query_meet_index(key, level);
 
             if let Some(scope) = self.level_slice[level].get(offset) {
-                if let Some(value) = Self::query_by_scope(key, table_loader, scope)? {
-                    return Ok(Some(value));
+                match Self::query_by_scope(key, table_loader, scope)? {
+                    SeekOption::Hit(value) => return Ok(SeekOption::Hit(value)),
+                    SeekOption::Miss(Some(level)) => {
+                        let _ = seek_miss_level.get_or_insert(level);
+                    }
+                    _ => (),
                 }
             }
         }
 
-        Ok(None)
+        Ok(SeekOption::Miss(seek_miss_level))
     }
 
     fn query_by_scope(
         key: &[u8],
         table_loader: &Arc<TableLoader>,
         scope: &Scope,
-    ) -> Result<Option<Bytes>> {
+    ) -> Result<SeekOption<Bytes>> {
         if scope.meet_by_key(key) {
             if let Some(ss_table) = table_loader.get(scope.gen()) {
                 if let Some(value) = ss_table.query(key)? {
-                    return Ok(Some(value));
+                    return Ok(SeekOption::Hit(value));
+                } else if scope.seeks_increase() {
+                    return Ok(SeekOption::Miss(Some(ss_table.level())));
                 }
             }
         }
 
-        Ok(None)
+        Ok(SeekOption::Miss(None))
     }
 
     pub(crate) fn query_meet_index(&self, key: &[u8], level: usize) -> usize {
