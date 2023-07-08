@@ -3,7 +3,7 @@ use crate::kernel::{options_none, ByteUtils, CommandData, Storage};
 use crate::net::connection::Connection;
 use crate::net::shutdown::Shutdown;
 use crate::net::{key_value_from_option, kv_encode_with_len, Result};
-use crate::proto::net_pb::{CommandOption, KeyValue};
+use crate::proto::net_pb::{CommandOption, KeyValue, KeyValueType, OptionType};
 use bytes::Bytes;
 use chrono::Local;
 use itertools::Itertools;
@@ -147,6 +147,34 @@ impl Listener {
     }
 }
 
+impl From<&CommandOption> for OptionType {
+    fn from(value: &CommandOption) -> Self {
+        match value.r#type {
+            0 => OptionType::Cmd,
+            1 => OptionType::BatchCmd,
+            2 => OptionType::Bytes,
+            4 => OptionType::SizeOfDisk,
+            5 => OptionType::Len,
+            6 => OptionType::Flush,
+            7 => OptionType::None,
+
+            _ => panic!("The command is not supported!")
+        }
+    }
+}
+
+impl From<&CommandOption> for KeyValueType {
+    fn from(value: &CommandOption) -> Self {
+        match value.r#type {
+            0 => KeyValueType::Get,
+            1 => KeyValueType::Set,
+            2 => KeyValueType::Remove,
+
+            _ => panic!("The command is not supported!")
+        }
+    }
+}
+
 impl Handler {
     async fn run(&mut self) -> Result<()> {
         while !self.shutdown.is_shutdown() {
@@ -159,23 +187,25 @@ impl Handler {
                 }
             };
 
-            match client_option.r#type {
-                0 => {
+            match OptionType::from(&client_option) {
+                OptionType::Cmd => {
                     // 不使用`CommandData::apply`是因为避免value的内存移动开销
-                    let KeyValue { key, value, r#type } = key_value_from_option(&client_option)?;
-                    let res_option = match r#type {
-                        1 => self
+                    let KeyValue { key, value, .. } = key_value_from_option(&client_option)?;
+                    let res_option = match KeyValueType::from(&client_option) {
+                        KeyValueType::Get => self.kv_store.get(&key).await
+                            .map(CommandOption::from)?,
+                        KeyValueType::Remove => self.kv_store.remove(&key).await
+                            .map(|_| options_none())?,
+                        KeyValueType::Set => self
                             .kv_store
                             .set(&key, Bytes::from(value))
                             .await
                             .map(|_| options_none())?,
-                        2 => self.kv_store.remove(&key).await.map(|_| options_none())?,
-                        _ => self.kv_store.get(&key).await.map(CommandOption::from)?,
                     };
 
                     self.connection.write(res_option).await?;
                 }
-                1 => {
+                OptionType::BatchCmd => {
                     let vec_cmd = ByteUtils::sharding_tag_bytes(&client_option.bytes)
                         .into_iter()
                         .filter_map(|vec_u8| KeyValue::decode(vec_u8).ok().map(CommandData::from))
@@ -203,15 +233,15 @@ impl Handler {
                         })
                         .await?;
                 }
-                4 => {
+                OptionType::SizeOfDisk => {
                     let size_of_disk = self.kv_store.size_of_disk().await?;
                     self.value_options(size_of_disk, 4).await?;
                 }
-                5 => {
+                OptionType::Len => {
                     let len = self.kv_store.len().await? as u64;
                     self.value_options(len, 5).await?;
                 }
-                6 => {
+                OptionType::Flush => {
                     self.kv_store.flush().await?;
                     self.connection
                         .write(CommandOption {
@@ -221,7 +251,7 @@ impl Handler {
                         })
                         .await?;
                 }
-                7 => {
+                OptionType::None => {
                     break;
                 }
                 _ => {}
