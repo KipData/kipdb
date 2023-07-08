@@ -100,11 +100,11 @@ impl Compactor {
 
     /// Major压缩，负责将不同Level之间的数据向下层压缩转移
     /// 目前Major压缩的大体步骤是
-    /// 1. 获取当前Version，通过传入的指定Scope得到下一Level与该scope相交的SSTable，命名为tables_ll
-    /// 2. 获取的tables_ll向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
+    /// 1. 获取当前Version，通过传入的指定Scope得到该Level与该scope相交的SSTable，命名为tables_l
+    /// 2. 获取的tables_l向下一级Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据(table_ll的范围应当左右应包含与table_l)
     /// 3. tables_l与tables_ll之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
     /// 4. 并行将每个分片各自生成SSTable
-    /// 5. 生成的SSTables插入到tables_l的第一个SSTable位置，并将tables_l和tables_ll的SSTable删除
+    /// 5. 生成的SSTables插入到tables_ll的第一个SSTable位置，并将tables_l和tables_ll的SSTable删除
     /// 6. 将变更的SSTable插入至vec_ver_edit以持久化
     /// Final: 将vec_ver_edit中的数据进行log_and_apply生成新的Version作为最新状态
     ///
