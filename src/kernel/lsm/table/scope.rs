@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering::{Acquire, SeqCst};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-const SEEK_COMPACTION_COUNT: u32 = 20;
+const SEEK_COMPACTION_COUNT: u32 = 100;
 
 /// 数据范围索引
 /// 用于缓存SSTable中所有数据的第一个和最后一个数据的Key
@@ -19,7 +19,7 @@ pub(crate) struct Scope {
     pub(crate) end: Bytes,
     gen: i64,
     // SeekMiss计数
-    allowed_seeks: Option<Arc<AtomicU32>>,
+    pub(crate) allowed_seeks: Option<Arc<AtomicU32>>,
 }
 
 impl PartialEq for Scope {
@@ -41,9 +41,11 @@ impl Scope {
     /// 表示应当触发阈值
     pub(crate) fn seeks_increase(&self) -> bool {
         if let Some(seeks) = &self.allowed_seeks {
-            let current = seeks.load(Ordering::Relaxed);
+            let current = seeks.fetch_add(1, Ordering::Relaxed);
             current > SEEK_COMPACTION_COUNT
-                && seeks.compare_exchange(current, 0, SeqCst, Acquire).is_ok()
+                && seeks
+                    .compare_exchange(current + 1, 0, SeqCst, Acquire)
+                    .is_ok()
         } else {
             false
         }
@@ -63,6 +65,7 @@ impl Scope {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_key(key: &[u8]) -> Self {
         let bytes = Bytes::copy_from_slice(key);
         Scope {

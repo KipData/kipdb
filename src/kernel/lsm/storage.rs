@@ -212,8 +212,10 @@ impl KipStorage {
         let _ignore = tokio::spawn(async move {
             while let Some(task) = task_rx.recv().await {
                 match task {
-                    CompactTask::Seek(scope, level) => {
-                        if let Err(err) = compactor.major_compaction(level, scope, vec![]).await {
+                    CompactTask::Seek((scope, level)) => {
+                        if let Err(err) =
+                            compactor.major_compaction(level, scope, vec![], true).await
+                        {
                             error!("[Compactor][manual compaction][error happen]: {:?}", err);
                         }
                     }
@@ -270,7 +272,7 @@ impl KipStorage {
     pub async fn manual_compaction(&self, min: Bytes, max: Bytes, level: usize) -> Result<()> {
         if min <= max {
             self.compactor_tx
-                .send(CompactTask::Seek(Scope::from_range(0, min, max), level))
+                .send(CompactTask::Seek((Scope::from_range(0, min, max), level)))
                 .await?;
         }
 

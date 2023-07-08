@@ -1,5 +1,5 @@
 use crate::kernel::io::{FileExtension, IoFactory};
-use crate::kernel::lsm::compactor::LEVEL_0;
+use crate::kernel::lsm::compactor::{SeekScope, LEVEL_0};
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::table::loader::TableLoader;
 use crate::kernel::lsm::table::meta::TableMeta;
@@ -31,7 +31,7 @@ pub(crate) type LevelSlice = [Vec<Scope>; 7];
 
 pub(crate) enum SeekOption<T> {
     Hit(T),
-    Miss(Option<usize>),
+    Miss(Option<SeekScope>),
 }
 
 fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
@@ -238,7 +238,8 @@ impl Version {
         let table_loader = &self.table_loader;
         // Level 0的Table是无序且Table间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
-            if let SeekOption::Hit(value) = Self::query_by_scope(key, table_loader, scope)? {
+            if let SeekOption::Hit(value) = Self::query_by_scope(key, table_loader, scope, LEVEL_0)?
+            {
                 return Ok(SeekOption::Hit(value));
             }
         }
@@ -249,10 +250,10 @@ impl Version {
             let offset = self.query_meet_index(key, level);
 
             if let Some(scope) = self.level_slice[level].get(offset) {
-                match Self::query_by_scope(key, table_loader, scope)? {
+                match Self::query_by_scope(key, table_loader, scope, level)? {
                     SeekOption::Hit(value) => return Ok(SeekOption::Hit(value)),
-                    SeekOption::Miss(Some(level)) => {
-                        let _ = seek_miss_level.get_or_insert(level);
+                    SeekOption::Miss(Some(seek_scope)) => {
+                        let _ = seek_miss_level.get_or_insert(seek_scope);
                     }
                     _ => (),
                 }
@@ -266,13 +267,17 @@ impl Version {
         key: &[u8],
         table_loader: &Arc<TableLoader>,
         scope: &Scope,
+        level: usize,
     ) -> Result<SeekOption<Bytes>> {
         if scope.meet_by_key(key) {
             if let Some(ss_table) = table_loader.get(scope.gen()) {
                 if let Some(value) = ss_table.query(key)? {
                     return Ok(SeekOption::Hit(value));
-                } else if scope.seeks_increase() {
-                    return Ok(SeekOption::Miss(Some(ss_table.level())));
+                } else if level > LEVEL_0 && scope.seeks_increase() {
+                    return Ok(SeekOption::Miss(Some((
+                        scope.clone(),
+                        ss_table.level() - 1,
+                    ))));
                 }
             }
         }

@@ -148,6 +148,7 @@ impl Listener {
 }
 
 impl From<&CommandOption> for OptionType {
+    #[inline]
     fn from(value: &CommandOption) -> Self {
         match value.r#type {
             0 => OptionType::Cmd,
@@ -158,19 +159,20 @@ impl From<&CommandOption> for OptionType {
             6 => OptionType::Flush,
             7 => OptionType::None,
 
-            _ => panic!("The command is not supported!")
+            _ => panic!("The command is not supported!"),
         }
     }
 }
 
 impl From<&CommandOption> for KeyValueType {
+    #[inline]
     fn from(value: &CommandOption) -> Self {
         match value.r#type {
             0 => KeyValueType::Get,
             1 => KeyValueType::Set,
             2 => KeyValueType::Remove,
 
-            _ => panic!("The command is not supported!")
+            _ => panic!("The command is not supported!"),
         }
     }
 }
@@ -192,10 +194,12 @@ impl Handler {
                     // 不使用`CommandData::apply`是因为避免value的内存移动开销
                     let KeyValue { key, value, .. } = key_value_from_option(&client_option)?;
                     let res_option = match KeyValueType::from(&client_option) {
-                        KeyValueType::Get => self.kv_store.get(&key).await
-                            .map(CommandOption::from)?,
-                        KeyValueType::Remove => self.kv_store.remove(&key).await
-                            .map(|_| options_none())?,
+                        KeyValueType::Get => {
+                            self.kv_store.get(&key).await.map(CommandOption::from)?
+                        }
+                        KeyValueType::Remove => {
+                            self.kv_store.remove(&key).await.map(|_| options_none())?
+                        }
                         KeyValueType::Set => self
                             .kv_store
                             .set(&key, Bytes::from(value))

@@ -26,11 +26,12 @@ pub(crate) type MergeShardingVec = Vec<(i64, Vec<KeyValue>)>;
 pub(crate) type DelNode = (Vec<i64>, TableMeta);
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
 pub(crate) type DelNodeTuple = (DelNode, DelNode);
+pub(crate) type SeekScope = (Scope, usize);
 
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
-    Seek(Scope, usize),
+    Seek(SeekScope),
     Flush(Option<oneshot::Sender<()>>),
 }
 
@@ -90,6 +91,7 @@ impl Compactor {
                 LEVEL_0,
                 scope.clone(),
                 vec![VersionEdit::NewFile((vec![scope], 0), 0, meta)],
+                false,
             )
             .await?;
         }
@@ -115,6 +117,7 @@ impl Compactor {
         mut level: usize,
         scope: Scope,
         mut vec_ver_edit: Vec<VersionEdit>,
+        mut is_skip_sized: bool,
     ) -> Result<()> {
         let config = self.config();
         let mut is_over = false;
@@ -126,11 +129,14 @@ impl Compactor {
         while level < 7 && !is_over {
             let next_level = level + 1;
 
+            // Tips: is_skip_sized选项仅仅允许跳过一次
             if let Some((
                 index,
                 ((del_gens_l, del_meta_l), (del_gens_ll, del_meta_ll)),
                 vec_sharding,
-            )) = self.data_loading_with_level(level, &scope).await?
+            )) = self
+                .data_loading_with_level(level, &scope, mem::replace(&mut is_skip_sized, false))
+                .await?
             {
                 let start = Instant::now();
                 // 并行创建SSTable
@@ -179,13 +185,14 @@ impl Compactor {
         &self,
         level: usize,
         target: &Scope,
+        is_skip_sized: bool,
     ) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
         let version = self.ver_status().current().await;
         let config = self.config();
         let next_level = level + 1;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !version.is_threshold_exceeded_major(config, level) {
+        if level > 5 || !(is_skip_sized || version.is_threshold_exceeded_major(config, level)) {
             return Ok(None);
         }
 
@@ -195,6 +202,10 @@ impl Compactor {
 
         // 获取此级中有重复键值范围的SSTable
         let (tables_l, scopes_l, _) = version.tables_by_scopes(level, target);
+        if scopes_l.is_empty() {
+            return Ok(None);
+        }
+
         // 因此使用tables_l向下检测冲突时获取的集合应当含有tables_ll的元素
         let fusion_scope_l = Scope::fusion(&scopes_l).unwrap_or(target.clone());
         // 通过tables_l的scope获取下一级的父集
@@ -293,16 +304,20 @@ impl Compactor {
 mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
     use crate::kernel::lsm::compactor::{Compactor, LEVEL_0};
-    use crate::kernel::lsm::storage::{Config, KipStorage};
+    use crate::kernel::lsm::storage::{Config, KipStorage, StoreInner};
+    use crate::kernel::lsm::table::meta::TableMeta;
     use crate::kernel::lsm::table::scope::Scope;
     use crate::kernel::lsm::table::ss_table::SSTable;
+    use crate::kernel::lsm::table::TableType;
     use crate::kernel::lsm::trigger::TriggerType;
-    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
+    use crate::kernel::lsm::version::edit::VersionEdit;
+    use crate::kernel::lsm::version::{SeekOption, DEFAULT_SS_TABLE_PATH};
     use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::{Result, Storage};
     use bytes::Bytes;
     use itertools::Itertools;
     use std::collections::hash_map::RandomState;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
     use std::time::Instant;
     use tempfile::TempDir;
@@ -352,7 +367,7 @@ mod tests {
 
             let version = kv_store.current_version().await;
             let level_slice = &version.level_slice;
-            println!("Level_Slice: {:#?}", level_slice);
+            println!("MajorCompaction Test: {:#?}", level_slice);
             assert!(!level_slice[0].is_empty());
             assert!(
                 !level_slice[1].is_empty()
@@ -474,5 +489,129 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    /// Key -> 3
+    ///
+    /// Level 1: [1,2],[4,5,6]
+    /// Level 2: [1,2],[3,4],[5,6]
+    ///       ↓
+    /// Level 1: [1,2]
+    /// Level 2: [1,2],[3,4,5,6]
+    #[test]
+    fn test_seek_compaction() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let config = Config::new(temp_dir.into_path());
+
+        tokio_test::block_on(async move {
+            let inner = StoreInner::new(config).await?;
+            let compactor = Compactor::new(Arc::new(inner));
+            let version_status = compactor.ver_status();
+            let table_loader = version_status.loader();
+
+            let (scope_1, meta_1) = table_loader.create(
+                1,
+                vec![
+                    (Bytes::from_static(b"1"), None),
+                    (Bytes::from_static(b"2"), None),
+                ],
+                1,
+                TableType::Skip,
+            )?;
+            let (scope_2, meta_2) = table_loader.create(
+                2,
+                vec![
+                    (Bytes::from_static(b"4"), None),
+                    (Bytes::from_static(b"5"), None),
+                    (Bytes::from_static(b"6"), None),
+                ],
+                1,
+                TableType::Skip,
+            )?;
+            let (scope_3, meta_3) = table_loader.create(
+                3,
+                vec![
+                    (Bytes::from_static(b"1"), None),
+                    (Bytes::from_static(b"2"), None),
+                ],
+                2,
+                TableType::Skip,
+            )?;
+            let (scope_4, meta_4) = table_loader.create(
+                4,
+                vec![
+                    (Bytes::from_static(b"3"), None),
+                    (Bytes::from_static(b"4"), None),
+                ],
+                2,
+                TableType::Skip,
+            )?;
+            let (scope_5, meta_5) = table_loader.create(
+                5,
+                vec![
+                    (Bytes::from_static(b"5"), None),
+                    (Bytes::from_static(b"6"), None),
+                ],
+                2,
+                TableType::Skip,
+            )?;
+            version_status
+                .log_and_apply(
+                    vec![
+                        VersionEdit::NewFile(
+                            (vec![scope_1, scope_2], 1),
+                            0,
+                            TableMeta::fusion(&[meta_1, meta_2]),
+                        ),
+                        VersionEdit::NewFile(
+                            (vec![scope_3, scope_4, scope_5], 2),
+                            0,
+                            TableMeta::fusion(&[meta_3, meta_4, meta_5]),
+                        ),
+                    ],
+                    114514,
+                )
+                .await?;
+
+            let version_1 = version_status.current().await;
+
+            let mut failure_count = 0;
+            loop {
+                failure_count += 1;
+                if let SeekOption::Miss(Some((scope, level))) = version_1.query(b"3")? {
+                    compactor
+                        .major_compaction(level, scope, vec![], true)
+                        .await?;
+                    break;
+                }
+                if failure_count >= 200 {
+                    panic!("time out!");
+                }
+            }
+
+            let version_2 = version_status.current().await;
+            let level_slice = &version_2.level_slice;
+
+            println!("SeekCompaction Test: {:#?}", level_slice);
+            assert!(!level_slice[1].is_empty());
+            assert!(!level_slice[2].is_empty());
+
+            let final_scope_1 = &level_slice[2][0];
+            let final_scope_2 = &level_slice[2][1];
+            assert_eq!(final_scope_1.start, Bytes::from_static(b"1"));
+            assert_eq!(final_scope_1.end, Bytes::from_static(b"2"));
+            assert_eq!(final_scope_2.start, Bytes::from_static(b"3"));
+            assert_eq!(final_scope_2.end, Bytes::from_static(b"6"));
+            assert_eq!(
+                final_scope_1.allowed_seeks.clone().unwrap().load(Relaxed),
+                0
+            );
+            assert_eq!(
+                final_scope_2.allowed_seeks.clone().unwrap().load(Relaxed),
+                0
+            );
+
+            Ok(())
+        })
     }
 }
