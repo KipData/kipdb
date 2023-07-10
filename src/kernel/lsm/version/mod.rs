@@ -78,6 +78,23 @@ impl Version {
         self.meta_data.size_of_disk
     }
 
+    pub(crate) fn print_sst(&self) -> String {
+        let mut sst = String::new();
+        for level in 0..7 {
+            sst.push_str(&format!("level: {}\t", level));
+            for scope in &self.level_slice[level] {
+                sst.push_str(&format!(
+                    "[gen: {}, scope:({:?},{:?})]\t",
+                    scope.get_gen(),
+                    scope.start,
+                    scope.end
+                ));
+            }
+            sst.push_str("\n");
+        }
+        sst
+    }
+
     /// 通过一组VersionEdit载入Version
     pub(crate) fn load_from_log(
         vec_log: Vec<VersionEdit>,

@@ -173,6 +173,12 @@ impl Storage for LsmStore {
     async fn is_empty(&self) -> bool {
         self.current_version().await.is_empty() && self.mem_table().is_empty()
     }
+
+    #[inline]
+    async fn print_sst(&self) -> Result<String> {
+        let sst = self.current_version().await.print_sst();
+        Ok(sst)
+    }
 }
 
 impl Drop for LsmStore {
