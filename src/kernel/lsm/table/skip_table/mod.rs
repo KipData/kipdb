@@ -47,6 +47,6 @@ impl Table for SkipTable {
     }
 
     fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
-        Ok(Box::new(SkipTableIter::new(&self)))
+        Ok(Box::new(SkipTableIter::new(self)))
     }
 }

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use kip_db::kernel::io::{FileExtension, IoFactory, IoType};
-use kip_db::kernel::lsm::storage::LsmStore;
-use kip_db::kernel::sled_storage::SledStore;
+use kip_db::kernel::lsm::storage::KipStorage;
+use kip_db::kernel::sled_storage::SledStorage;
 use kip_db::kernel::Result;
 use kip_db::kernel::Storage;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -10,8 +10,8 @@ use walkdir::WalkDir;
 
 #[test]
 fn get_stored_value() -> Result<()> {
-    get_stored_value_with_kv_store::<SledStore>()?;
-    get_stored_value_with_kv_store::<LsmStore>()?;
+    get_stored_value_with_kv_store::<SledStorage>()?;
+    get_stored_value_with_kv_store::<KipStorage>()?;
     Ok(())
 }
 
@@ -45,8 +45,8 @@ fn get_stored_value_with_kv_store<T: Storage>() -> Result<()> {
 // Should overwrite existent value.
 #[test]
 fn overwrite_value() -> Result<()> {
-    overwrite_value_with_kv_store::<SledStore>()?;
-    overwrite_value_with_kv_store::<LsmStore>()?;
+    overwrite_value_with_kv_store::<SledStorage>()?;
+    overwrite_value_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
@@ -94,8 +94,8 @@ fn overwrite_value_with_kv_store<T: Storage>() -> Result<()> {
 // Should get `None` when getting a non-existent key.
 #[test]
 fn get_non_existent_value() -> Result<()> {
-    get_non_existent_value_with_kv_store::<SledStore>()?;
-    get_non_existent_value_with_kv_store::<LsmStore>()?;
+    get_non_existent_value_with_kv_store::<SledStorage>()?;
+    get_non_existent_value_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
@@ -124,8 +124,8 @@ fn get_non_existent_value_with_kv_store<T: Storage>() -> Result<()> {
 
 #[test]
 fn remove_non_existent_key() -> Result<()> {
-    remove_non_existent_key_with_kv_store::<SledStore>()?;
-    remove_non_existent_key_with_kv_store::<LsmStore>()?;
+    remove_non_existent_key_with_kv_store::<SledStorage>()?;
+    remove_non_existent_key_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
@@ -143,8 +143,8 @@ fn remove_non_existent_key_with_kv_store<T: Storage>() -> Result<()> {
 
 #[test]
 fn remove_key() -> Result<()> {
-    remove_key_with_kv_store::<SledStore>()?;
-    remove_key_with_kv_store::<LsmStore>()?;
+    remove_key_with_kv_store::<SledStorage>()?;
+    remove_key_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
@@ -168,8 +168,8 @@ fn remove_key_with_kv_store<T: Storage>() -> Result<()> {
 // Test data correctness after compaction.
 #[test]
 fn compaction() -> Result<()> {
-    compaction_with_kv_store::<SledStore>()?;
-    compaction_with_kv_store::<LsmStore>()?;
+    compaction_with_kv_store::<SledStorage>()?;
+    compaction_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }

@@ -36,8 +36,7 @@ impl<'a> Iter<'a> for SkipTableIter<'a> {
         Ok(self
             .inner
             .as_mut()
-            .map(|iter| iter.next())
-            .flatten()
+            .and_then(|iter| iter.next())
             .map(item_clone))
     }
 

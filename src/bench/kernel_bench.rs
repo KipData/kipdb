@@ -5,8 +5,8 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
 
-use kip_db::kernel::lsm::storage::LsmStore;
-use kip_db::kernel::sled_storage::SledStore;
+use kip_db::kernel::lsm::storage::KipStorage;
+use kip_db::kernel::sled_storage::SledStorage;
 use kip_db::kernel::Storage;
 
 fn counter() -> usize {
@@ -186,23 +186,23 @@ fn empty_opens<T: Storage>(c: &mut Criterion) {
 }
 
 fn kv_bulk_load(c: &mut Criterion) {
-    bulk_load::<LsmStore>(c);
-    bulk_load::<SledStore>(c);
+    bulk_load::<KipStorage>(c);
+    bulk_load::<SledStorage>(c);
 }
 
 fn kv_monotonic_crud(c: &mut Criterion) {
-    monotonic_crud::<LsmStore>(c);
-    monotonic_crud::<SledStore>(c);
+    monotonic_crud::<KipStorage>(c);
+    monotonic_crud::<SledStorage>(c);
 }
 
 fn kv_random_crud(c: &mut Criterion) {
-    random_crud::<LsmStore>(c);
-    random_crud::<SledStore>(c);
+    random_crud::<KipStorage>(c);
+    random_crud::<SledStorage>(c);
 }
 
 fn kv_empty_opens(c: &mut Criterion) {
-    empty_opens::<LsmStore>(c);
-    empty_opens::<SledStore>(c);
+    empty_opens::<KipStorage>(c);
+    empty_opens::<SledStorage>(c);
 }
 
 criterion_group!(

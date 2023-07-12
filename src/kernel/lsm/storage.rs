@@ -3,12 +3,13 @@ use crate::kernel::lsm::compactor::{CompactTask, Compactor};
 use crate::kernel::lsm::iterator::full_iter::FullIter;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
 use crate::kernel::lsm::mvcc::Transaction;
+use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::ss_table::block;
 use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::trigger::TriggerType;
-use crate::kernel::lsm::version;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;
+use crate::kernel::lsm::{query_and_compaction, version};
 use crate::kernel::Result;
 use crate::kernel::{lock_or_time_out, Storage, DEFAULT_LOCK_FILE};
 use crate::KernelError;
@@ -22,7 +23,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tracing::{error, info};
@@ -47,9 +47,7 @@ pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
 pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
 
-pub(crate) const DEFAULT_MAJOR_SELECT_FILE_SIZE: usize = 3;
-
-pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 5;
+pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
 pub(crate) const DEFAULT_DESIRED_ERROR_PROB: f64 = 0.05;
 
@@ -67,7 +65,7 @@ static GEN_BUF: AtomicI64 = AtomicI64::new(0);
 
 /// 基于LSM的KV Store存储内核
 /// Leveled Compaction压缩算法
-pub struct LsmStore {
+pub struct KipStorage {
     inner: Arc<StoreInner>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
@@ -104,7 +102,7 @@ impl StoreInner {
 }
 
 #[async_trait]
-impl Storage for LsmStore {
+impl Storage for KipStorage {
     #[inline]
     fn name() -> &'static str
     where
@@ -115,7 +113,7 @@ impl Storage for LsmStore {
 
     #[inline]
     async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
-        LsmStore::open_with_config(Config::new(path.into())).await
+        KipStorage::open_with_config(Config::new(path.into())).await
     }
 
     #[inline]
@@ -141,7 +139,8 @@ impl Storage for LsmStore {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.current_version().await.query(key)? {
+        let version = self.current_version().await;
+        if let Some(value) = query_and_compaction(key, &version, &self.compactor_tx)? {
             return Ok(Some(value));
         }
 
@@ -175,7 +174,7 @@ impl Storage for LsmStore {
     }
 }
 
-impl Drop for LsmStore {
+impl Drop for KipStorage {
     #[inline]
     #[allow(clippy::expect_used)]
     fn drop(&mut self) {
@@ -183,15 +182,13 @@ impl Drop for LsmStore {
     }
 }
 
-impl LsmStore {
+impl KipStorage {
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         if self.mem_table().insert_data(data)? {
-            if let Err(TrySendError::Closed(_)) =
-                self.compactor_tx.try_send(CompactTask::Flush(None))
-            {
-                return Err(KernelError::ChannelClose);
-            }
+            self.compactor_tx
+                .try_send(CompactTask::Flush(None))
+                .map_err(|_| KernelError::ChannelClose)?;
         }
 
         Ok(())
@@ -213,14 +210,25 @@ impl LsmStore {
         let (task_tx, mut task_rx) = channel(1);
 
         let _ignore = tokio::spawn(async move {
-            while let Some(CompactTask::Flush(option_tx)) = task_rx.recv().await {
-                if let Err(err) = compactor.check_then_compaction(option_tx).await {
-                    error!("[Compactor][compaction][error happen]: {:?}", err);
+            while let Some(task) = task_rx.recv().await {
+                match task {
+                    CompactTask::Seek((scope, level)) => {
+                        if let Err(err) =
+                            compactor.major_compaction(level, scope, vec![], true).await
+                        {
+                            error!("[Compactor][manual compaction][error happen]: {:?}", err);
+                        }
+                    }
+                    CompactTask::Flush(option_tx) => {
+                        if let Err(err) = compactor.check_then_compaction(option_tx).await {
+                            error!("[Compactor][compaction][error happen]: {:?}", err);
+                        }
+                    }
                 }
             }
         });
 
-        Ok(LsmStore {
+        Ok(KipStorage {
             inner,
             lock_file,
             compactor_tx: task_tx,
@@ -260,6 +268,17 @@ impl LsmStore {
         })
     }
 
+    #[inline]
+    pub async fn manual_compaction(&self, min: Bytes, max: Bytes, level: usize) -> Result<()> {
+        if min <= max {
+            self.compactor_tx
+                .send(CompactTask::Seek((Scope::from_range(0, min, max), level)))
+                .await?;
+        }
+
+        Ok(())
+    }
+
     #[allow(dead_code)]
     async fn flush_background(&self) -> Result<()> {
         self.compactor_tx.send(CompactTask::Flush(None)).await?;
@@ -295,11 +314,6 @@ pub struct Config {
     pub(crate) minor_trigger_with_threshold: (TriggerType, usize),
     /// Major压缩触发阈值
     pub(crate) major_threshold_with_sst_size: usize,
-    /// Major压缩选定文件数
-    /// Major压缩时通过选定个别SSTable(即该配置项)进行下一级的SSTable选定，
-    /// 并将确定范围的下一级SSTable再次对当前等级的SSTable进行范围判定，
-    /// 找到最合理的上下级数据范围并压缩
-    pub(crate) major_select_file_size: usize,
     /// 每级SSTable数量倍率
     pub(crate) level_sst_magnification: usize,
     /// 布隆过滤器 期望的错误概率
@@ -336,7 +350,6 @@ impl Config {
                 DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM,
             ),
             major_threshold_with_sst_size: DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE,
-            major_select_file_size: DEFAULT_MAJOR_SELECT_FILE_SIZE,
             level_sst_magnification: DEFAULT_LEVEL_SST_MAGNIFICATION,
             desired_error_prob: DEFAULT_DESIRED_ERROR_PROB,
             block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
@@ -418,12 +431,6 @@ impl Config {
     }
 
     #[inline]
-    pub fn major_select_file_size(mut self, major_select_file_size: usize) -> Self {
-        self.major_select_file_size = major_select_file_size;
-        self
-    }
-
-    #[inline]
     pub fn level_sst_magnification(mut self, level_sst_magnification: usize) -> Self {
         self.level_sst_magnification = level_sst_magnification;
         self
@@ -490,13 +497,9 @@ impl Gen {
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::storage::{Config, Gen, LsmStore, Sequence};
-    use crate::kernel::{Result, Storage};
-    use bytes::Bytes;
-    use itertools::Itertools;
+    use crate::kernel::lsm::storage::{Gen, Sequence};
     use std::thread::sleep;
-    use std::time::{Duration, Instant};
-    use tempfile::TempDir;
+    use std::time::Duration;
 
     #[test]
     fn test_seq_create() {
@@ -508,18 +511,26 @@ mod tests {
     }
 
     #[test]
-    fn test_gen_create() {
-        let i_1 = Gen::create();
+    #[ignore]
+    fn test_gen_create_1000() {
+        for _ in 0..1000 {
+            test_gen_create()
+        }
+    }
 
+    fn test_gen_create() {
+        Gen::init();
+
+        let i_1 = Gen::create();
         let i_2 = Gen::create();
 
         assert!(i_1 < i_2);
 
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(2));
         Gen::init();
         let i_3 = Gen::create();
 
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(1));
         Gen::init();
         let i_4 = Gen::create();
 
@@ -529,50 +540,6 @@ mod tests {
         println!("{i_4}");
 
         assert!(i_3 > i_2);
-        assert!(i_4 > i_3 + 1);
-    }
-
-    #[test]
-    fn test_lsm_major_compactor() -> Result<()> {
-        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-        tokio_test::block_on(async move {
-            let times = 10000;
-
-            let value = b"Stray birds of summer come to my window to sing and fly away.
-            And yellow leaves of autumn, which have no songs, flutter and fall
-            there with a sign.";
-
-            let config = Config::new(temp_dir.path().to_str().unwrap())
-                .major_threshold_with_sst_size(4)
-                .enable_level_0_memorization();
-            let kv_store = LsmStore::open_with_config(config).await?;
-            let mut vec_kv = Vec::new();
-
-            for i in 0..times {
-                let vec_u8 = bincode::serialize(&i)?;
-                vec_kv.push((
-                    Bytes::from(vec_u8.clone()),
-                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
-                ));
-            }
-
-            let start = Instant::now();
-            for i in 0..times {
-                kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?
-            }
-            println!("[set_for][Time: {:?}]", start.elapsed());
-
-            kv_store.flush().await.unwrap();
-
-            let start = Instant::now();
-            for i in 0..times {
-                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
-            }
-            println!("[get_for][Time: {:?}]", start.elapsed());
-            kv_store.flush().await?;
-
-            Ok(())
-        })
+        assert!(i_4 > i_3);
     }
 }

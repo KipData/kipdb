@@ -1,6 +1,11 @@
-use crate::kernel::lsm::compactor::MergeShardingVec;
+use crate::kernel::lsm::compactor::{CompactTask, MergeShardingVec};
 use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
 use crate::kernel::lsm::storage::Gen;
+use crate::kernel::lsm::version::{SeekOption, Version};
+use crate::kernel::Result;
+use crate::KernelError;
+use bytes::Bytes;
+use tokio::sync::mpsc::Sender;
 
 mod compactor;
 mod iterator;
@@ -14,7 +19,6 @@ mod version;
 
 /// KeyValue数据分片，尽可能将数据按给定的分片大小：file_size，填满一片（可能会溢出一些）
 /// 保持原有数据的顺序进行分片，所有第一片分片中最后的值肯定会比其他分片开始的值Key排序较前（如果vec_data是以Key从小到大排序的话）
-/// TODO: Block对齐封装,替代此方法
 fn data_sharding(mut vec_data: Vec<KeyValue>, file_size: usize) -> MergeShardingVec {
     // 向上取整计算SSTable数量
     let part_size =
@@ -44,4 +48,23 @@ fn data_sharding(mut vec_data: Vec<KeyValue>, file_size: usize) -> MergeSharding
     // 过滤掉没有数据的切片
     vec_sharding.retain(|(_, vec)| !vec.is_empty());
     vec_sharding
+}
+
+/// 使用Version进行Key查询，当触发Seek Miss的阈值时，
+/// 使用其第一次Miss的Level进行Seek Compaction
+fn query_and_compaction(
+    key: &[u8],
+    version: &Version,
+    compactor_tx: &Sender<CompactTask>,
+) -> Result<Option<Bytes>> {
+    match version.query(key)? {
+        SeekOption::Hit(value) => return Ok(Some(value)),
+        SeekOption::Miss(Some(seek_scope)) => {
+            compactor_tx
+                .try_send(CompactTask::Seek(seek_scope))
+                .map_err(|_| KernelError::ChannelClose)?;
+        }
+        _ => (),
+    }
+    Ok(None)
 }

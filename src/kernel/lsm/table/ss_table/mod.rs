@@ -232,7 +232,7 @@ impl Table for SSTable {
     }
 
     fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
-        Ok(SSTableIter::new(&self).map(Box::new)?)
+        Ok(SSTableIter::new(self).map(Box::new)?)
     }
 }
 
