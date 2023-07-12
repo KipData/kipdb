@@ -26,9 +26,9 @@ impl PartialEq for Scope {
     fn eq(&self, other: &Self) -> bool {
         if let (Some(a), Some(b)) = (&self.allowed_seeks, &other.allowed_seeks) {
             a.load(Acquire) == b.load(Acquire)
-                || self.start == other.start
-                || self.end == other.end
-                || self.gen == other.gen
+                && self.start == other.start
+                && self.end == other.end
+                && self.gen == other.gen
         } else {
             false
         }
