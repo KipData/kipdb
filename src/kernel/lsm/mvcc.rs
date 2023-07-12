@@ -16,17 +16,15 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
-type MapIter<'a> = Map<
-    skiplist::skipmap::Iter<'a, Bytes, Option<Bytes>>,
-    fn((&Bytes, &Option<Bytes>)) -> (Bytes, Option<Bytes>),
->;
+type MapIter<'a> =
+    Map<skiplist::skipmap::Iter<'a, Bytes, KeyValue>, fn((&Bytes, &KeyValue)) -> KeyValue>;
 
 pub struct Transaction {
     pub(crate) store_inner: Arc<StoreInner>,
     pub(crate) compactor_tx: Sender<CompactTask>,
 
     pub(crate) version: Arc<Version>,
-    pub(crate) writer_buf: SkipMap<Bytes, Option<Bytes>>,
+    pub(crate) writer_buf: SkipMap<Bytes, KeyValue>,
     pub(crate) seq_id: i64,
 }
 
@@ -35,31 +33,32 @@ impl Transaction {
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        if let Some(value) = self.writer_buf.get(key).and_then(Option::clone) {
-            return Ok(Some(value));
+        if let Some((_, value)) = self.writer_buf.get(key) {
+            return Ok(value.clone());
         }
 
-        if let Some(value) = self.mem_table().find_with_sequence_id(key, self.seq_id) {
-            return Ok(Some(value));
+        if let Some((_, value)) = self.mem_table().find_with_sequence_id(key, self.seq_id) {
+            return Ok(value);
         }
 
-        if let Some(value) = query_and_compaction(key, &self.version, &self.compactor_tx)? {
-            return Ok(Some(value));
+        if let Some((_, value)) = query_and_compaction(key, &self.version, &self.compactor_tx)? {
+            return Ok(value);
         }
 
         Ok(None)
     }
 
     pub fn set(&mut self, key: &[u8], value: Bytes) {
-        let _ignore = self
-            .writer_buf
-            .insert(Bytes::copy_from_slice(key), Some(value));
+        let bytes = Bytes::copy_from_slice(key);
+
+        let _ignore = self.writer_buf.insert(bytes.clone(), (bytes, Some(value)));
     }
 
     pub fn remove(&mut self, key: &[u8]) -> Result<()> {
         let _ = self.get(key)?.ok_or(KernelError::KeyNotFound)?;
 
-        let _ignore = self.writer_buf.insert(Bytes::copy_from_slice(key), None);
+        let bytes = Bytes::copy_from_slice(key);
+        let _ignore = self.writer_buf.insert(bytes.clone(), (bytes, None));
 
         Ok(())
     }
@@ -110,15 +109,18 @@ impl Transaction {
     }
 
     pub async fn commit(self) -> Result<()> {
-        let batch_data = self
-            .writer_buf
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect_vec();
+        let Transaction {
+            writer_buf,
+            store_inner,
+            compactor_tx,
+            ..
+        } = self;
 
-        let mem_table = self.mem_table();
+        let mem_table = &store_inner.mem_table;
+        let batch_data = writer_buf.into_iter().map(|(_, item)| item).collect_vec();
+
         if mem_table.insert_batch_data(batch_data, Sequence::create())? {
-            self.compactor_tx
+            compactor_tx
                 .try_send(CompactTask::Flush(None))
                 .map_err(|_| KernelError::ChannelClose)?;
         }
@@ -144,7 +146,7 @@ impl Transaction {
                 min.map(Bytes::copy_from_slice).as_ref(),
                 max.map(Bytes::copy_from_slice).as_ref(),
             )
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .map(|(_, value)| (value.clone()))
     }
 
     pub fn disk_iter(&self) -> Result<VersionIter> {

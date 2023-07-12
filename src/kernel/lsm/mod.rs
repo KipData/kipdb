@@ -1,10 +1,9 @@
 use crate::kernel::lsm::compactor::{CompactTask, MergeShardingVec};
 use crate::kernel::lsm::mem_table::{key_value_bytes_len, KeyValue};
 use crate::kernel::lsm::storage::Gen;
-use crate::kernel::lsm::version::{SeekOption, Version};
+use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
-use bytes::Bytes;
 use tokio::sync::mpsc::Sender;
 
 mod compactor;
@@ -56,15 +55,17 @@ fn query_and_compaction(
     key: &[u8],
     version: &Version,
     compactor_tx: &Sender<CompactTask>,
-) -> Result<Option<Bytes>> {
-    match version.query(key)? {
-        SeekOption::Hit(value) => return Ok(Some(value)),
-        SeekOption::Miss(Some(seek_scope)) => {
-            compactor_tx
-                .try_send(CompactTask::Seek(seek_scope))
-                .map_err(|_| KernelError::ChannelClose)?;
-        }
-        _ => (),
+) -> Result<Option<KeyValue>> {
+    let (value_option, miss_option) = version.query(key)?;
+
+    if let Some(miss_scope) = miss_option {
+        compactor_tx
+            .try_send(CompactTask::Seek(miss_scope))
+            .map_err(|_| KernelError::ChannelClose)?;
+    }
+
+    if let Some(key_value) = value_option {
+        return Ok(Some(key_value));
     }
     Ok(None)
 }

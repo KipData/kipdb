@@ -197,7 +197,7 @@ impl SSTable {
 }
 
 impl Table for SSTable {
-    fn query(&self, key: &[u8]) -> Result<Option<Bytes>> {
+    fn query(&self, key: &[u8]) -> Result<Option<KeyValue>> {
         if self.meta.filter.contains(key) {
             let index_block = self.index_block()?;
 
@@ -208,7 +208,9 @@ impl Table for SSTable {
                     Ok(Self::data_block(self, index)?)
                 },
             )? {
-                return Ok(data_block.find(key));
+                if let (value, true) = data_block.find(key) {
+                    return Ok(Some((Bytes::copy_from_slice(key), value)));
+                }
             }
         }
 
@@ -290,13 +292,19 @@ mod tests {
         let ss_table = sst_loader.get(1).unwrap();
 
         for i in 0..times {
-            assert_eq!(ss_table.query(&vec_data[i].0)?, Some(value.clone()))
+            assert_eq!(
+                ss_table.query(&vec_data[i].0)?.unwrap().1,
+                Some(value.clone())
+            )
         }
         let cache = ShardingLruCache::new(config.table_cache_size, 16, RandomState::default())?;
         let ss_table =
             SSTable::load_from_file(sst_factory.reader(1, IoType::Direct)?, Arc::new(cache))?;
         for i in 0..times {
-            assert_eq!(ss_table.query(&vec_data[i].0)?, Some(value.clone()))
+            assert_eq!(
+                ss_table.query(&vec_data[i].0)?.unwrap().1,
+                Some(value.clone())
+            )
         }
 
         Ok(())

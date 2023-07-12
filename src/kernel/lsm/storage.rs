@@ -135,13 +135,13 @@ impl Storage for KipStorage {
 
     #[inline]
     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        if let Some(value) = self.mem_table().find(key) {
-            return Ok(Some(value));
+        if let Some((_, value)) = self.mem_table().find(key) {
+            return Ok(value);
         }
 
         let version = self.current_version().await;
-        if let Some(value) = query_and_compaction(key, &version, &self.compactor_tx)? {
-            return Ok(Some(value));
+        if let Some((_, value)) = query_and_compaction(key, &version, &self.compactor_tx)? {
+            return Ok(value);
         }
 
         Ok(None)

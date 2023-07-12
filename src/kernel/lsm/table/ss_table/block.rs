@@ -388,15 +388,17 @@ impl BlockBuilder {
 
 impl Block<Value> {
     /// 通过Key查询对应Value
-    pub(crate) fn find(&self, key: &[u8]) -> Option<Bytes> {
+    ///
+    /// 返回数据为Value的Option以及是否存在
+    pub(crate) fn find(&self, key: &[u8]) -> (Option<Bytes>, bool) {
         self.binary_search(key)
             .ok()
             .and_then(|index| {
                 self.vec_entry
                     .get(index)
-                    .map(|(_, entry)| entry.item.bytes.clone())
+                    .map(|(_, entry)| (entry.item.bytes.clone(), true))
             })
-            .flatten()
+            .unwrap_or((None, false))
     }
 }
 
@@ -744,7 +746,7 @@ mod tests {
                 )?;
                 Ok(target_block)
             })?;
-            assert_eq!(data_block.find(key), Some(value.clone()))
+            assert_eq!(data_block.find(key), (Some(value.clone()), true))
         }
 
         test_block_serialization_(

@@ -216,7 +216,7 @@ impl Handler {
                         .collect();
                     let bytes = self
                         .kv_store
-                        .batch(vec_cmd)
+                        .join(vec_cmd)
                         .await?
                         .into_iter()
                         .filter_map(|value_option| {
