@@ -200,9 +200,15 @@ mod tests {
 
         let ss_table_loaded = sst_loader.get(1).unwrap();
 
-        assert_eq!(ss_table_loaded.query(&repeat_data.0)?, repeat_data.1);
+        assert_eq!(
+            ss_table_loaded.query(&repeat_data.0)?,
+            Some(repeat_data.clone())
+        );
         for i in 1..times {
-            assert_eq!(ss_table_loaded.query(&vec_data[i].0)?, Some(value.clone()))
+            assert_eq!(
+                ss_table_loaded.query(&vec_data[i].0)?.unwrap().1,
+                Some(value.clone())
+            )
         }
 
         // 模拟SSTable异常而使用Wal进行恢复的情况
@@ -213,9 +219,15 @@ mod tests {
 
         let ss_table_backup = sst_loader.get(1).unwrap();
 
-        assert_eq!(ss_table_backup.query(&repeat_data.0)?, repeat_data.1);
+        assert_eq!(
+            ss_table_backup.query(&repeat_data.0)?,
+            Some(repeat_data.clone())
+        );
         for i in 1..times {
-            assert_eq!(ss_table_backup.query(&vec_data[i].0)?, Some(value.clone()))
+            assert_eq!(
+                ss_table_backup.query(&vec_data[i].0)?.unwrap().1,
+                Some(value.clone())
+            )
         }
         Ok(())
     }

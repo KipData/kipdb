@@ -1,5 +1,6 @@
 use crate::kernel::io::{FileExtension, IoFactory};
 use crate::kernel::lsm::compactor::{SeekScope, LEVEL_0};
+use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::storage::{Config, Gen};
 use crate::kernel::lsm::table::loader::TableLoader;
 use crate::kernel::lsm::table::meta::TableMeta;
@@ -9,7 +10,6 @@ use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
 use crate::kernel::{sorted_gen_list, Result};
-use bytes::Bytes;
 use itertools::Itertools;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
@@ -234,33 +234,34 @@ impl Version {
     }
 
     /// 使用Key从现有Tables中获取对应的数据
-    pub(crate) fn query(&self, key: &[u8]) -> Result<SeekOption<Bytes>> {
+    pub(crate) fn query(&self, key: &[u8]) -> Result<(Option<KeyValue>, Option<SeekScope>)> {
         let table_loader = &self.table_loader;
         // Level 0的Table是无序且Table间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
-            if let SeekOption::Hit(value) = Self::query_by_scope(key, table_loader, scope, LEVEL_0)?
+            if let SeekOption::Hit(key_value) =
+                Self::query_by_scope(key, table_loader, scope, LEVEL_0)?
             {
-                return Ok(SeekOption::Hit(value));
+                return Ok((Some(key_value), None));
             }
         }
         // 仅仅记录第一个key与SSTable的scope meet且seek miss的level
-        let mut seek_miss_level = None;
+        let mut miss_seek = None;
         // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的Table
         for level in 1..7 {
             let offset = self.query_meet_index(key, level);
 
             if let Some(scope) = self.level_slice[level].get(offset) {
                 match Self::query_by_scope(key, table_loader, scope, level)? {
-                    SeekOption::Hit(value) => return Ok(SeekOption::Hit(value)),
+                    SeekOption::Hit(value) => return Ok((Some(value), miss_seek)),
                     SeekOption::Miss(Some(seek_scope)) => {
-                        let _ = seek_miss_level.get_or_insert(seek_scope);
+                        let _ = miss_seek.get_or_insert(seek_scope);
                     }
                     _ => (),
                 }
             }
         }
 
-        Ok(SeekOption::Miss(seek_miss_level))
+        Ok((None, miss_seek))
     }
 
     fn query_by_scope(
@@ -268,16 +269,13 @@ impl Version {
         table_loader: &Arc<TableLoader>,
         scope: &Scope,
         level: usize,
-    ) -> Result<SeekOption<Bytes>> {
+    ) -> Result<SeekOption<KeyValue>> {
         if scope.meet_by_key(key) {
             if let Some(ss_table) = table_loader.get(scope.gen()) {
                 if let Some(value) = ss_table.query(key)? {
                     return Ok(SeekOption::Hit(value));
                 } else if level > LEVEL_0 && scope.seeks_increase() {
-                    return Ok(SeekOption::Miss(Some((
-                        scope.clone(),
-                        ss_table.level() - 1,
-                    ))));
+                    return Ok(SeekOption::Miss(Some((scope.clone(), ss_table.level()))));
                 }
             }
         }

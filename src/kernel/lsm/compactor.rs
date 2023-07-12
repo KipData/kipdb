@@ -311,7 +311,7 @@ mod tests {
     use crate::kernel::lsm::table::TableType;
     use crate::kernel::lsm::trigger::TriggerType;
     use crate::kernel::lsm::version::edit::VersionEdit;
-    use crate::kernel::lsm::version::{SeekOption, DEFAULT_SS_TABLE_PATH};
+    use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
     use crate::kernel::{Result, Storage};
     use bytes::Bytes;
@@ -491,9 +491,9 @@ mod tests {
         Ok(())
     }
 
-    /// Key -> 3
+    /// Key -> 4
     ///
-    /// Level 1: [1,2],[4,5,6]
+    /// Level 1: [1,2],[3,5,6]
     /// Level 2: [1,2],[3,4],[5,6]
     ///       ↓
     /// Level 1: [1,2]
@@ -521,7 +521,7 @@ mod tests {
             let (scope_2, meta_2) = table_loader.create(
                 2,
                 vec![
-                    (Bytes::from_static(b"4"), None),
+                    (Bytes::from_static(b"3"), None),
                     (Bytes::from_static(b"5"), None),
                     (Bytes::from_static(b"6"), None),
                 ],
@@ -578,7 +578,7 @@ mod tests {
             let mut failure_count = 0;
             loop {
                 failure_count += 1;
-                if let SeekOption::Miss(Some((scope, level))) = version_1.query(b"3")? {
+                if let (_, Some((scope, level))) = version_1.query(b"4")? {
                     compactor
                         .major_compaction(level, scope, vec![], true)
                         .await?;

@@ -2,7 +2,6 @@ use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::Result;
-use bytes::Bytes;
 use itertools::Itertools;
 
 pub(crate) mod loader;
@@ -21,7 +20,7 @@ pub enum TableType {
 pub(crate) type BoxTable = Box<dyn Table>;
 
 pub(crate) trait Table: Sync + Send {
-    fn query(&self, key: &[u8]) -> Result<Option<Bytes>>;
+    fn query(&self, key: &[u8]) -> Result<Option<KeyValue>>;
 
     fn len(&self) -> usize;
 
