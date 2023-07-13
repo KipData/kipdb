@@ -4,6 +4,7 @@ use crate::kernel::lsm::storage::Gen;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::Result;
 use crate::KernelError;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
 
 mod compactor;
@@ -59,9 +60,9 @@ fn query_and_compaction(
     let (value_option, miss_option) = version.query(key)?;
 
     if let Some(miss_scope) = miss_option {
-        compactor_tx
-            .try_send(CompactTask::Seek(miss_scope))
-            .map_err(|_| KernelError::ChannelClose)?;
+        if let Err(TrySendError::Closed(_)) = compactor_tx.try_send(CompactTask::Seek(miss_scope)) {
+            return Err(KernelError::ChannelClose);
+        }
     }
 
     if let Some(key_value) = value_option {

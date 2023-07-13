@@ -14,6 +14,7 @@ use std::collections::Bound;
 use std::iter::Map;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
 
 type MapIter<'a> =
@@ -120,9 +121,9 @@ impl Transaction {
         let batch_data = writer_buf.into_iter().map(|(_, item)| item).collect_vec();
 
         if mem_table.insert_batch_data(batch_data, Sequence::create())? {
-            compactor_tx
-                .try_send(CompactTask::Flush(None))
-                .map_err(|_| KernelError::ChannelClose)?;
+            if let Err(TrySendError::Closed(_)) = compactor_tx.try_send(CompactTask::Flush(None)) {
+                return Err(KernelError::ChannelClose);
+            }
         }
 
         let _ = mem_table.tx_count.fetch_sub(1, Ordering::Release);
