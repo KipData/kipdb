@@ -23,6 +23,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot;
 use tracing::{error, info};
@@ -186,9 +187,11 @@ impl KipStorage {
     /// 追加数据
     async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
         if self.mem_table().insert_data(data)? {
-            self.compactor_tx
-                .try_send(CompactTask::Flush(None))
-                .map_err(|_| KernelError::ChannelClose)?;
+            if let Err(TrySendError::Closed(_)) =
+                self.compactor_tx.try_send(CompactTask::Flush(None))
+            {
+                return Err(KernelError::ChannelClose);
+            }
         }
 
         Ok(())
