@@ -3,7 +3,7 @@ use crate::kernel::lsm::table::scope::Scope;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub(crate) enum VersionEdit {
     /// ((Vec(gen), Level, TableMeta)
     DeleteFile((Vec<i64>, usize), TableMeta),

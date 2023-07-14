@@ -11,23 +11,29 @@ pub(crate) struct SkipTable {
     level: usize,
     gen: i64,
     len: usize,
-    inner: SkipMap<Bytes, Option<Bytes>>,
+    inner: SkipMap<Bytes, KeyValue>,
 }
 
 impl SkipTable {
     pub(crate) fn new(level: usize, gen: i64, data: Vec<KeyValue>) -> Self {
+        let len = data.len();
+        let inner = SkipMap::from_iter(
+            data.into_iter()
+                .map(|(key, value)| (key.clone(), (key, value))),
+        );
+
         SkipTable {
             level,
             gen,
-            len: data.len(),
-            inner: SkipMap::from_iter(data),
+            len,
+            inner,
         }
     }
 }
 
 impl Table for SkipTable {
-    fn query(&self, key: &[u8]) -> crate::kernel::Result<Option<Bytes>> {
-        Ok(self.inner.get(key).cloned().flatten())
+    fn query(&self, key: &[u8]) -> crate::kernel::Result<Option<KeyValue>> {
+        Ok(self.inner.get(key).cloned())
     }
 
     fn len(&self) -> usize {
@@ -47,6 +53,6 @@ impl Table for SkipTable {
     }
 
     fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
-        Ok(Box::new(SkipTableIter::new(&self)))
+        Ok(Box::new(SkipTableIter::new(self)))
     }
 }

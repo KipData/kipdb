@@ -279,7 +279,7 @@ impl MemTable {
         }
     }
 
-    pub(crate) fn find(&self, key: &[u8]) -> Option<Bytes> {
+    pub(crate) fn find(&self, key: &[u8]) -> Option<KeyValue> {
         // 填充SEQ_MAX使其变为最高位以尽可能获取最新数据
         let internal_key = InternalKey::new_with_seq(Bytes::copy_from_slice(key), SEQ_MAX);
         let inner = self.inner.lock();
@@ -293,12 +293,12 @@ impl MemTable {
     }
 
     /// 查询时附带seq_id进行历史数据查询
-    pub(crate) fn find_with_sequence_id(&self, key: &[u8], seq_id: i64) -> Option<Bytes> {
+    pub(crate) fn find_with_sequence_id(&self, key: &[u8], seq_id: i64) -> Option<KeyValue> {
         let internal_key = InternalKey::new_with_seq(Bytes::copy_from_slice(key), seq_id);
         let inner = self.inner.lock();
 
-        if let Some(value) = MemTable::find_(&internal_key, &inner._mem) {
-            Some(value)
+        if let Some(key_value) = MemTable::find_(&internal_key, &inner._mem) {
+            Some(key_value)
         } else if let Some(mem_map) = &inner._immut {
             MemTable::find_(&internal_key, mem_map)
         } else {
@@ -306,13 +306,13 @@ impl MemTable {
         }
     }
 
-    fn find_(internal_key: &InternalKey, mem_map: &MemMap) -> Option<Bytes> {
+    fn find_(internal_key: &InternalKey, mem_map: &MemMap) -> Option<KeyValue> {
         mem_map
             .upper_bound(Bound::Included(internal_key))
-            .and_then(|(intern_key, value)| {
-                (internal_key.get_key() == &intern_key.key).then(|| value.clone())
+            .and_then(|(upper_key, value)| {
+                let key = internal_key.get_key();
+                (key == &upper_key.key).then(|| (key.clone(), value.clone()))
             })
-            .flatten()
     }
 
     /// 范围读取
@@ -437,22 +437,28 @@ mod tests {
 
         let old_seq_id = Sequence::create();
 
-        assert_eq!(mem_table.find(&vec![b'k']), Some(Bytes::from(vec![b'1'])));
+        assert_eq!(
+            mem_table.find(&vec![b'k']),
+            Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'1']))))
+        );
 
         let _ = mem_table.insert_data(data_2)?;
 
-        assert_eq!(mem_table.find(&vec![b'k']), Some(Bytes::from(vec![b'2'])));
+        assert_eq!(
+            mem_table.find(&vec![b'k']),
+            Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'2']))))
+        );
 
         assert_eq!(
             mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id),
-            Some(Bytes::from(vec![b'1']))
+            Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'1']))))
         );
 
         let new_seq_id = Sequence::create();
 
         assert_eq!(
             mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id),
-            Some(Bytes::from(vec![b'2']))
+            Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'2']))))
         );
 
         Ok(())

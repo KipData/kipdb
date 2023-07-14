@@ -48,7 +48,7 @@ impl<'a> Iter<'a> for FullIter<'a> {
 #[cfg(test)]
 mod tests {
     use crate::kernel::lsm::iterator::Iter;
-    use crate::kernel::lsm::storage::{Config, LsmStore};
+    use crate::kernel::lsm::storage::{Config, KipStorage};
     use crate::kernel::lsm::version::iter::VersionIter;
     use crate::kernel::{Result, Storage};
     use bincode::Options;
@@ -68,7 +68,7 @@ mod tests {
 
             let config =
                 Config::new(temp_dir.path().to_str().unwrap()).major_threshold_with_sst_size(4);
-            let kv_store = LsmStore::open_with_config(config).await?;
+            let kv_store = KipStorage::open_with_config(config).await?;
             let mut vec_kv = Vec::new();
 
             for i in 100..times + 100 {

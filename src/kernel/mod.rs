@@ -51,7 +51,7 @@ pub trait Storage: Send + Sync + 'static + Sized {
 
     /// 并行批量执行
     #[inline]
-    async fn batch(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
+    async fn join(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
         let map_cmd = vec_cmd.into_iter().map(|cmd| cmd.apply(self));
         Ok(future::try_join_all(map_cmd)
             .await?

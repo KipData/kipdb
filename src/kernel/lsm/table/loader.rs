@@ -56,7 +56,7 @@ impl TableLoader {
         table_type: TableType,
     ) -> Result<(Scope, TableMeta)> {
         // 获取数据的Key涵盖范围
-        let scope = Scope::from_vec_data(gen, &vec_data)?;
+        let scope = Scope::from_sorted_vec_data(gen, &vec_data)?;
         let table: Box<dyn Table> = match table_type {
             TableType::SortedString => Box::new(self.create_ss_table(gen, vec_data, level)?),
             TableType::Skip => Box::new(SkipTable::new(level, gen, vec_data)),
@@ -200,9 +200,15 @@ mod tests {
 
         let ss_table_loaded = sst_loader.get(1).unwrap();
 
-        assert_eq!(ss_table_loaded.query(&repeat_data.0)?, repeat_data.1);
+        assert_eq!(
+            ss_table_loaded.query(&repeat_data.0)?,
+            Some(repeat_data.clone())
+        );
         for i in 1..times {
-            assert_eq!(ss_table_loaded.query(&vec_data[i].0)?, Some(value.clone()))
+            assert_eq!(
+                ss_table_loaded.query(&vec_data[i].0)?.unwrap().1,
+                Some(value.clone())
+            )
         }
 
         // 模拟SSTable异常而使用Wal进行恢复的情况
@@ -213,9 +219,15 @@ mod tests {
 
         let ss_table_backup = sst_loader.get(1).unwrap();
 
-        assert_eq!(ss_table_backup.query(&repeat_data.0)?, repeat_data.1);
+        assert_eq!(
+            ss_table_backup.query(&repeat_data.0)?,
+            Some(repeat_data.clone())
+        );
         for i in 1..times {
-            assert_eq!(ss_table_backup.query(&vec_data[i].0)?, Some(value.clone()))
+            assert_eq!(
+                ss_table_backup.query(&vec_data[i].0)?.unwrap().1,
+                Some(value.clone())
+            )
         }
         Ok(())
     }

@@ -12,6 +12,7 @@ use bytes::Bytes;
 use futures::future;
 use itertools::Itertools;
 use std::collections::HashSet;
+use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -25,10 +26,12 @@ pub(crate) type MergeShardingVec = Vec<(i64, Vec<KeyValue>)>;
 pub(crate) type DelNode = (Vec<i64>, TableMeta);
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
 pub(crate) type DelNodeTuple = (DelNode, DelNode);
+pub(crate) type SeekScope = (Scope, usize);
 
 /// Store与Compactor的交互信息
 #[derive(Debug)]
 pub(crate) enum CompactTask {
+    Seek(SeekScope),
     Flush(Option<oneshot::Sender<()>>),
 }
 
@@ -86,7 +89,9 @@ impl Compactor {
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
                 LEVEL_0,
+                scope.clone(),
                 vec![VersionEdit::NewFile((vec![scope], 0), 0, meta)],
+                false,
             )
             .await?;
         }
@@ -95,13 +100,12 @@ impl Compactor {
 
     /// Major压缩，负责将不同Level之间的数据向下层压缩转移
     /// 目前Major压缩的大体步骤是
-    /// 1. 获取当前Version，读取当前Level的指定数量SSTable，命名为vec_ss_table_l
-    /// 2. vec_ss_table_l的每个SSTable中的scope属性进行融合，并以此获取下一Level与该scope相交的SSTable，命名为vec_ss_table_l_1
-    /// 3. 获取的vec_ss_table_l_1向上一Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据
-    /// 4. vec_ss_table_l与vec_ss_table_l_1之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
-    /// 6. 并行将每个分片各自生成SSTable
-    /// 7. 生成的SSTables插入到vec_ss_table_l的第一个SSTable位置，并将vec_ss_table_l和vec_ss_table_l_1的SSTable删除
-    /// 8. 将变更的SSTable插入至vec_ver_edit以持久化
+    /// 1. 获取当前Version，通过传入的指定Scope得到该Level与该scope相交的SSTable，命名为tables_l
+    /// 2. 获取的tables_l向下一级Level进行类似第2步骤的措施，获取两级之间压缩范围内最恰当的数据(table_ll的范围应当左右应包含与table_l)
+    /// 3. tables_l与tables_ll之间的数据并行取出排序归并去重等处理后，分片成多个Vec<KeyValue>
+    /// 4. 并行将每个分片各自生成SSTable
+    /// 5. 生成的SSTables插入到tables_ll的第一个SSTable位置，并将tables_l和tables_ll的SSTable删除
+    /// 6. 将变更的SSTable插入至vec_ver_edit以持久化
     /// Final: 将vec_ver_edit中的数据进行log_and_apply生成新的Version作为最新状态
     ///
     /// 经过压缩测试，Level 1的SSTable总是较多，根据原理推断：
@@ -111,25 +115,32 @@ impl Compactor {
     pub(crate) async fn major_compaction(
         &self,
         mut level: usize,
+        scope: Scope,
         mut vec_ver_edit: Vec<VersionEdit>,
+        mut is_skip_sized: bool,
     ) -> Result<()> {
-        let next_level = level + 1;
         let config = self.config();
+        let mut is_over = false;
 
         if level > 6 {
             return Err(KernelError::LevelOver);
         }
 
-        while level < 7 {
+        while level < 7 && !is_over {
+            let next_level = level + 1;
+
+            // Tips: is_skip_sized选项仅仅允许跳过一次
             if let Some((
                 index,
                 ((del_gens_l, del_meta_l), (del_gens_ll, del_meta_ll)),
                 vec_sharding,
-            )) = self.data_loading_with_level(level).await?
+            )) = self
+                .data_loading_with_level(level, &scope, mem::replace(&mut is_skip_sized, false))
+                .await?
             {
                 let start = Instant::now();
                 // 并行创建SSTable
-                let ss_table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
+                let table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
                     self.ver_status().loader().create(
                         gen,
                         sharding,
@@ -137,10 +148,10 @@ impl Compactor {
                         config.level_table_type[next_level],
                     )
                 });
-                let vec_ss_table_and_scope: Vec<(Scope, TableMeta)> =
-                    future::try_join_all(ss_table_futures).await?;
+                let vec_table_and_scope: Vec<(Scope, TableMeta)> =
+                    future::try_join_all(table_futures).await?;
                 let (new_scopes, new_metas): (Vec<Scope>, Vec<TableMeta>) =
-                    vec_ss_table_and_scope.into_iter().unzip();
+                    vec_table_and_scope.into_iter().unzip();
                 let fusion_meta = TableMeta::fusion(&new_metas);
 
                 vec_ver_edit.append(&mut vec![
@@ -155,12 +166,17 @@ impl Compactor {
                 );
                 level += 1;
             } else {
-                break;
+                is_over = true;
+            }
+            if !vec_ver_edit.is_empty() {
+                self.ver_status()
+                    .log_and_apply(
+                        mem::take(&mut vec_ver_edit),
+                        config.ver_log_snapshot_threshold,
+                    )
+                    .await?;
             }
         }
-        self.ver_status()
-            .log_and_apply(vec_ver_edit, config.ver_log_snapshot_threshold)
-            .await?;
         Ok(())
     }
 
@@ -168,66 +184,46 @@ impl Compactor {
     async fn data_loading_with_level(
         &self,
         level: usize,
+        target: &Scope,
+        is_skip_sized: bool,
     ) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
         let version = self.ver_status().current().await;
         let config = self.config();
-        let major_select_file_size = config.major_select_file_size;
         let next_level = level + 1;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !version.is_threshold_exceeded_major(config, level) {
+        if level > 5 || !(is_skip_sized || version.is_threshold_exceeded_major(config, level)) {
             return Ok(None);
         }
 
-        // 此处vec_ss_table_l指此level的Vec<SSTable>, vec_ss_table_ll则是下一级的Vec<SSTable>
+        // 此处vec_table_l指此level的Vec<SSTable>, vec_table_ll则是下一级的Vec<SSTable>
         // 类似罗马数字
-        if let Some((mut ss_tables_l, scopes_l)) =
-            version.first_tables(level, major_select_file_size)
-        {
-            let start = Instant::now();
-            let scope_l = Scope::fusion(&scopes_l)?;
-            // 获取下一级中有重复键值范围的SSTable
-            let (ss_tables_ll, scopes_ll) = version.tables_by_scopes(next_level, &scope_l);
-            let index =
-                version.find_index_by_level(ss_tables_ll.first().map(|sst| sst.gen()), next_level);
+        let start = Instant::now();
 
-            // 若为Level 0则与获取同级下是否存在有键值范围冲突数据并插入至del_gen_l中
-            if level == LEVEL_0 {
-                ss_tables_l
-                    .append(&mut version.tables_by_meet_scope(level, |scope| scope.meet(&scope_l)))
-            }
-
-            // 收集需要清除的SSTable
-            let del_gen_l = collect_gen(&ss_tables_l)?;
-            let del_gen_ll = collect_gen(&ss_tables_ll)?;
-
-            // 此处没有chain vec_ss_table_l是因为在vec_ss_table_ll是由vec_ss_table_l检测冲突而获取到的
-            // 因此使用vec_ss_table_ll向上检测冲突时获取的集合应当含有vec_ss_table_l的元素
-            let ss_tables_l_final = match Scope::fusion(&scopes_ll) {
-                Ok(scope_ll) => version.tables_by_meet_scope(level, |scope| scope.meet(&scope_ll)),
-                Err(_) => ss_tables_l,
-            }
-            .into_iter()
-            .unique_by(|sst| sst.gen())
-            .collect_vec();
-
-            // 数据合并并切片
-            let vec_merge_sharding = Self::data_merge_and_sharding(
-                ss_tables_l_final,
-                ss_tables_ll,
-                config.sst_file_size,
-            )
-            .await?;
-
-            info!(
-                "[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]",
-                start.elapsed()
-            );
-
-            Ok(Some((index, (del_gen_l, del_gen_ll), vec_merge_sharding)))
-        } else {
-            Ok(None)
+        // 获取此级中有重复键值范围的SSTable
+        let (tables_l, scopes_l, _) = version.tables_by_scopes(level, target);
+        if scopes_l.is_empty() {
+            return Ok(None);
         }
+
+        // 因此使用tables_l向下检测冲突时获取的集合应当含有tables_ll的元素
+        let fusion_scope_l = Scope::fusion(&scopes_l).unwrap_or(target.clone());
+        // 通过tables_l的scope获取下一级的父集
+        let (tables_ll, _, index) = version.tables_by_scopes(next_level, &fusion_scope_l);
+
+        // 收集需要清除的SSTable
+        let del_gen_l = collect_gen(&tables_l)?;
+        let del_gen_ll = collect_gen(&tables_ll)?;
+
+        // 数据合并并切片
+        let vec_merge_sharding =
+            Self::data_merge_and_sharding(tables_l, tables_ll, config.sst_file_size).await?;
+        info!(
+            "[LsmStore][Major Compaction][data_loading_with_level][Time: {:?}]",
+            start.elapsed()
+        );
+
+        Ok(Some((index, (del_gen_l, del_gen_ll), vec_merge_sharding)))
     }
 
     /// 以SSTables的数据归并再排序后切片，获取以KeyValue的Key值由小到大的切片排序
@@ -303,19 +299,110 @@ impl Compactor {
     }
 }
 
+/// TODO: Manual\Seek Compaction测试
 #[cfg(test)]
 mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::compactor::Compactor;
-    use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::compactor::{Compactor, LEVEL_0};
+    use crate::kernel::lsm::storage::{Config, KipStorage, StoreInner};
+    use crate::kernel::lsm::table::meta::TableMeta;
+    use crate::kernel::lsm::table::scope::Scope;
     use crate::kernel::lsm::table::ss_table::SSTable;
+    use crate::kernel::lsm::table::TableType;
+    use crate::kernel::lsm::trigger::TriggerType;
+    use crate::kernel::lsm::version::edit::VersionEdit;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
-    use crate::kernel::Result;
+    use crate::kernel::{Result, Storage};
     use bytes::Bytes;
+    use itertools::Itertools;
     use std::collections::hash_map::RandomState;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
+    use std::time::Instant;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_lsm_major_compactor() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        tokio_test::block_on(async move {
+            let times = 30_000;
+
+            let value = b"Stray birds of summer come to my window to sing and fly away.
+            And yellow leaves of autumn, which have no songs, flutter and fall
+            there with a sign.";
+
+            // Tips: 此处由于倍率为1且阈值固定为4，因此容易导致Level 1高出阈值时候导致归并转移到Level 2时，
+            // 重复触发阈值，导致迁移到Level6之中，此情况是理想之中的
+            // 普通场景下每个Level之间的阈值数量是有倍数递增的，因此除了极限情况以外，不会发送这种逐级转移的现象
+            let config = Config::new(temp_dir.path().to_str().unwrap())
+                .major_threshold_with_sst_size(4)
+                .level_sst_magnification(1)
+                .minor_trigger_with_threshold(TriggerType::Count, 1000);
+            let kv_store = KipStorage::open_with_config(config).await?;
+            let mut vec_kv = Vec::new();
+
+            for i in 0..times {
+                let vec_u8 = bincode::serialize(&i)?;
+                vec_kv.push((
+                    Bytes::from(vec_u8.clone()),
+                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
+                ));
+            }
+
+            let start = Instant::now();
+
+            assert_eq!(times % 1000, 0);
+
+            for i in 0..times / 1000 {
+                for j in 0..1000 {
+                    kv_store
+                        .set(&vec_kv[i * 1000 + j].0, vec_kv[i * 1000 + j].1.clone())
+                        .await?;
+                }
+                kv_store.flush().await?;
+            }
+            println!("[set_for][Time: {:?}]", start.elapsed());
+
+            let version = kv_store.current_version().await;
+            let level_slice = &version.level_slice;
+            println!("MajorCompaction Test: {:#?}", level_slice);
+            assert!(!level_slice[0].is_empty());
+            assert!(
+                !level_slice[1].is_empty()
+                    || !level_slice[2].is_empty()
+                    || !level_slice[3].is_empty()
+                    || !level_slice[4].is_empty()
+                    || !level_slice[5].is_empty()
+                    || !level_slice[6].is_empty()
+            );
+
+            for (level, slice) in level_slice.into_iter().enumerate() {
+                if !slice.is_empty() && level != LEVEL_0 {
+                    let mut tmp_scope: Option<&Scope> = None;
+
+                    for scope in slice {
+                        if let Some(last_scope) = tmp_scope {
+                            assert!(last_scope.end < scope.start);
+                        }
+                        tmp_scope = Some(scope);
+                    }
+                }
+            }
+
+            assert_eq!(kv_store.len().await?, times);
+
+            let start = Instant::now();
+            for i in 0..times {
+                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
+            }
+            println!("[get_for][Time: {:?}]", start.elapsed());
+            kv_store.flush().await?;
+
+            Ok(())
+        })
+    }
 
     #[test]
     fn test_data_merge() -> Result<()> {
@@ -402,5 +489,129 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    /// Key -> 4
+    ///
+    /// Level 1: [1,2],[3,5,6]
+    /// Level 2: [1,2],[3,4],[5,6]
+    ///       ↓
+    /// Level 1: [1,2]
+    /// Level 2: [1,2],[3,4,5,6]
+    #[test]
+    fn test_seek_compaction() -> Result<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let config = Config::new(temp_dir.into_path());
+
+        tokio_test::block_on(async move {
+            let inner = StoreInner::new(config).await?;
+            let compactor = Compactor::new(Arc::new(inner));
+            let version_status = compactor.ver_status();
+            let table_loader = version_status.loader();
+
+            let (scope_1, meta_1) = table_loader.create(
+                1,
+                vec![
+                    (Bytes::from_static(b"1"), None),
+                    (Bytes::from_static(b"2"), None),
+                ],
+                1,
+                TableType::Skip,
+            )?;
+            let (scope_2, meta_2) = table_loader.create(
+                2,
+                vec![
+                    (Bytes::from_static(b"3"), None),
+                    (Bytes::from_static(b"5"), None),
+                    (Bytes::from_static(b"6"), None),
+                ],
+                1,
+                TableType::Skip,
+            )?;
+            let (scope_3, meta_3) = table_loader.create(
+                3,
+                vec![
+                    (Bytes::from_static(b"1"), None),
+                    (Bytes::from_static(b"2"), None),
+                ],
+                2,
+                TableType::Skip,
+            )?;
+            let (scope_4, meta_4) = table_loader.create(
+                4,
+                vec![
+                    (Bytes::from_static(b"3"), None),
+                    (Bytes::from_static(b"4"), None),
+                ],
+                2,
+                TableType::Skip,
+            )?;
+            let (scope_5, meta_5) = table_loader.create(
+                5,
+                vec![
+                    (Bytes::from_static(b"5"), None),
+                    (Bytes::from_static(b"6"), None),
+                ],
+                2,
+                TableType::Skip,
+            )?;
+            version_status
+                .log_and_apply(
+                    vec![
+                        VersionEdit::NewFile(
+                            (vec![scope_1, scope_2], 1),
+                            0,
+                            TableMeta::fusion(&[meta_1, meta_2]),
+                        ),
+                        VersionEdit::NewFile(
+                            (vec![scope_3, scope_4, scope_5], 2),
+                            0,
+                            TableMeta::fusion(&[meta_3, meta_4, meta_5]),
+                        ),
+                    ],
+                    114514,
+                )
+                .await?;
+
+            let version_1 = version_status.current().await;
+
+            let mut failure_count = 0;
+            loop {
+                failure_count += 1;
+                if let (_, Some((scope, level))) = version_1.query(b"4")? {
+                    compactor
+                        .major_compaction(level, scope, vec![], true)
+                        .await?;
+                    break;
+                }
+                if failure_count >= 200 {
+                    panic!("time out!");
+                }
+            }
+
+            let version_2 = version_status.current().await;
+            let level_slice = &version_2.level_slice;
+
+            println!("SeekCompaction Test: {:#?}", level_slice);
+            assert!(!level_slice[1].is_empty());
+            assert!(!level_slice[2].is_empty());
+
+            let final_scope_1 = &level_slice[2][0];
+            let final_scope_2 = &level_slice[2][1];
+            assert_eq!(final_scope_1.start, Bytes::from_static(b"1"));
+            assert_eq!(final_scope_1.end, Bytes::from_static(b"2"));
+            assert_eq!(final_scope_2.start, Bytes::from_static(b"3"));
+            assert_eq!(final_scope_2.end, Bytes::from_static(b"6"));
+            assert_eq!(
+                final_scope_1.allowed_seeks.clone().unwrap().load(Relaxed),
+                0
+            );
+            assert_eq!(
+                final_scope_2.allowed_seeks.clone().unwrap().load(Relaxed),
+                0
+            );
+
+            Ok(())
+        })
     }
 }

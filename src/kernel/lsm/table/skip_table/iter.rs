@@ -6,7 +6,7 @@ use skiplist::skipmap;
 use std::collections::Bound;
 
 pub(crate) struct SkipTableIter<'a> {
-    inner: Option<skipmap::Iter<'a, Bytes, Option<Bytes>>>,
+    inner: Option<skipmap::Iter<'a, Bytes, KeyValue>>,
     table: &'a SkipTable,
 }
 
@@ -36,8 +36,7 @@ impl<'a> Iter<'a> for SkipTableIter<'a> {
         Ok(self
             .inner
             .as_mut()
-            .map(|iter| iter.next())
-            .flatten()
+            .and_then(|iter| iter.next())
             .map(item_clone))
     }
 
@@ -60,8 +59,8 @@ impl<'a> Iter<'a> for SkipTableIter<'a> {
     }
 }
 
-fn item_clone((key, value): (&Bytes, &Option<Bytes>)) -> KeyValue {
-    (key.clone(), value.clone())
+fn item_clone((_, value): (&Bytes, &KeyValue)) -> KeyValue {
+    value.clone()
 }
 
 #[cfg(test)]

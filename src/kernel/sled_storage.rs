@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug)]
-pub struct SledStore {
+pub struct SledStorage {
     data_base: Arc<Db>,
 }
 
 #[async_trait]
-impl Storage for SledStore {
+impl Storage for SledStorage {
     #[inline]
     fn name() -> &'static str
     where
@@ -25,7 +25,7 @@ impl Storage for SledStore {
     async fn open(path: impl Into<PathBuf> + Send) -> crate::kernel::Result<Self> {
         let db = Arc::new(sled::open(path.into())?);
 
-        Ok(SledStore { data_base: db })
+        Ok(SledStorage { data_base: db })
     }
 
     #[inline]
