@@ -46,9 +46,6 @@ pub trait Storage: Send + Sync + 'static + Sized {
     /// 通过键删除键值对
     async fn remove(&self, key: &[u8]) -> Result<()>;
 
-    /// 打印 sst 排列状态
-    async fn print_sst(&self) -> Result<String>;
-
     /// 并行批量执行
     #[inline]
     async fn join(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {

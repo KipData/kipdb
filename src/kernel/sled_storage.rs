@@ -71,9 +71,4 @@ impl Storage for SledStorage {
     async fn is_empty(&self) -> bool {
         self.data_base.is_empty()
     }
-
-    #[inline]
-    async fn print_sst(&self) -> crate::kernel::Result<String> {
-        Ok("not support".to_string())
-    }
 }

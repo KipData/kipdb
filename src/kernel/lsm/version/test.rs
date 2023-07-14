@@ -169,17 +169,14 @@ fn test_version_apply_and_log() -> Result<()> {
         ver_status_1.log_and_apply(vec_edit2, 10).await?;
 
         let version_1 = Version::clone(ver_status_1.current().await.as_ref());
-        let sst_info_1 = version_1.print_sst();
 
         drop(ver_status_1);
 
         let ver_status_2 = VersionStatus::load_with_path(config, wal.clone())?;
         let version_2 = ver_status_2.current().await;
-        let sst_info_2 = version_2.print_sst();
 
         assert_eq!(version_1.level_slice, version_2.level_slice);
         assert_eq!(version_1.meta_data, version_2.meta_data);
-        assert_eq!(sst_info_1, sst_info_2);
 
         Ok(())
     })

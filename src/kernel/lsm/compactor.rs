@@ -299,7 +299,6 @@ impl Compactor {
     }
 }
 
-/// TODO: Manual\Seek Compaction测试
 #[cfg(test)]
 mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
@@ -592,7 +591,7 @@ mod tests {
             let version_2 = version_status.current().await;
             let level_slice = &version_2.level_slice;
 
-            println!("SeekCompaction Test: {:#?}", level_slice);
+            println!("SeekCompaction Test: {version_2}");
             assert!(!level_slice[1].is_empty());
             assert!(!level_slice[2].is_empty());
 

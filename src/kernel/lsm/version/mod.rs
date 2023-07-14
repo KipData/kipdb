@@ -11,6 +11,7 @@ use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
 use crate::kernel::{sorted_gen_list, Result};
 use itertools::Itertools;
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info};
@@ -83,23 +84,6 @@ impl Version {
         self.meta_data.size_of_disk
     }
 
-    pub(crate) fn print_sst(&self) -> String {
-        let mut sst = String::new();
-        for level in 0..7 {
-            sst.push_str(&format!("level: {}\t", level));
-            for scope in &self.level_slice[level] {
-                sst.push_str(&format!(
-                    "[gen: {}, scope:({:?},{:?})]\t",
-                    scope.get_gen(),
-                    scope.start,
-                    scope.end
-                ));
-            }
-            sst.push_str("\n");
-        }
-        sst
-    }
-
     /// 通过一组VersionEdit载入Version
     pub(crate) fn load_from_log(
         vec_log: Vec<VersionEdit>,
@@ -118,7 +102,7 @@ impl Version {
         };
 
         version.apply(vec_log)?;
-        version_display(&version, "load_from_log");
+        info!("[Version][load_from_log]: {version}");
 
         Ok(version)
     }
@@ -314,6 +298,29 @@ impl Version {
     }
 }
 
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "Version: {}", self.version_num)?;
+
+        for level in 0..7 {
+            writeln!(f, "Level {level}:")?;
+            write!(f, "\t")?;
+            for scope in &self.level_slice[level] {
+                write!(
+                    f,
+                    "[gen: {}, scope:({:?},{:?})]\t",
+                    scope.gen(),
+                    scope.start,
+                    scope.end
+                )?;
+            }
+            writeln!(f)?;
+        }
+
+        writeln!(f, "{:#?}", self.meta_data)
+    }
+}
+
 impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
@@ -328,15 +335,4 @@ impl Drop for Version {
             );
         }
     }
-}
-
-/// 使用特定格式进行display
-pub(crate) fn version_display(new_version: &Version, method: &str) {
-    info!(
-        "[Version: {}]: version_num: {}, len: {}, size_of_disk: {}",
-        method,
-        new_version.version_num,
-        new_version.len(),
-        new_version.size_of_disk(),
-    );
 }
