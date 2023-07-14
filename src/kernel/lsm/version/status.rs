@@ -5,7 +5,7 @@ use crate::kernel::lsm::table::loader::TableLoader;
 use crate::kernel::lsm::version::cleaner::Cleaner;
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::{
-    snapshot_gen, version_display, Version, DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH,
+    snapshot_gen, Version, DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH,
 };
 use crate::kernel::Result;
 use itertools::Itertools;
@@ -83,7 +83,7 @@ impl VersionStatus {
     ) -> Result<()> {
         let mut new_version = Version::clone(self.current().await.as_ref());
         let mut inner = self.inner.write().await;
-        version_display(&new_version, "log_and_apply");
+        info!("[Version Status][log_and_apply]: {new_version}");
 
         if self.edit_approximate_count.load(Ordering::Relaxed) >= snapshot_threshold {
             Self::write_snap_shot(&mut inner, &self.log_factory).await?;
