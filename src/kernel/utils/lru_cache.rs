@@ -22,7 +22,7 @@ unsafe impl<K: Sync, V: Sync> Sync for NodeReadPtr<K, V> {}
 
 impl<K, V> Clone for NodeReadPtr<K, V> {
     fn clone(&self) -> Self {
-        NodeReadPtr(self.0)
+        *self
     }
 }
 
@@ -81,7 +81,7 @@ impl<K: Eq, V> PartialEq<Self> for KeyRef<K, V> {
 
 impl<K: Ord, V> PartialOrd<Self> for KeyRef<K, V> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        unsafe { self.0.as_ref().key.partial_cmp(&other.0.as_ref().key) }
+        Some(self.cmp(other))
     }
 }
 

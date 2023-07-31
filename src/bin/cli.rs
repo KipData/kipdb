@@ -85,6 +85,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_ref_mut)]
 async fn batch_set(client: &mut Client, batch: Vec<String>) -> Result<String> {
     if batch.len() % 2 != 0 {
         error!(

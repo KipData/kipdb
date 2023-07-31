@@ -38,6 +38,6 @@ impl Ord for EditType {
 
 impl PartialOrd for EditType {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.ord_num().partial_cmp(&other.ord_num())
+        Some(self.cmp(other))
     }
 }

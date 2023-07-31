@@ -27,7 +27,7 @@
 ## 快速上手 🤞
 #### 组件引入
 ``` toml
-kip_db = "0.1.1-alpha.0"
+kip_db = "0.1.2-alpha.0"
 ```
 ### 代码编译
 #### 基本编译
@@ -255,7 +255,7 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
 
 参考自：https://chinggg.github.io/post/docker-perf/
 
-### 如果你想参与我们的工作、提供更好的意见或抱着一起学习的心态，欢迎联系我以加入群聊
+### 如果你想参与KipDB或[KipSQL](https://github.com/KipData/KipSQL)，欢迎通过下方微信二维码与我交流
 ![微信联系方式](./static/images/wechat.png)
 
 ### Thanks For

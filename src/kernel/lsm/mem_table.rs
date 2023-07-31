@@ -41,10 +41,7 @@ pub(crate) struct InternalKey {
 
 impl PartialOrd<Self> for InternalKey {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.key.partial_cmp(&other.key).and_then(|ord| match ord {
-            Ordering::Equal => self.seq_id.partial_cmp(&other.seq_id),
-            ordering => Some(ordering),
-        })
+        Some(self.cmp(other))
     }
 }
 

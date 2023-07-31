@@ -39,8 +39,7 @@ pub(crate) const BANNER: &str = "
 ▒▒▒▒▒   ▒▒▒▒ ▒▒▒▒▒  ▒███▒▒▒  ▒▒▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒▒▒▒▒▒
                     ▒███
                     █████
-                   ▒▒▒▒▒
-Version: 0.1.1-alpha.0";
+                   ▒▒▒▒▒";
 
 pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM: usize = 2 * 1024 * 1024;
 
@@ -203,7 +202,7 @@ impl KipStorage {
     where
         Self: Sized,
     {
-        info!("{}", BANNER);
+        info!("{} \nVersion: {}", BANNER, env!("CARGO_PKG_VERSION"));
         Gen::init();
         // 若lockfile的文件夹路径不存在则创建
         fs::create_dir_all(&config.dir_path)?;
