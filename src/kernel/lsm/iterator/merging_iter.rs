@@ -16,10 +16,7 @@ struct IterKey {
 
 impl PartialOrd<Self> for IterKey {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.key.partial_cmp(&other.key).and_then(|ord| match ord {
-            Ordering::Equal => self.num.partial_cmp(&other.num),
-            ordering => Some(ordering),
-        })
+        Some(self.cmp(other))
     }
 }
 
