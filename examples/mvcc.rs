@@ -1,8 +1,8 @@
 use bytes::Bytes;
-use tempfile::TempDir;
 use kip_db::kernel::lsm::storage::{Config, KipStorage};
 use kip_db::kernel::Storage;
 use kip_db::KernelError;
+use tempfile::TempDir;
 
 #[tokio::main]
 async fn main() -> Result<(), KernelError> {
@@ -23,10 +23,7 @@ async fn main() -> Result<(), KernelError> {
     println!("Set KeyValue on the transaction -> (key_2, value_2)");
     tx.set(b"key_2", Bytes::copy_from_slice(b"value_2"));
 
-    println!(
-        "Read key_2 on the transaction: {:?}",
-        tx.get(b"key_2")?
-    );
+    println!("Read key_2 on the transaction: {:?}", tx.get(b"key_2")?);
 
     println!(
         "Read key_2 on the storage: {:?}",
