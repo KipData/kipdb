@@ -32,7 +32,7 @@ impl<'a> SkipTableIter<'a> {
 impl<'a> Iter<'a> for SkipTableIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> crate::kernel::Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> crate::kernel::Result<Option<Self::Item>> {
         Ok(self
             .inner
             .as_mut()
@@ -85,10 +85,10 @@ mod tests {
         let mut iter = table.iter()?;
 
         for test_data in vec.clone() {
-            assert_eq!(iter.next_err()?, Some(test_data))
+            assert_eq!(iter.try_next()?, Some(test_data))
         }
 
-        assert_eq!(iter.next_err()?, None);
+        assert_eq!(iter.try_next()?, None);
 
         assert_eq!(iter.seek(Seek::First)?, Some(vec[0].clone()));
 

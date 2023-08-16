@@ -1,4 +1,5 @@
 use crate::kernel::lsm::compactor::CompactTask;
+use crate::kernel::lsm::iterator::merging_iter::MergingIter;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::query_and_compaction;
@@ -12,6 +13,7 @@ use itertools::Itertools;
 use skiplist::SkipMap;
 use std::collections::Bound;
 use std::iter::Map;
+use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -19,6 +21,8 @@ use tokio::sync::mpsc::Sender;
 
 type MapIter<'a> =
     Map<skiplist::skipmap::Iter<'a, Bytes, KeyValue>, fn((&Bytes, &KeyValue)) -> KeyValue>;
+
+struct BufPtr(NonNull<Vec<KeyValue>>);
 
 pub struct Transaction {
     pub(crate) store_inner: Arc<StoreInner>,
@@ -64,51 +68,6 @@ impl Transaction {
         Ok(())
     }
 
-    pub fn range_scan(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Result<Vec<KeyValue>> {
-        let version_range = self.version_range(min, max)?;
-        let mem_table_range = self.mem_table().range_scan(min, max, Some(self.seq_id));
-
-        Ok(self
-            ._mem_range(min, max)
-            .chain(mem_table_range)
-            .chain(version_range)
-            .unique_by(|(key, _)| key.clone())
-            .sorted_by_key(|(key, _)| key.clone())
-            .collect_vec())
-    }
-
-    fn version_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Result<Vec<KeyValue>> {
-        let mut version_range = Vec::new();
-        let mut iter = VersionIter::new(&self.version)?;
-
-        match min {
-            Bound::Included(key) => {
-                if let Some(included_item) = iter.seek(Seek::Backward(key))? {
-                    if included_item.0 == key {
-                        version_range.push(included_item)
-                    }
-                }
-            }
-            Bound::Excluded(key) => {
-                let _ = iter.seek(Seek::Backward(key))?;
-            }
-            _ => (),
-        }
-
-        while let Some(item) = iter.next_err()? {
-            if match max {
-                Bound::Included(key) => item.0 <= key,
-                Bound::Excluded(key) => item.0 < key,
-                _ => true,
-            } {
-                version_range.push(item);
-            } else {
-                break;
-            }
-        }
-        Ok(version_range)
-    }
-
     pub async fn commit(self) -> Result<()> {
         let Transaction {
             writer_buf,
@@ -150,18 +109,137 @@ impl Transaction {
             .map(|(_, value)| (value.clone()))
     }
 
+    fn mem_table(&self) -> &MemTable {
+        &self.store_inner.mem_table
+    }
+
     pub fn disk_iter(&self) -> Result<VersionIter> {
         VersionIter::new(&self.version)
     }
 
-    fn mem_table(&self) -> &MemTable {
-        &self.store_inner.mem_table
+    pub fn iter<'a>(&'a self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Result<TransactionIter> {
+        let range_buf = self.mem_range(min, max);
+        let ptr = BufPtr(Box::leak(Box::new(range_buf)).into());
+
+        let mem_iter = unsafe {
+            BufIter {
+                inner: ptr.0.as_ref(),
+                pos: 0,
+            }
+        };
+
+        let mut version_iter = VersionIter::new(&self.version)?;
+        let mut seek_buf = None;
+
+        match min {
+            Bound::Included(key) => {
+                seek_buf = version_iter.seek(Seek::Backward(key))?;
+                unsafe {
+                    if key == ptr.0.as_ref()[0].0.as_ref() {
+                        seek_buf = None;
+                    }
+                }
+            }
+            Bound::Excluded(key) => {
+                let _ = version_iter.seek(Seek::Backward(key))?;
+            }
+            Bound::Unbounded => (),
+        }
+
+        let vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>> =
+            vec![Box::new(mem_iter), Box::new(version_iter)];
+
+        Ok(TransactionIter {
+            inner: MergingIter::new(vec_iter)?,
+            max: max.map(Bytes::copy_from_slice),
+            ptr,
+            seek_buf,
+        })
+    }
+}
+
+pub struct TransactionIter<'a> {
+    inner: MergingIter<'a>,
+    ptr: BufPtr,
+    max: Bound<Bytes>,
+    seek_buf: Option<KeyValue>,
+}
+
+impl<'a> Iter<'a> for TransactionIter<'a> {
+    type Item = KeyValue;
+
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+        if let Some(item) = self.seek_buf.take() {
+            return Ok(Some(item));
+        }
+
+        let option = match &self.max {
+            Bound::Included(key) => self
+                .inner
+                .try_next()?
+                .and_then(|data| (data.0 <= key).then_some(data)),
+            Bound::Excluded(key) => self
+                .inner
+                .try_next()?
+                .and_then(|data| (data.0 < key).then_some(data)),
+            Bound::Unbounded => self.inner.try_next()?,
+        };
+
+        Ok(option)
+    }
+
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+
+    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+        self.inner.seek(seek)
+    }
+}
+
+impl Drop for TransactionIter<'_> {
+    fn drop(&mut self) {
+        unsafe { drop(Box::from_raw(self.ptr.0.as_ptr())) }
+    }
+}
+
+struct BufIter<'a> {
+    inner: &'a Vec<KeyValue>,
+    pos: usize,
+}
+
+impl<'a> Iter<'a> for BufIter<'a> {
+    type Item = KeyValue;
+
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+        self.pos += 1;
+        Ok(self.is_valid().then(|| self.inner[self.pos - 1].clone()))
+    }
+
+    fn is_valid(&self) -> bool {
+        self.pos < self.inner.len()
+    }
+
+    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+        match seek {
+            Seek::First => self.pos = 0,
+            Seek::Last => self.pos = self.inner.len() - 1,
+            Seek::Backward(seek_key) => {
+                self.pos = self
+                    .inner
+                    .binary_search_by(|(key, _)| seek_key.cmp(key).reverse())
+                    .unwrap_or_else(|i| i);
+            }
+        };
+
+        self.try_next()
     }
 }
 
 /// TODO: 更多的Test Case
 #[cfg(test)]
 mod tests {
+    use crate::kernel::lsm::iterator::Iter;
     use crate::kernel::lsm::storage::{Config, KipStorage};
     use crate::kernel::{Result, Storage};
     use bincode::Options;
@@ -177,9 +255,7 @@ mod tests {
         tokio_test::block_on(async move {
             let times = 5000;
 
-            let value = b"Stray birds of summer come to my window to sing and fly away.
-            And yellow leaves of autumn, which have no songs, flutter and fall
-            there with a sign.";
+            let value = b"0";
 
             let config = Config::new(temp_dir.into_path()).major_threshold_with_sst_size(4);
             let kv_store = KipStorage::open_with_config(config).await?;
@@ -231,13 +307,15 @@ mod tests {
                 .map(|(key, value)| (key, Some(value)))
                 .collect_vec();
 
-            let vec_range = tx_1.range_scan(Bound::Included(&vec_kv[25].0), Bound::Unbounded)?;
+            let mut iter = tx_1.iter(Bound::Included(&vec_kv[25].0), Bound::Unbounded)?;
 
             // -1是因为最后一个元素在之前tx中删除了，因此为None
-            for i in 0..vec_range.len() - 1 {
+            for i in 0..vec_test.len() - 1 {
                 // 元素太多，因此这里就单个对比，否则会导致报错时日志过多
-                assert_eq!(vec_range[i], vec_test[i]);
+                assert_eq!(iter.try_next()?.unwrap(), vec_test[i]);
             }
+
+            drop(iter);
 
             tx_1.commit().await?;
 

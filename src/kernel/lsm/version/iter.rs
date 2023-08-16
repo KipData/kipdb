@@ -41,8 +41,8 @@ impl<'a> VersionIter<'a> {
 impl<'a> Iter<'a> for VersionIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
-        self.merge_iter.next_err()
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+        self.merge_iter.try_next()
     }
 
     fn is_valid(&self) -> bool {

@@ -16,7 +16,7 @@ pub(crate) struct SSTableIter<'a> {
 impl<'a> SSTableIter<'a> {
     pub(crate) fn new(ss_table: &'a SSTable) -> Result<SSTableIter<'a>> {
         let mut index_iter = BlockIter::new(ss_table.index_block()?);
-        let index = index_iter.next_err()?.ok_or(KernelError::DataEmpty)?.1;
+        let index = index_iter.try_next()?.ok_or(KernelError::DataEmpty)?.1;
         let data_iter = Self::data_iter_init(ss_table, index)?;
 
         Ok(Self {
@@ -54,10 +54,10 @@ impl<'a> SSTableIter<'a> {
 }
 
 impl<'a> ForwardIter<'a> for SSTableIter<'a> {
-    fn prev_err(&mut self) -> Result<Option<Self::Item>> {
-        match self.data_iter.prev_err()? {
+    fn try_prev(&mut self) -> Result<Option<Self::Item>> {
+        match self.data_iter.try_prev()? {
             None => {
-                if let Some((_, index)) = self.index_iter.prev_err()? {
+                if let Some((_, index)) = self.index_iter.try_prev()? {
                     self.data_iter_seek(Seek::Last, index)
                 } else {
                     Ok(None)
@@ -71,10 +71,10 @@ impl<'a> ForwardIter<'a> for SSTableIter<'a> {
 impl<'a> Iter<'a> for SSTableIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
-        match self.data_iter.next_err()? {
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+        match self.data_iter.try_next()? {
             None => {
-                if let Some((_, index)) = self.index_iter.next_err()? {
+                if let Some((_, index)) = self.index_iter.try_next()? {
                     self.data_iter_seek(Seek::First, index)
                 } else {
                     Ok(None)
@@ -155,11 +155,11 @@ mod tests {
         let mut iterator = SSTableIter::new(&ss_table)?;
 
         for i in 0..times {
-            assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
+            assert_eq!(iterator.try_next()?.unwrap(), vec_data[i]);
         }
 
         for i in (0..times - 1).rev() {
-            assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
+            assert_eq!(iterator.try_prev()?.unwrap(), vec_data[i]);
         }
 
         assert_eq!(

@@ -32,8 +32,8 @@ impl<'a> FullIter<'a> {
 impl<'a> Iter<'a> for FullIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
-        self.merge_iter.next_err()
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+        self.merge_iter.try_next()
     }
 
     fn is_valid(&self) -> bool {
@@ -101,7 +101,7 @@ mod tests {
             let mut version_iter = VersionIter::new(&version)?;
 
             for (test_key, test_value) in &vec_kv {
-                let (key, value) = version_iter.next_err()?.unwrap();
+                let (key, value) = version_iter.try_next()?.unwrap();
                 assert_eq!(key, Bytes::from(test_key.clone()));
                 assert_eq!(value, Some(Bytes::from(test_value.clone())))
             }
@@ -126,7 +126,7 @@ mod tests {
             let mut full_iter = guard.iter()?;
 
             for (test_key, test_value) in temp {
-                let (key, value) = full_iter.next_err()?.unwrap();
+                let (key, value) = full_iter.try_next()?.unwrap();
                 assert_eq!(key, Bytes::from(test_key));
                 assert_eq!(value, Some(Bytes::from(test_value)))
             }

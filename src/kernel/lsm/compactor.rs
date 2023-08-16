@@ -278,7 +278,7 @@ impl Compactor {
     {
         let mut iter = table.iter()?;
         let mut vec_cmd = Vec::with_capacity(table.len());
-        while let Some(item) = iter.next_err()? {
+        while let Some(item) = iter.try_next()? {
             if fn_is_filter(&item.0) {
                 vec_cmd.push(item)
             }

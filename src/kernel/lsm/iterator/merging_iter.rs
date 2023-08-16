@@ -40,7 +40,7 @@ impl<'a> MergingIter<'a> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {
-            if let Some(item) = iter.next_err()? {
+            if let Some(item) = iter.try_next()? {
                 Self::buf_map_insert(&mut map_buf, num, item);
             }
         }
@@ -56,9 +56,9 @@ impl<'a> MergingIter<'a> {
 impl<'a> Iter<'a> for MergingIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
         while let Some((IterKey { num, .. }, old_item)) = self.map_buf.pop_first() {
-            if let Some(item) = self.vec_iter[num].next_err()? {
+            if let Some(item) = self.vec_iter[num].try_next()? {
                 Self::buf_map_insert(&mut self.map_buf, num, item);
             }
 
@@ -114,7 +114,7 @@ impl<'a> Iter<'a> for MergingIter<'a> {
         } else {
             self.map_buf = seek_map;
 
-            self.next_err()
+            self.try_next()
         }
     }
 }
@@ -271,17 +271,17 @@ mod tests {
 
         let mut merging_iter = MergingIter::new(vec![Box::new(map_iter), Box::new(sst_iter)])?;
 
-        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(merging_iter.next_err()?, sequence_iter.next().flatten());
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
         assert_eq!(
             merging_iter.seek(Seek::First)?,

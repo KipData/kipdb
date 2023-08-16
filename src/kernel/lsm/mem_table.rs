@@ -91,7 +91,7 @@ impl<'a> MemMapIter<'a> {
 impl<'a> Iter<'a> for MemMapIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
         if let Some(iter) = &mut self.iter {
             for (InternalKey { key, .. }, value) in iter.by_ref() {
                 if let Some(prev_item) = &self.prev_item {
@@ -136,7 +136,7 @@ impl<'a> Iter<'a> for MemMapIter<'a> {
                 .last()
                 .map(|(InternalKey { key, .. }, value)| (key.clone(), value.clone())))
         } else {
-            self.next_err()
+            self.try_next()
         }
     }
 }
@@ -603,17 +603,17 @@ mod tests {
 
         let mut iter = MemMapIter::new(&map);
 
-        assert_eq!(iter.next_err()?, Some((key_1_2.key.clone(), None)));
+        assert_eq!(iter.try_next()?, Some((key_1_2.key.clone(), None)));
 
-        assert_eq!(iter.next_err()?, Some((key_2_2.key.clone(), None)));
+        assert_eq!(iter.try_next()?, Some((key_2_2.key.clone(), None)));
 
-        assert_eq!(iter.next_err()?, Some((key_4_2.key.clone(), None)));
+        assert_eq!(iter.try_next()?, Some((key_4_2.key.clone(), None)));
 
         assert_eq!(iter.seek(Seek::First)?, Some((key_1_2.key.clone(), None)));
 
         assert_eq!(iter.seek(Seek::Last)?, Some((key_4_2.key.clone(), None)));
 
-        assert_eq!(iter.next_err()?, None);
+        assert_eq!(iter.try_next()?, None);
 
         assert_eq!(
             iter.seek(Seek::Backward(&vec![b'3']))?,

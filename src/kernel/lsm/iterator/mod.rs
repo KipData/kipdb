@@ -19,7 +19,7 @@ pub(crate) enum Seek<'s> {
 pub(crate) trait Iter<'a> {
     type Item;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>>;
+    fn try_next(&mut self) -> Result<Option<Self::Item>>;
 
     fn is_valid(&self) -> bool;
 
@@ -28,5 +28,5 @@ pub(crate) trait Iter<'a> {
 
 /// 向前迭代器
 pub(crate) trait ForwardIter<'a>: Iter<'a> {
-    fn prev_err(&mut self) -> Result<Option<Self::Item>>;
+    fn try_prev(&mut self) -> Result<Option<Self::Item>>;
 }

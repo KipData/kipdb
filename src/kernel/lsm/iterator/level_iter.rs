@@ -57,8 +57,8 @@ impl<'a> LevelIter<'a> {
 impl<'a> Iter<'a> for LevelIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
-        match self.child_iter.next_err()? {
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+        match self.child_iter.try_next()? {
             None => self.child_iter_seek(Seek::First, self.offset + 1),
             Some(item) => Ok(Some(item)),
         }
@@ -157,7 +157,7 @@ mod tests {
 
             let mut iterator = LevelIter::new(&version, 1)?;
             for i in 0..times {
-                assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
+                assert_eq!(iterator.try_next()?.unwrap(), vec_data[i]);
             }
 
             assert_eq!(
