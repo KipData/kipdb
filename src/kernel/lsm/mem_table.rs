@@ -7,7 +7,7 @@ use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 use crate::kernel::Result;
 use bytes::Bytes;
 use itertools::Itertools;
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::Mutex;
 use skiplist::{skipmap, SkipMap};
 use std::cmp::Ordering;
 use std::collections::Bound;
@@ -334,10 +334,6 @@ impl MemTable {
             .rev()
             .unique_by(|(key, _)| key.clone())
             .collect_vec()
-    }
-
-    pub(crate) fn inner_with_lock(&self) -> MutexGuard<TableInner> {
-        self.inner.lock()
     }
 
     /// Tips: 返回的数据为倒序

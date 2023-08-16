@@ -233,7 +233,7 @@ impl Table for SSTable {
         self.footer.level as usize
     }
 
-    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
+    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
         Ok(SSTableIter::new(self).map(Box::new)?)
     }
 }

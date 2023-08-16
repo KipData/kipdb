@@ -1,4 +1,3 @@
-pub(crate) mod full_iter;
 pub(crate) mod level_iter;
 pub(crate) mod merging_iter;
 

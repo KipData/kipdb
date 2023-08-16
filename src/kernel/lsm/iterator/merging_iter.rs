@@ -29,14 +29,14 @@ impl Ord for IterKey {
 }
 
 pub(crate) struct MergingIter<'a> {
-    vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>>,
+    vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
     map_buf: BTreeMap<IterKey, KeyValue>,
     pre_key: Option<Bytes>,
 }
 
 impl<'a> MergingIter<'a> {
     #[allow(dead_code, clippy::mutable_key_type)]
-    pub(crate) fn new(mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>>) -> Result<Self> {
+    pub(crate) fn new(mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>) -> Result<Self> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {

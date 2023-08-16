@@ -11,6 +11,7 @@ pub(crate) struct SkipTableIter<'a> {
 }
 
 impl<'a> SkipTableIter<'a> {
+    #[allow(dead_code)]
     pub(crate) fn new(table: &'a SkipTable) -> SkipTableIter<'a> {
         let mut iter = SkipTableIter { inner: None, table };
         iter._seek(Seek::First);

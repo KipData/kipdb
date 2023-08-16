@@ -30,7 +30,7 @@ pub(crate) trait Table: Sync + Send {
 
     fn level(&self) -> usize;
 
-    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>>;
+    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Sync + Send>>;
 }
 
 /// 通过一组SSTable收集对应的Gen

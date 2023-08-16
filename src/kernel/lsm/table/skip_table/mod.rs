@@ -2,7 +2,6 @@ mod iter;
 
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::table::skip_table::iter::SkipTableIter;
 use crate::kernel::lsm::table::Table;
 use bytes::Bytes;
 use skiplist::SkipMap;
@@ -52,7 +51,7 @@ impl Table for SkipTable {
         self.level
     }
 
-    fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
-        Ok(Box::new(SkipTableIter::new(self)))
+    fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
+        todo!("skiplist cannot support")
     }
 }

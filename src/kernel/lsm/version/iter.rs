@@ -21,8 +21,8 @@ impl<'a> VersionIter<'a> {
 
     pub(crate) fn merging_with_version(
         version: &'a Version,
-    ) -> Result<Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>>> {
-        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>> = Vec::new();
+    ) -> Result<Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>> {
+        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> = Vec::new();
 
         for table in version.tables_by_level_0() {
             vec_iter.push(table.iter()?);

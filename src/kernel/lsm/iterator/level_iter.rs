@@ -13,7 +13,7 @@ pub(crate) struct LevelIter<'a> {
     level_len: usize,
 
     offset: usize,
-    child_iter: Box<dyn Iter<'a, Item = KeyValue> + 'a>,
+    child_iter: Box<dyn Iter<'a, Item = KeyValue> + 'a + Sync + Send>,
 }
 
 impl<'a> LevelIter<'a> {

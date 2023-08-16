@@ -149,7 +149,7 @@ impl Transaction {
             Bound::Unbounded => (),
         }
 
-        let vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a>> =
+        let vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> =
             vec![Box::new(mem_iter), Box::new(version_iter)];
 
         Ok(TransactionIter {
@@ -159,6 +159,14 @@ impl Transaction {
             seek_buf,
         })
     }
+}
+
+unsafe impl Sync for TransactionIter<'_> {
+
+}
+
+unsafe impl Send for TransactionIter<'_> {
+
 }
 
 pub struct TransactionIter<'a> {
