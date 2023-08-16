@@ -135,7 +135,7 @@ impl Transaction {
             Bound::Included(key) => {
                 seek_buf = version_iter.seek(Seek::Backward(key))?;
                 unsafe {
-                    if key == ptr.0.as_ref()[0].0.as_ref() {
+                    if !ptr.0.as_ref().is_empty() && key == ptr.0.as_ref()[0].0.as_ref() {
                         seek_buf = None;
                     }
                 }
@@ -212,8 +212,11 @@ impl<'a> Iter<'a> for BufIter<'a> {
     type Item = KeyValue;
 
     fn try_next(&mut self) -> Result<Option<Self::Item>> {
-        self.pos += 1;
-        Ok(self.is_valid().then(|| self.inner[self.pos - 1].clone()))
+        Ok(self.is_valid().then(|| {
+            let item = self.inner[self.pos].clone();
+            self.pos += 1;
+            item
+        }))
     }
 
     fn is_valid(&self) -> bool {

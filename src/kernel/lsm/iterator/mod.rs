@@ -6,7 +6,7 @@ use crate::kernel::Result;
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-pub(crate) enum Seek<'s> {
+pub enum Seek<'s> {
     // 第一个元素
     First,
     // 最后一个元素
@@ -16,7 +16,7 @@ pub(crate) enum Seek<'s> {
 }
 
 /// 硬盘迭代器
-pub(crate) trait Iter<'a> {
+pub trait Iter<'a> {
     type Item;
 
     fn try_next(&mut self) -> Result<Option<Self::Item>>;

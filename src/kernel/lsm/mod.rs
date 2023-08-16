@@ -8,7 +8,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
 
 mod compactor;
-mod iterator;
+pub mod iterator;
 mod log;
 mod mem_table;
 mod mvcc;

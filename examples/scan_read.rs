@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use kip_db::kernel::lsm::iterator::Iter;
 use kip_db::kernel::lsm::storage::{Config, KipStorage};
 use kip_db::kernel::Storage;
 use kip_db::KernelError;
@@ -27,10 +28,12 @@ async fn main() -> Result<(), KernelError> {
     println!("New Transaction");
     let tx = kip_storage.new_transaction().await;
 
-    println!(
-        "RangeScan without key_3 By Transaction: {:?}",
-        tx.range_scan(Bound::Unbounded, Bound::Excluded(b"key_3"))?
-    );
+    println!("Iter without key_3 By Transaction:");
+    let mut iter = tx.iter(Bound::Unbounded, Bound::Excluded(b"key_3"))?;
+
+    while let Some(item) = iter.try_next()? {
+        println!("Item: {:?}", item);
+    }
 
     Ok(())
 }
