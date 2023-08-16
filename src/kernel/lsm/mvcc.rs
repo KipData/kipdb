@@ -22,6 +22,9 @@ use tokio::sync::mpsc::Sender;
 type MapIter<'a> =
     Map<skiplist::skipmap::Iter<'a, Bytes, KeyValue>, fn((&Bytes, &KeyValue)) -> KeyValue>;
 
+unsafe impl Send for BufPtr {}
+unsafe impl Sync for BufPtr {}
+
 struct BufPtr(NonNull<Vec<KeyValue>>);
 
 pub struct Transaction {
