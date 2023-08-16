@@ -11,7 +11,7 @@ mod compactor;
 pub mod iterator;
 mod log;
 mod mem_table;
-mod mvcc;
+pub mod mvcc;
 pub mod storage;
 mod table;
 mod trigger;
