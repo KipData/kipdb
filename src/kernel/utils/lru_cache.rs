@@ -45,7 +45,7 @@ impl<K, V> DerefMut for NodeReadPtr<K, V> {
 unsafe impl<K: Send, V: Send, S: Send> Send for ShardingLruCache<K, V, S> {}
 unsafe impl<K: Sync, V: Sync, S: Sync> Sync for ShardingLruCache<K, V, S> {}
 
-pub(crate) struct ShardingLruCache<K, V, S = RandomState> {
+pub struct ShardingLruCache<K, V, S = RandomState> {
     sharding_vec: Vec<Arc<Mutex<LruCache<K, V>>>>,
     hasher: S,
 }
@@ -94,7 +94,7 @@ impl<K: Ord, V> Ord for KeyRef<K, V> {
 /// LRU缓存
 /// 参考知乎中此文章的实现：
 /// https://zhuanlan.zhihu.com/p/466409120
-pub(crate) struct LruCache<K, V> {
+pub struct LruCache<K, V> {
     head: Option<NodeReadPtr<K, V>>,
     tail: Option<NodeReadPtr<K, V>>,
     inner: HashMap<KeyRef<K, V>, NodeReadPtr<K, V>>,
@@ -114,7 +114,7 @@ impl<K, V> Node<K, V> {
 }
 
 impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
-    pub(crate) fn new(cap: usize, sharding_size: usize, hasher: S) -> Result<Self> {
+    pub fn new(cap: usize, sharding_size: usize, hasher: S) -> Result<Self> {
         let mut sharding_vec = Vec::with_capacity(sharding_size);
         if cap % sharding_size != 0 {
             return Err(CacheError::ShardingNotAlign);
@@ -131,23 +131,23 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get(&self, key: &K) -> Option<&V> {
+    pub fn get(&self, key: &K) -> Option<&V> {
         self.shard(key)
             .lock()
             .get_node(key)
             .map(|node| unsafe { &node.as_ref().value })
     }
 
-    pub(crate) fn put(&self, key: K, value: V) -> Option<V> {
+    pub fn put(&self, key: K, value: V) -> Option<V> {
         self.shard(&key).lock().put(key, value)
     }
 
-    pub(crate) fn remove(&self, key: &K) -> Option<V> {
+    pub fn remove(&self, key: &K) -> Option<V> {
         self.shard(key).lock().remove(key)
     }
 
     #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         for lru in &self.sharding_vec {
             if !lru.lock().is_empty() {
                 return false;
@@ -156,7 +156,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         true
     }
 
-    pub(crate) fn get_or_insert<F>(&self, key: K, fn_once: F) -> Result<&V>
+    pub fn get_or_insert<F>(&self, key: K, fn_once: F) -> Result<&V>
     where
         F: FnOnce(&K) -> Result<V>,
     {
@@ -179,7 +179,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
 }
 
 impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
-    pub(crate) fn new(cap: usize) -> Result<Self> {
+    pub fn new(cap: usize) -> Result<Self> {
         if cap < 1 {
             return Err(CacheError::CacheSizeOverFlow);
         }
@@ -250,7 +250,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
-    pub(crate) fn put(&mut self, key: K, value: V) -> Option<V> {
+    pub fn put(&mut self, key: K, value: V) -> Option<V> {
         let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
         let old_node = self.inner.remove(&KeyRef(node)).map(|node| {
             self.detach(node);
@@ -278,7 +278,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get(&mut self, key: &K) -> Option<&V> {
+    pub fn get(&mut self, key: &K) -> Option<&V> {
         if let Some(node) = self.inner.get(key) {
             let node = *node;
             self.detach(node);
@@ -289,7 +289,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
-    pub(crate) fn remove(&mut self, key: &K) -> Option<V> {
+    pub fn remove(&mut self, key: &K) -> Option<V> {
         self.inner.remove(key).map(|node| {
             self.detach(node);
             unsafe {
@@ -323,7 +323,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get_or_insert<F>(&mut self, key: K, fn_once: F) -> Result<&V>
+    pub fn get_or_insert<F>(&mut self, key: K, fn_once: F) -> Result<&V>
     where
         F: FnOnce(&K) -> Result<V>,
     {
@@ -332,22 +332,22 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.inner.len()
     }
     #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
     #[allow(dead_code)]
-    pub(crate) fn iter(&self) -> LruCacheIter<K, V> {
+    pub fn iter(&self) -> LruCacheIter<K, V> {
         LruCacheIter {
             inner: self.inner.iter(),
         }
     }
 }
 
-pub(crate) struct LruCacheIter<'a, K, V> {
+pub struct LruCacheIter<'a, K, V> {
     inner: Iter<'a, KeyRef<K, V>, NodeReadPtr<K, V>>,
 }
 
