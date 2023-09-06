@@ -177,6 +177,8 @@ impl Drop for KipStorage {
     #[allow(clippy::expect_used)]
     fn drop(&mut self) {
         self.lock_file.unlock().expect("LockFile unlock failed!");
+
+        let _ = self.compactor_tx.try_send(CompactTask::Flush(None));
     }
 }
 
