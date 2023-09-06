@@ -280,7 +280,7 @@ mod tests {
             "and my second",
             "and my third",
         ];
-        let mut lw = LogWriter::new(Vec::new());
+        let mut lw = LogWriter::new(Cursor::new(Vec::new()));
         let total_len = data.iter().fold(0, |l, d| l + d.len());
 
         for d in data {
