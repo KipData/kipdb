@@ -36,7 +36,9 @@ pub(crate) struct MergingIter<'a> {
 
 impl<'a> MergingIter<'a> {
     #[allow(dead_code, clippy::mutable_key_type)]
-    pub(crate) fn new(mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>) -> Result<Self> {
+    pub(crate) fn new(
+        mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
+    ) -> Result<Self> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {

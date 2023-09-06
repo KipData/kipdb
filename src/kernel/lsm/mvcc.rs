@@ -80,7 +80,9 @@ impl Transaction {
             .collect_vec();
 
         if mem_table.insert_batch_data(batch_data, Sequence::create())? {
-            if let Err(TrySendError::Closed(_)) = self.compactor_tx.try_send(CompactTask::Flush(None)) {
+            if let Err(TrySendError::Closed(_)) =
+                self.compactor_tx.try_send(CompactTask::Flush(None))
+            {
                 return Err(KernelError::ChannelClose);
             }
         }
@@ -158,20 +160,13 @@ impl Transaction {
 
 impl Drop for Transaction {
     fn drop(&mut self) {
-        let _ = self
-            .mem_table()
-            .tx_count
-            .fetch_sub(1, Ordering::Release);
+        let _ = self.mem_table().tx_count.fetch_sub(1, Ordering::Release);
     }
 }
 
-unsafe impl Sync for TransactionIter<'_> {
+unsafe impl Sync for TransactionIter<'_> {}
 
-}
-
-unsafe impl Send for TransactionIter<'_> {
-
-}
+unsafe impl Send for TransactionIter<'_> {}
 
 pub struct TransactionIter<'a> {
     inner: MergingIter<'a>,

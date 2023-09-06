@@ -324,7 +324,6 @@ impl fmt::Display for Version {
 impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
-        let _ = self.clean_tx
-            .send(CleanTag::Clean(self.version_num));
+        let _ = self.clean_tx.send(CleanTag::Clean(self.version_num));
     }
 }

@@ -52,7 +52,9 @@ impl Table for SkipTable {
         self.level
     }
 
-    fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
+    fn iter<'a>(
+        &'a self,
+    ) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
         todo!("skiplist cannot support")
     }
 }
