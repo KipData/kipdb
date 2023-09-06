@@ -105,13 +105,13 @@ impl From<u8> for RecordType {
     }
 }
 
-pub(crate) struct LogWriter<W: Write> {
+pub(crate) struct LogWriter<W: Write + Seek> {
     dst: W,
     current_block_offset: usize,
     block_size: usize,
 }
 
-impl<W: Write> LogWriter<W> {
+impl<W: Write + Seek> LogWriter<W> {
     pub(crate) fn new(writer: W) -> LogWriter<W> {
         LogWriter {
             dst: writer,
@@ -127,6 +127,10 @@ impl<W: Write> LogWriter<W> {
         let mut w = LogWriter::new(writer);
         w.current_block_offset = off % BLOCK_SIZE;
         w
+    }
+
+    pub(crate) fn seek_end(&mut self) -> Result<u64> {
+        Ok(self.dst.seek(SeekFrom::End(0))?)
     }
 
     pub(crate) fn add_record(&mut self, r: &[u8]) -> Result<usize> {

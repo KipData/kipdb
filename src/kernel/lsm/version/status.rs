@@ -58,7 +58,8 @@ impl VersionStatus {
             cleaner.listen().await;
         });
 
-        let ver_log_writer = ver_log_loader.writer(log_gen)?;
+        let mut ver_log_writer = ver_log_loader.writer(log_gen)?;
+        let _ = ver_log_writer.seek_end()?;
 
         Ok(Self {
             inner: RwLock::new(VersionInner {

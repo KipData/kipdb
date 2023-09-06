@@ -96,6 +96,12 @@ impl Write for BufIoWriter {
     }
 }
 
+impl Seek for BufIoWriter {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.writer.seek(pos)
+    }
+}
+
 impl IoWriter for BufIoWriter {
     fn current_pos(&mut self) -> Result<u64> {
         Ok(self.writer.pos)
