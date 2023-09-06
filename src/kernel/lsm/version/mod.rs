@@ -14,7 +14,7 @@ use itertools::Itertools;
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, info};
+use tracing::info;
 
 mod cleaner;
 pub(crate) mod edit;
@@ -324,15 +324,7 @@ impl fmt::Display for Version {
 impl Drop for Version {
     /// 将此Version可删除的版本号发送
     fn drop(&mut self) {
-        if self
-            .clean_tx
-            .send(CleanTag::Clean(self.version_num))
-            .is_err()
-        {
-            error!(
-                "[Cleaner][clean][Version: {}]: Channel Close!",
-                self.version_num
-            );
-        }
+        let _ = self.clean_tx
+            .send(CleanTag::Clean(self.version_num));
     }
 }

@@ -14,6 +14,7 @@ pub(crate) struct SkipTable {
 }
 
 impl SkipTable {
+    #[allow(dead_code)]
     pub(crate) fn new(level: usize, gen: i64, data: Vec<KeyValue>) -> Self {
         let len = data.len();
         let inner = SkipMap::from_iter(
