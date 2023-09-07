@@ -15,7 +15,10 @@ async fn main() -> Result<(), KernelError> {
 
     println!("Set KeyValue after the transaction -> (key_1, value_1)");
     kip_storage
-        .set(b"key_1", Bytes::copy_from_slice(b"value_1"))
+        .set(
+            Bytes::copy_from_slice(b"key_1"),
+            Bytes::copy_from_slice(b"value_1"),
+        )
         .await?;
 
     println!("Read key_1 on the transaction: {:?}", tx.get(b"key_1")?);

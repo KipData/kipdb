@@ -305,13 +305,17 @@ mod tests {
 
             // 模拟数据分布在MemTable以及SSTable中
             for i in 0..50 {
-                kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?;
+                kv_store
+                    .set(vec_kv[i].0.clone(), vec_kv[i].1.clone())
+                    .await?;
             }
 
             kv_store.flush().await?;
 
             for i in 50..100 {
-                kv_store.set(&vec_kv[i].0, vec_kv[i].1.clone()).await?;
+                kv_store
+                    .set(vec_kv[i].0.clone(), vec_kv[i].1.clone())
+                    .await?;
             }
 
             let mut tx_1 = kv_store.new_transaction().await;

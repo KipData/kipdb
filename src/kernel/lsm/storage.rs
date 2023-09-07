@@ -126,9 +126,8 @@ impl Storage for KipStorage {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Bytes) -> Result<()> {
-        self.append_cmd_data((Bytes::copy_from_slice(key), Some(value)))
-            .await
+    async fn set(&self, key: Bytes, value: Bytes) -> Result<()> {
+        self.append_cmd_data((key, Some(value))).await
     }
 
     #[inline]

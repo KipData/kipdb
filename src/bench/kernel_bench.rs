@@ -77,7 +77,7 @@ fn bulk_load<T: Storage>(c: &mut Criterion) {
             ),
             |b| {
                 b.to_async(&rt).iter(|| async {
-                    db.set(&bytes(key_len), Bytes::from(bytes(val_len)))
+                    db.set(Bytes::from(bytes(key_len)), Bytes::from(bytes(val_len)))
                         .await
                         .unwrap();
                 })
@@ -108,9 +108,12 @@ fn monotonic_crud<T: Storage>(c: &mut Criterion) {
         c.bench_function(&format!("Store: {}, monotonic inserts", T::name()), |b| {
             let count = AtomicU32::new(0_u32);
             b.iter(|| async {
-                db.set(&count.fetch_add(1, Relaxed).to_be_bytes(), Bytes::new())
-                    .await
-                    .unwrap();
+                db.set(
+                    Bytes::from(count.fetch_add(1, Relaxed).to_be_bytes()),
+                    Bytes::new(),
+                )
+                .await
+                .unwrap();
             })
         });
 
@@ -148,7 +151,7 @@ fn random_crud<T: Storage>(c: &mut Criterion) {
 
         c.bench_function(&format!("Store: {}, random inserts", T::name()), |b| {
             b.iter(|| async {
-                db.set(&random(SIZE).to_be_bytes(), Bytes::new())
+                db.set(Bytes::from(random(SIZE).to_be_bytes()), Bytes::new())
                     .await
                     .unwrap();
             })

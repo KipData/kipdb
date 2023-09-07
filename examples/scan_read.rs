@@ -14,15 +14,24 @@ async fn main() -> Result<(), KernelError> {
 
     println!("Set KeyValue -> (key_1, value_1)");
     kip_storage
-        .set(b"key_1", Bytes::copy_from_slice(b"value_1"))
+        .set(
+            Bytes::copy_from_slice(b"key_1"),
+            Bytes::copy_from_slice(b"value_1"),
+        )
         .await?;
     println!("Set KeyValue -> (key_2, value_2)");
     kip_storage
-        .set(b"key_2", Bytes::copy_from_slice(b"value_2"))
+        .set(
+            Bytes::copy_from_slice(b"key_2"),
+            Bytes::copy_from_slice(b"value_2"),
+        )
         .await?;
     println!("Set KeyValue -> (key_3, value_3)");
     kip_storage
-        .set(b"key_3", Bytes::copy_from_slice(b"value_3"))
+        .set(
+            Bytes::copy_from_slice(b"key_3"),
+            Bytes::copy_from_slice(b"value_3"),
+        )
         .await?;
 
     println!("New Transaction");
