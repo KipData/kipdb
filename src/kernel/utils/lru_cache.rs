@@ -114,6 +114,7 @@ impl<K, V> Node<K, V> {
 }
 
 impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
+    #[inline]
     pub fn new(cap: usize, sharding_size: usize, hasher: S) -> Result<Self> {
         let mut sharding_vec = Vec::with_capacity(sharding_size);
         if cap % sharding_size != 0 {
@@ -130,7 +131,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         })
     }
 
-    #[allow(dead_code)]
+    #[inline]
     pub fn get(&self, key: &K) -> Option<&V> {
         self.shard(key)
             .lock()
@@ -138,15 +139,17 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
             .map(|node| unsafe { &node.as_ref().value })
     }
 
+    #[inline]
     pub fn put(&self, key: K, value: V) -> Option<V> {
         self.shard(&key).lock().put(key, value)
     }
 
+    #[inline]
     pub fn remove(&self, key: &K) -> Option<V> {
         self.shard(key).lock().remove(key)
     }
 
-    #[allow(dead_code)]
+    #[inline]
     pub fn is_empty(&self) -> bool {
         for lru in &self.sharding_vec {
             if !lru.lock().is_empty() {
@@ -156,6 +159,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
         true
     }
 
+    #[inline]
     pub fn get_or_insert<F>(&self, key: K, fn_once: F) -> Result<&V>
     where
         F: FnOnce(&K) -> Result<V>,
@@ -179,6 +183,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
 }
 
 impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
+    #[inline]
     pub fn new(cap: usize) -> Result<Self> {
         if cap < 1 {
             return Err(CacheError::CacheSizeOverFlow);
@@ -250,6 +255,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
+    #[inline]
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
         let node = NodeReadPtr(Box::leak(Box::new(Node::new(key, value))).into());
         let old_node = self.inner.remove(&KeyRef(node)).map(|node| {
@@ -277,7 +283,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
-    #[allow(dead_code)]
+    #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {
         if let Some(node) = self.inner.get(key) {
             let node = *node;
@@ -289,6 +295,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
+    #[inline]
     pub fn remove(&mut self, key: &K) -> Option<V> {
         self.inner.remove(key).map(|node| {
             self.detach(node);
@@ -322,7 +329,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         }
     }
 
-    #[allow(dead_code)]
+    #[inline]
     pub fn get_or_insert<F>(&mut self, key: K, fn_once: F) -> Result<&V>
     where
         F: FnOnce(&K) -> Result<V>,
@@ -331,15 +338,17 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             .map(|node| unsafe { &node.as_ref().value })
     }
 
-    #[allow(dead_code)]
+    #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
-    #[allow(dead_code)]
+
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
-    #[allow(dead_code)]
+
+    #[inline]
     pub fn iter(&self) -> LruCacheIter<K, V> {
         LruCacheIter {
             inner: self.inner.iter(),
@@ -354,6 +363,7 @@ pub struct LruCacheIter<'a, K, V> {
 impl<'a, K, V> Iterator for LruCacheIter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.inner
             .next()
@@ -362,6 +372,7 @@ impl<'a, K, V> Iterator for LruCacheIter<'a, K, V> {
 }
 
 impl<K, V> Drop for LruCache<K, V> {
+    #[inline]
     fn drop(&mut self) {
         while let Some(node) = self.head.take() {
             unsafe {

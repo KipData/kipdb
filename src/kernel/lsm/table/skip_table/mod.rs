@@ -52,6 +52,7 @@ impl Table for SkipTable {
         self.level
     }
 
+    #[allow(clippy::todo)]
     fn iter<'a>(
         &'a self,
     ) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {

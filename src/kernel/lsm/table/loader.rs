@@ -47,6 +47,7 @@ impl TableLoader {
         })
     }
 
+    #[allow(clippy::match_single_binding)]
     pub(crate) fn create(
         &self,
         gen: i64,

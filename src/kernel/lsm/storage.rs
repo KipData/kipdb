@@ -174,7 +174,7 @@ impl Storage for KipStorage {
 
 impl Drop for KipStorage {
     #[inline]
-    #[allow(clippy::expect_used)]
+    #[allow(clippy::expect_used, clippy::let_underscore_must_use)]
     fn drop(&mut self) {
         self.lock_file.unlock().expect("LockFile unlock failed!");
 

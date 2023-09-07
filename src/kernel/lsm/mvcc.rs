@@ -40,6 +40,7 @@ impl Transaction {
     /// 通过Key获取对应的Value
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
+    #[inline]
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         if let Some((_, value)) = self.writer_buf.get(key) {
             return Ok(value.clone());
@@ -56,12 +57,14 @@ impl Transaction {
         Ok(None)
     }
 
+    #[inline]
     pub fn set(&mut self, key: &[u8], value: Bytes) {
         let bytes = Bytes::copy_from_slice(key);
 
         let _ignore = self.writer_buf.insert(bytes.clone(), (bytes, Some(value)));
     }
 
+    #[inline]
     pub fn remove(&mut self, key: &[u8]) -> Result<()> {
         let _ = self.get(key)?.ok_or(KernelError::KeyNotFound)?;
 
@@ -71,6 +74,7 @@ impl Transaction {
         Ok(())
     }
 
+    #[inline]
     pub async fn commit(self) -> Result<()> {
         let mem_table = self.mem_table();
         let batch_data = self
@@ -90,6 +94,7 @@ impl Transaction {
         Ok(())
     }
 
+    #[inline]
     pub fn mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<KeyValue> {
         let mem_table_range = self.mem_table().range_scan(min, max, Some(self.seq_id));
 
@@ -113,10 +118,12 @@ impl Transaction {
         &self.store_inner.mem_table
     }
 
+    #[inline]
     pub fn disk_iter(&self) -> Result<VersionIter> {
         VersionIter::new(&self.version)
     }
 
+    #[inline]
     pub fn iter<'a>(&'a self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Result<TransactionIter> {
         let range_buf = self.mem_range(min, max);
         let ptr = BufPtr(Box::leak(Box::new(range_buf)).into());
@@ -135,11 +142,12 @@ impl Transaction {
             Bound::Included(key) => {
                 let ver_seek_option = version_iter.seek(Seek::Backward(key))?;
                 unsafe {
-                    let op = |disk_option: Option<&KeyValue>, mem_option: Option<&KeyValue>| {
-                        match (disk_option, mem_option) {
-                            (Some(disk), Some(mem)) => disk.0 >= mem.0,
-                            _ => false,
-                        }
+                    let op = |disk_option: Option<&KeyValue>, mem_option: Option<&KeyValue>| match (
+                        disk_option,
+                        mem_option,
+                    ) {
+                        (Some(disk), Some(mem)) => disk.0 >= mem.0,
+                        _ => false,
                     };
 
                     if !op(ver_seek_option.as_ref(), ptr.0.as_ref().first()) {
@@ -166,6 +174,7 @@ impl Transaction {
 }
 
 impl Drop for Transaction {
+    #[inline]
     fn drop(&mut self) {
         let _ = self.mem_table().tx_count.fetch_sub(1, Ordering::Release);
     }
@@ -185,6 +194,7 @@ pub struct TransactionIter<'a> {
 impl<'a> Iter<'a> for TransactionIter<'a> {
     type Item = KeyValue;
 
+    #[inline]
     fn try_next(&mut self) -> Result<Option<Self::Item>> {
         if let Some(item) = self.seek_buf.take() {
             return Ok(Some(item));
@@ -205,16 +215,19 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
         Ok(option)
     }
 
+    #[inline]
     fn is_valid(&self) -> bool {
         self.inner.is_valid()
     }
 
+    #[inline]
     fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
         self.inner.seek(seek)
     }
 }
 
 impl Drop for TransactionIter<'_> {
+    #[inline]
     fn drop(&mut self) {
         unsafe { drop(Box::from_raw(self.ptr.0.as_ptr())) }
     }
