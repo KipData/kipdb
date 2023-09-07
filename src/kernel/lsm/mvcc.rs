@@ -133,10 +133,17 @@ impl Transaction {
 
         match min {
             Bound::Included(key) => {
-                seek_buf = version_iter.seek(Seek::Backward(key))?;
+                let ver_seek_option = version_iter.seek(Seek::Backward(key))?;
                 unsafe {
-                    if !ptr.0.as_ref().is_empty() && key == ptr.0.as_ref()[0].0.as_ref() {
-                        seek_buf = None;
+                    let op = |option_a: Option<&KeyValue>, option_b: Option<&KeyValue>| {
+                        match (option_a, option_b) {
+                            (Some(a), Some(b)) => a.0 == b.0,
+                            _ => false,
+                        }
+                    };
+
+                    if !op(ver_seek_option.as_ref(), ptr.0.as_ref().first()) {
+                        seek_buf = ver_seek_option;
                     }
                 }
             }
