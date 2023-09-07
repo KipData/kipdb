@@ -135,9 +135,9 @@ impl Transaction {
             Bound::Included(key) => {
                 let ver_seek_option = version_iter.seek(Seek::Backward(key))?;
                 unsafe {
-                    let op = |option_a: Option<&KeyValue>, option_b: Option<&KeyValue>| {
-                        match (option_a, option_b) {
-                            (Some(a), Some(b)) => a.0 == b.0,
+                    let op = |disk_option: Option<&KeyValue>, mem_option: Option<&KeyValue>| {
+                        match (disk_option, mem_option) {
+                            (Some(disk), Some(mem)) => disk.0 >= mem.0,
                             _ => false,
                         }
                     };
