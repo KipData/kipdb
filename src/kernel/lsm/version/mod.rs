@@ -206,6 +206,7 @@ impl Version {
         self.level_slice[LEVEL_0]
             .iter()
             .filter_map(|scope| self.table_loader.get(scope.gen()))
+            .rev()
             .collect_vec()
     }
 
