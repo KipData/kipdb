@@ -24,7 +24,7 @@ async fn main() -> Result<(), KernelError> {
     println!("Read key_1 on the transaction: {:?}", tx.get(b"key_1")?);
 
     println!("Set KeyValue on the transaction -> (key_2, value_2)");
-    tx.set(b"key_2", Bytes::copy_from_slice(b"value_2"));
+    tx.set(Bytes::copy_from_slice(b"key_2"), Bytes::copy_from_slice(b"value_2"));
 
     println!("Read key_2 on the transaction: {:?}", tx.get(b"key_2")?);
 

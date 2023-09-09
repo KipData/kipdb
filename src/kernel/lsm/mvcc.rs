@@ -320,7 +320,7 @@ mod tests {
             let mut tx_1 = kv_store.new_transaction().await;
 
             for i in 100..times {
-                tx_1.set(&vec_kv[i].0, vec_kv[i].1.clone());
+                tx_1.set(vec_kv[i].0.clone(), vec_kv[i].1.clone());
             }
 
             tx_1.remove(&vec_kv[times - 1].0)?;
