@@ -45,11 +45,6 @@ fn random(n: u32) -> u32 {
 }
 
 fn bulk_load<T: Storage>(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
     let count = AtomicU32::new(0_u32);
     let bytes = |len| -> Vec<u8> {
         count
@@ -62,8 +57,14 @@ fn bulk_load<T: Storage>(c: &mut Criterion) {
     };
 
     let mut bench = |key_len, val_len| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .enable_all()
+            .build()
+            .unwrap();
+
         let db = rt.block_on(async {
-            T::open(format!("{}: bulk_k{}_v{}", T::name(), key_len, val_len))
+            T::open(format!("{}_bulk_k{}_v{}", T::name(), key_len, val_len))
                 .await
                 .unwrap()
         });
@@ -83,12 +84,10 @@ fn bulk_load<T: Storage>(c: &mut Criterion) {
                 })
             },
         );
-        rt.block_on(async {
-            db.flush().await.unwrap();
-        });
+        rt.shutdown_background();
     };
 
-    for key_len in &[10_usize, 128, 256, 512] {
+    for key_len in &[10_usize, 128, 512] {
         for val_len in &[0_usize, 10, 128, 256, 512, 1024, 2048] {
             bench(*key_len, *val_len);
         }
@@ -97,11 +96,12 @@ fn bulk_load<T: Storage>(c: &mut Criterion) {
 
 fn monotonic_crud<T: Storage>(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
         .enable_all()
         .build()
         .unwrap();
     rt.block_on(async {
-        let db = T::open(format!("{}: monotonic_crud", T::name()))
+        let db = T::open(format!("{}_monotonic_crud", T::name()))
             .await
             .unwrap();
 
@@ -141,13 +141,12 @@ fn random_crud<T: Storage>(c: &mut Criterion) {
     const SIZE: u32 = 65536;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
         .enable_all()
         .build()
         .unwrap();
     rt.block_on(async {
-        let db = T::open(format!("{}: random_crud", T::name()))
-            .await
-            .unwrap();
+        let db = T::open(format!("{}_random_crud", T::name())).await.unwrap();
 
         c.bench_function(&format!("Store: {}, random inserts", T::name()), |b| {
             b.iter(|| async {
@@ -173,6 +172,7 @@ fn random_crud<T: Storage>(c: &mut Criterion) {
 
 fn empty_opens<T: Storage>(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
         .enable_all()
         .build()
         .unwrap();
