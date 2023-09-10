@@ -1,7 +1,6 @@
 use crate::kernel::io::IoType;
 use crate::kernel::lsm::compactor::{CompactTask, Compactor};
-use crate::kernel::lsm::iterator::full_iter::FullIter;
-use crate::kernel::lsm::mem_table::{KeyValue, MemTable, TableInner};
+use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::mvcc::Transaction;
 use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::ss_table::block;
@@ -17,7 +16,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
 use fslock::LockFile;
-use parking_lot::MutexGuard;
 use skiplist::SkipMap;
 use std::fs;
 use std::path::PathBuf;
@@ -128,9 +126,8 @@ impl Storage for KipStorage {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Bytes) -> Result<()> {
-        self.append_cmd_data((Bytes::copy_from_slice(key), Some(value)))
-            .await
+    async fn set(&self, key: Bytes, value: Bytes) -> Result<()> {
+        self.append_cmd_data((key, Some(value))).await
     }
 
     #[inline]
@@ -176,9 +173,11 @@ impl Storage for KipStorage {
 
 impl Drop for KipStorage {
     #[inline]
-    #[allow(clippy::expect_used)]
+    #[allow(clippy::expect_used, clippy::let_underscore_must_use)]
     fn drop(&mut self) {
         self.lock_file.unlock().expect("LockFile unlock failed!");
+
+        let _ = self.compactor_tx.try_send(CompactTask::Flush(None));
     }
 }
 
@@ -261,16 +260,6 @@ impl KipStorage {
     }
 
     #[inline]
-    pub async fn guard(&self) -> Result<Guard> {
-        let version = self.current_version().await;
-
-        Ok(Guard {
-            _inner: self.mem_table().inner_with_lock(),
-            _version: version,
-        })
-    }
-
-    #[inline]
     pub async fn manual_compaction(&self, min: Bytes, max: Bytes, level: usize) -> Result<()> {
         if min <= max {
             self.compactor_tx
@@ -286,18 +275,6 @@ impl KipStorage {
         self.compactor_tx.send(CompactTask::Flush(None)).await?;
 
         Ok(())
-    }
-}
-
-pub struct Guard<'a> {
-    _inner: MutexGuard<'a, TableInner>,
-    _version: Arc<Version>,
-}
-
-impl<'a> Guard<'a> {
-    #[inline]
-    pub fn iter(&'a self) -> Result<FullIter<'a>> {
-        FullIter::new(&self._inner, &self._version)
     }
 }
 

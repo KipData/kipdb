@@ -5,7 +5,6 @@ use crate::kernel::lsm::mem_table::{logs_decode, KeyValue};
 use crate::kernel::lsm::storage::Config;
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::lsm::table::scope::Scope;
-use crate::kernel::lsm::table::skip_table::SkipTable;
 use crate::kernel::lsm::table::ss_table::block::BlockCache;
 use crate::kernel::lsm::table::ss_table::SSTable;
 use crate::kernel::lsm::table::{BoxTable, Table, TableType};
@@ -48,6 +47,7 @@ impl TableLoader {
         })
     }
 
+    #[allow(clippy::match_single_binding)]
     pub(crate) fn create(
         &self,
         gen: i64,
@@ -58,8 +58,9 @@ impl TableLoader {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_sorted_vec_data(gen, &vec_data)?;
         let table: Box<dyn Table> = match table_type {
-            TableType::SortedString => Box::new(self.create_ss_table(gen, vec_data, level)?),
-            TableType::Skip => Box::new(SkipTable::new(level, gen, vec_data)),
+            // FIXME: support SkipTable
+            _ => Box::new(self.create_ss_table(gen, vec_data, level)?),
+            // TableType::Skip => Box::new(SkipTable::new(level, gen, vec_data)),
         };
         let table_meta = TableMeta::from(table.as_ref());
         let _ = self.inner.put(gen, table);

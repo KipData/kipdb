@@ -111,6 +111,6 @@ pub trait IoReader: Send + Sync + 'static + Read + Seek {
     fn get_type(&self) -> IoType;
 }
 
-pub trait IoWriter: Send + Sync + 'static + Write {
+pub trait IoWriter: Send + Sync + 'static + Write + Seek {
     fn current_pos(&mut self) -> Result<u64>;
 }

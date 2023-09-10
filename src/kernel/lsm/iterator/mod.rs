@@ -1,4 +1,3 @@
-pub(crate) mod full_iter;
 pub(crate) mod level_iter;
 pub(crate) mod merging_iter;
 
@@ -6,7 +5,7 @@ use crate::kernel::Result;
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-pub(crate) enum Seek<'s> {
+pub enum Seek<'s> {
     // 第一个元素
     First,
     // 最后一个元素
@@ -16,10 +15,10 @@ pub(crate) enum Seek<'s> {
 }
 
 /// 硬盘迭代器
-pub(crate) trait Iter<'a> {
+pub trait Iter<'a> {
     type Item;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>>;
+    fn try_next(&mut self) -> Result<Option<Self::Item>>;
 
     fn is_valid(&self) -> bool;
 
@@ -28,5 +27,5 @@ pub(crate) trait Iter<'a> {
 
 /// 向前迭代器
 pub(crate) trait ForwardIter<'a>: Iter<'a> {
-    fn prev_err(&mut self) -> Result<Option<Self::Item>>;
+    fn try_prev(&mut self) -> Result<Option<Self::Item>>;
 }

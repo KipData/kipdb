@@ -278,7 +278,7 @@ impl Compactor {
     {
         let mut iter = table.iter()?;
         let mut vec_cmd = Vec::with_capacity(table.len());
-        while let Some(item) = iter.next_err()? {
+        while let Some(item) = iter.try_next()? {
             if fn_is_filter(&item.0) {
                 vec_cmd.push(item)
             }
@@ -321,81 +321,89 @@ mod tests {
     use std::time::Instant;
     use tempfile::TempDir;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
-    async fn test_lsm_major_compactor() -> Result<()> {
+    #[test]
+    fn test_lsm_major_compactor() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-        let times = 30_000;
-        let value = b"Stray birds of summer come to my window to sing and fly away.
+        tokio_test::block_on(async move {
+            let times = 30_000;
+
+            let value = b"Stray birds of summer come to my window to sing and fly away.
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-        // Tips: 此处由于倍率为1且阈值固定为4，因此容易导致Level 1高出阈值时候导致归并转移到Level 2时，
-        // 重复触发阈值，导致迁移到Level6之中，此情况是理想之中的
-        // 普通场景下每个Level之间的阈值数量是有倍数递增的，因此除了极限情况以外，不会发送这种逐级转移的现象
-        let config = Config::new(temp_dir.path().to_str().unwrap())
-            .major_threshold_with_sst_size(4)
-            .level_sst_magnification(1)
-            .minor_trigger_with_threshold(TriggerType::Count, 1000);
-        let kv_store = KipStorage::open_with_config(config).await?;
-        let mut vec_kv = Vec::new();
+            // Tips: 此处由于倍率为1且阈值固定为4，因此容易导致Level 1高出阈值时候导致归并转移到Level 2时，
+            // 重复触发阈值，导致迁移到Level6之中，此情况是理想之中的
+            // 普通场景下每个Level之间的阈值数量是有倍数递增的，因此除了极限情况以外，不会发送这种逐级转移的现象
+            let config = Config::new(temp_dir.path().to_str().unwrap())
+                .major_threshold_with_sst_size(4)
+                .level_sst_magnification(1)
+                .minor_trigger_with_threshold(TriggerType::Count, 1000);
+            let kv_store = KipStorage::open_with_config(config).await?;
+            let mut vec_kv = Vec::new();
 
-        for i in 0..times {
-            let vec_u8 = bincode::serialize(&i)?;
-            vec_kv.push((
-                Bytes::from(vec_u8.clone()),
-                Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
-            ));
-        }
-
-        let start = Instant::now();
-
-        assert_eq!(times % 1000, 0);
-
-        for i in 0..times / 1000 {
-            for j in 0..1000 {
-                kv_store
-                    .set(&vec_kv[i * 1000 + j].0, vec_kv[i * 1000 + j].1.clone())
-                    .await?;
+            for i in 0..times {
+                let vec_u8 = bincode::serialize(&i)?;
+                vec_kv.push((
+                    Bytes::from(vec_u8.clone()),
+                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
+                ));
             }
-            kv_store.flush().await?;
-        }
-        println!("[set_for][Time: {:?}]", start.elapsed());
 
-        let version = kv_store.current_version().await;
-        let level_slice = &version.level_slice;
-        println!("MajorCompaction Test: {:#?}", level_slice);
-        assert!(!level_slice[0].is_empty());
-        assert!(
-            !level_slice[1].is_empty()
-                || !level_slice[2].is_empty()
-                || !level_slice[3].is_empty()
-                || !level_slice[4].is_empty()
-                || !level_slice[5].is_empty()
-                || !level_slice[6].is_empty()
-        );
+            let start = Instant::now();
 
-        for (level, slice) in level_slice.into_iter().enumerate() {
-            if !slice.is_empty() && level != LEVEL_0 {
-                let mut tmp_scope: Option<&Scope> = None;
+            assert_eq!(times % 1000, 0);
 
-                for scope in slice {
-                    if let Some(last_scope) = tmp_scope {
-                        assert!(last_scope.end < scope.start);
+            for i in 0..times / 1000 {
+                for j in 0..1000 {
+                    kv_store
+                        .set(
+                            vec_kv[i * 1000 + j].0.clone(),
+                            vec_kv[i * 1000 + j].1.clone(),
+                        )
+                        .await?;
+                }
+                kv_store.flush().await?;
+            }
+            println!("[set_for][Time: {:?}]", start.elapsed());
+
+            let version = kv_store.current_version().await;
+            let level_slice = &version.level_slice;
+            println!("MajorCompaction Test: {:#?}", level_slice);
+            assert!(!level_slice[0].is_empty());
+            assert!(
+                !level_slice[1].is_empty()
+                    || !level_slice[2].is_empty()
+                    || !level_slice[3].is_empty()
+                    || !level_slice[4].is_empty()
+                    || !level_slice[5].is_empty()
+                    || !level_slice[6].is_empty()
+            );
+
+            for (level, slice) in level_slice.into_iter().enumerate() {
+                if !slice.is_empty() && level != LEVEL_0 {
+                    let mut tmp_scope: Option<&Scope> = None;
+
+                    for scope in slice {
+                        if let Some(last_scope) = tmp_scope {
+                            assert!(last_scope.end < scope.start);
+                        }
+                        tmp_scope = Some(scope);
                     }
-                    tmp_scope = Some(scope);
                 }
             }
-        }
 
-        let start = Instant::now();
-        for i in 0..times {
-            assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
-        }
-        println!("[get_for][Time: {:?}]", start.elapsed());
-        kv_store.flush().await?;
+            assert_eq!(kv_store.len().await?, times);
 
-        Ok(())
+            let start = Instant::now();
+            for i in 0..times {
+                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
+            }
+            println!("[get_for][Time: {:?}]", start.elapsed());
+            kv_store.flush().await?;
+
+            Ok(())
+        })
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use kip_db::kernel::lsm::iterator::Iter;
 use kip_db::kernel::lsm::storage::{Config, KipStorage};
 use kip_db::kernel::Storage;
 use kip_db::KernelError;
@@ -13,24 +14,35 @@ async fn main() -> Result<(), KernelError> {
 
     println!("Set KeyValue -> (key_1, value_1)");
     kip_storage
-        .set(b"key_1", Bytes::copy_from_slice(b"value_1"))
+        .set(
+            Bytes::copy_from_slice(b"key_1"),
+            Bytes::copy_from_slice(b"value_1"),
+        )
         .await?;
     println!("Set KeyValue -> (key_2, value_2)");
     kip_storage
-        .set(b"key_2", Bytes::copy_from_slice(b"value_2"))
+        .set(
+            Bytes::copy_from_slice(b"key_2"),
+            Bytes::copy_from_slice(b"value_2"),
+        )
         .await?;
     println!("Set KeyValue -> (key_3, value_3)");
     kip_storage
-        .set(b"key_3", Bytes::copy_from_slice(b"value_3"))
+        .set(
+            Bytes::copy_from_slice(b"key_3"),
+            Bytes::copy_from_slice(b"value_3"),
+        )
         .await?;
 
     println!("New Transaction");
     let tx = kip_storage.new_transaction().await;
 
-    println!(
-        "RangeScan without key_3 By Transaction: {:?}",
-        tx.range_scan(Bound::Unbounded, Bound::Excluded(b"key_3"))?
-    );
+    println!("Iter without key_3 By Transaction:");
+    let mut iter = tx.iter(Bound::Unbounded, Bound::Excluded(b"key_3"))?;
+
+    while let Some(item) = iter.try_next()? {
+        println!("Item: {:?}", item);
+    }
 
     Ok(())
 }

@@ -7,7 +7,7 @@ use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 use crate::kernel::Result;
 use bytes::Bytes;
 use itertools::Itertools;
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::Mutex;
 use skiplist::{skipmap, SkipMap};
 use std::cmp::Ordering;
 use std::collections::Bound;
@@ -91,7 +91,7 @@ impl<'a> MemMapIter<'a> {
 impl<'a> Iter<'a> for MemMapIter<'a> {
     type Item = KeyValue;
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
         if let Some(iter) = &mut self.iter {
             for (InternalKey { key, .. }, value) in iter.by_ref() {
                 if let Some(prev_item) = &self.prev_item {
@@ -136,7 +136,7 @@ impl<'a> Iter<'a> for MemMapIter<'a> {
                 .last()
                 .map(|(InternalKey { key, .. }, value)| (key.clone(), value.clone())))
         } else {
-            self.next_err()
+            self.try_next()
         }
     }
 }
@@ -334,10 +334,6 @@ impl MemTable {
             .rev()
             .unique_by(|(key, _)| key.clone())
             .collect_vec()
-    }
-
-    pub(crate) fn inner_with_lock(&self) -> MutexGuard<TableInner> {
-        self.inner.lock()
     }
 
     /// Tips: 返回的数据为倒序
@@ -603,17 +599,17 @@ mod tests {
 
         let mut iter = MemMapIter::new(&map);
 
-        assert_eq!(iter.next_err()?, Some((key_1_2.key.clone(), None)));
+        assert_eq!(iter.try_next()?, Some((key_1_2.key.clone(), None)));
 
-        assert_eq!(iter.next_err()?, Some((key_2_2.key.clone(), None)));
+        assert_eq!(iter.try_next()?, Some((key_2_2.key.clone(), None)));
 
-        assert_eq!(iter.next_err()?, Some((key_4_2.key.clone(), None)));
+        assert_eq!(iter.try_next()?, Some((key_4_2.key.clone(), None)));
 
         assert_eq!(iter.seek(Seek::First)?, Some((key_1_2.key.clone(), None)));
 
         assert_eq!(iter.seek(Seek::Last)?, Some((key_4_2.key.clone(), None)));
 
-        assert_eq!(iter.next_err()?, None);
+        assert_eq!(iter.try_next()?, None);
 
         assert_eq!(
             iter.seek(Seek::Backward(&vec![b'3']))?,

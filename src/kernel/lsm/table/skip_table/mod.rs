@@ -2,7 +2,6 @@ mod iter;
 
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::lsm::table::skip_table::iter::SkipTableIter;
 use crate::kernel::lsm::table::Table;
 use bytes::Bytes;
 use skiplist::SkipMap;
@@ -15,6 +14,7 @@ pub(crate) struct SkipTable {
 }
 
 impl SkipTable {
+    #[allow(dead_code)]
     pub(crate) fn new(level: usize, gen: i64, data: Vec<KeyValue>) -> Self {
         let len = data.len();
         let inner = SkipMap::from_iter(
@@ -52,7 +52,10 @@ impl Table for SkipTable {
         self.level
     }
 
-    fn iter<'a>(&'a self) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a>> {
-        Ok(Box::new(SkipTableIter::new(self)))
+    #[allow(clippy::todo)]
+    fn iter<'a>(
+        &'a self,
+    ) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
+        todo!("skiplist cannot support")
     }
 }

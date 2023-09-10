@@ -89,6 +89,12 @@ impl Write for DirectIoWriter {
     }
 }
 
+impl Seek for DirectIoWriter {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.fs.seek(pos)
+    }
+}
+
 impl IoWriter for DirectIoWriter {
     fn current_pos(&mut self) -> Result<u64> {
         Ok(self.fs.stream_position()?)

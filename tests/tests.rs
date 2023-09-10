@@ -24,8 +24,12 @@ fn get_stored_value_with_kv_store<T: Storage>() -> Result<()> {
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let kv_store = T::open(temp_dir.path()).await?;
-        kv_store.set(&key1, Bytes::from(value1.clone())).await?;
-        kv_store.set(&key2, Bytes::from(value2.clone())).await?;
+        kv_store
+            .set(Bytes::from(key1.clone()), Bytes::from(value1.clone()))
+            .await?;
+        kv_store
+            .set(Bytes::from(key2.clone()), Bytes::from(value2.clone()))
+            .await?;
 
         kv_store.flush().await?;
 
@@ -61,13 +65,17 @@ fn overwrite_value_with_kv_store<T: Storage>() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let kv_store = T::open(temp_dir.path()).await?;
 
-        kv_store.set(&key1, Bytes::from(value1.clone())).await?;
+        kv_store
+            .set(Bytes::from(key1.clone()), Bytes::from(value1.clone()))
+            .await?;
         kv_store.flush().await?;
         assert_eq!(
             kv_store.get(&key1).await?,
             Some(Bytes::from(value1.clone()))
         );
-        kv_store.set(&key1, Bytes::from(value2.clone())).await?;
+        kv_store
+            .set(Bytes::from(key1.clone()), Bytes::from(value2.clone()))
+            .await?;
         kv_store.flush().await?;
         assert_eq!(
             kv_store.get(&key1).await?,
@@ -80,7 +88,9 @@ fn overwrite_value_with_kv_store<T: Storage>() -> Result<()> {
             kv_store.get(&key1).await?,
             Some(Bytes::from(value2.clone()))
         );
-        kv_store.set(&key1, Bytes::from(value3.clone())).await?;
+        kv_store
+            .set(Bytes::from(key1.clone()), Bytes::from(value3.clone()))
+            .await?;
         kv_store.flush().await?;
         assert_eq!(
             kv_store.get(&key1).await?,
@@ -109,7 +119,9 @@ fn get_non_existent_value_with_kv_store<T: Storage>() -> Result<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let kv_store = T::open(temp_dir.path()).await?;
 
-        kv_store.set(&key1, Bytes::from(value1)).await?;
+        kv_store
+            .set(Bytes::from(key1.clone()), Bytes::from(value1))
+            .await?;
         assert_eq!(kv_store.get(&key2).await?, None);
 
         // Open from disk again and check persistent data.
@@ -156,7 +168,9 @@ fn remove_key_with_kv_store<T: Storage>() -> Result<()> {
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let kv_store = T::open(temp_dir.path()).await?;
-        kv_store.set(&key1, Bytes::from(value1)).await?;
+        kv_store
+            .set(Bytes::from(key1.clone()), Bytes::from(value1))
+            .await?;
         assert!(kv_store.remove(&key1).await.is_ok());
         assert_eq!(kv_store.get(&key1).await?, None);
 
@@ -197,7 +211,7 @@ fn compaction_with_kv_store<T: Storage>() -> Result<()> {
                 let value = format!("{}", iter);
                 kv_store
                     .set(
-                        &encode_key(key.as_str())?,
+                        Bytes::from(encode_key(key.as_str())?),
                         Bytes::from(encode_key(value.as_str())?),
                     )
                     .await?

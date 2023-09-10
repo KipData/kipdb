@@ -202,7 +202,7 @@ impl Handler {
                         }
                         KeyValueType::Set => self
                             .kv_store
-                            .set(&key, Bytes::from(value))
+                            .set(Bytes::from(key), Bytes::from(value))
                             .await
                             .map(|_| options_none())?,
                     };

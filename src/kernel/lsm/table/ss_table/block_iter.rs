@@ -63,7 +63,7 @@ impl<'a, V> ForwardIter<'a> for BlockIter<'a, V>
 where
     V: Sync + Send + BlockItem,
 {
-    fn prev_err(&mut self) -> Result<Option<Self::Item>> {
+    fn try_prev(&mut self) -> Result<Option<Self::Item>> {
         Ok((self.is_valid() || self.offset == self.entry_len)
             .then(|| self.offset_move(self.offset - 1))
             .flatten())
@@ -76,7 +76,7 @@ where
 {
     type Item = (Bytes, V);
 
-    fn next_err(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> Result<Option<Self::Item>> {
         Ok((self.is_valid() || self.offset == 0)
             .then(|| self.offset_move(self.offset + 1))
             .flatten())
@@ -126,12 +126,12 @@ mod tests {
         assert!(!iterator.is_valid());
 
         assert_eq!(
-            iterator.next_err()?,
+            iterator.try_next()?,
             Some((Bytes::from(vec![b'1']), Value::from(None)))
         );
 
         assert_eq!(
-            iterator.next_err()?,
+            iterator.try_next()?,
             Some((
                 Bytes::from(vec![b'2']),
                 Value::from(Some(Bytes::from(vec![b'0'])))
@@ -139,14 +139,14 @@ mod tests {
         );
 
         assert_eq!(
-            iterator.next_err()?,
+            iterator.try_next()?,
             Some((Bytes::from(vec![b'4']), Value::from(None)))
         );
 
-        assert_eq!(iterator.next_err()?, None);
+        assert_eq!(iterator.try_next()?, None);
 
         assert_eq!(
-            iterator.prev_err()?,
+            iterator.try_prev()?,
             Some((
                 Bytes::from(vec![b'2']),
                 Value::from(Some(Bytes::from(vec![b'0'])))
@@ -154,11 +154,11 @@ mod tests {
         );
 
         assert_eq!(
-            iterator.prev_err()?,
+            iterator.try_prev()?,
             Some((Bytes::from(vec![b'1']), Value::from(None)))
         );
 
-        assert_eq!(iterator.prev_err()?, None);
+        assert_eq!(iterator.try_prev()?, None);
 
         assert_eq!(
             iterator.seek(Seek::First)?,
@@ -205,11 +205,11 @@ mod tests {
             let mut iterator = BlockIter::new(&block);
 
             for i in 0..times {
-                assert_eq!(iterator.next_err()?.unwrap(), vec_data[i]);
+                assert_eq!(iterator.try_next()?.unwrap(), vec_data[i]);
             }
 
             for i in (0..times - 1).rev() {
-                assert_eq!(iterator.prev_err()?.unwrap(), vec_data[i]);
+                assert_eq!(iterator.try_prev()?.unwrap(), vec_data[i]);
             }
 
             Ok(())

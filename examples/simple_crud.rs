@@ -12,7 +12,10 @@ async fn main() -> Result<(), KernelError> {
 
     println!("Set KeyValue -> (apple, banana)");
     kip_storage
-        .set(b"apple", Bytes::copy_from_slice(b"banana"))
+        .set(
+            Bytes::copy_from_slice(b"apple"),
+            Bytes::copy_from_slice(b"banana"),
+        )
         .await?;
 
     println!(

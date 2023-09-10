@@ -2,6 +2,7 @@ use crate::kernel::Storage;
 use crate::KernelError;
 use async_trait::async_trait;
 use bytes::Bytes;
+use core::slice::SlicePattern;
 use sled::Db;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,8 +36,8 @@ impl Storage for SledStorage {
     }
 
     #[inline]
-    async fn set(&self, key: &[u8], value: Bytes) -> crate::kernel::Result<()> {
-        let _ignore = self.data_base.insert(key, value.to_vec())?;
+    async fn set(&self, key: Bytes, value: Bytes) -> crate::kernel::Result<()> {
+        let _ignore = self.data_base.insert(key.as_slice(), value.to_vec())?;
         Ok(())
     }
 
