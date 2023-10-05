@@ -80,7 +80,8 @@ impl Transaction {
     #[inline]
     pub async fn commit(mut self) -> Result<()> {
         if let Some(buf) = self.write_buf.take() {
-            let batch_data = buf.into_iter()
+            let batch_data = buf
+                .into_iter()
                 .map(|(key, value)| (key, value))
                 .collect_vec();
 
@@ -106,7 +107,8 @@ impl Transaction {
         let mem_table_range = self.mem_table().range_scan(min, max, Some(self.seq_id));
 
         if let Some(buf_iter) = self._mem_range(min, max) {
-            buf_iter.chain(mem_table_range)
+            buf_iter
+                .chain(mem_table_range)
                 .unique_by(|(key, _)| key.clone())
                 .sorted_by_key(|(key, _)| key.clone())
                 .collect_vec()
@@ -117,11 +119,13 @@ impl Transaction {
 
     fn _mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Option<MapIter> {
         if let Some(buf) = &self.write_buf {
-            Some(buf.range(
-                min.map(Bytes::copy_from_slice).as_ref(),
-                max.map(Bytes::copy_from_slice).as_ref(),
+            Some(
+                buf.range(
+                    min.map(Bytes::copy_from_slice).as_ref(),
+                    max.map(Bytes::copy_from_slice).as_ref(),
+                )
+                .map(|(key, value)| (key.clone(), value.clone())),
             )
-                .map(|(key, value)| (key.clone(), value.clone())))
         } else {
             None
         }

@@ -13,9 +13,9 @@ use std::cmp::Ordering;
 use std::collections::Bound;
 use std::io::Cursor;
 use std::mem;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Acquire;
+use std::sync::Arc;
 use std::vec::IntoIter;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
@@ -276,9 +276,7 @@ impl MemTable {
 
                 vec_data.reverse();
 
-                inner._immut = Some(Arc::new(
-                    mem::replace(&mut inner._mem, SkipMap::new())
-                ));
+                inner._immut = Some(Arc::new(mem::replace(&mut inner._mem, SkipMap::new())));
 
                 let new_gen = Gen::create();
                 let new_writer = (inner.log_loader.writer(new_gen)?, new_gen);
