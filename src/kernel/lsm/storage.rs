@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
 use fslock::LockFile;
-use skiplist::SkipMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -86,8 +85,6 @@ pub(crate) struct StoreInner {
 impl StoreInner {
     pub(crate) async fn new(config: Config) -> Result<Self> {
         let mem_table = MemTable::new(&config)?;
-
-        // 初始化wal日志
         let ver_status =
             VersionStatus::load_with_path(config.clone(), mem_table.log_loader_clone())?;
 
@@ -255,7 +252,7 @@ impl KipStorage {
             compactor_tx: self.compactor_tx.clone(),
 
             seq_id: Sequence::create(),
-            writer_buf: SkipMap::new(),
+            write_buf: None,
         }
     }
 

@@ -34,17 +34,21 @@ pub struct Transaction {
     pub(crate) compactor_tx: Sender<CompactTask>,
 
     pub(crate) version: Arc<Version>,
-    pub(crate) writer_buf: SkipMap<Bytes, Option<Bytes>>,
+    pub(crate) write_buf: Option<SkipMap<Bytes, Option<Bytes>>>,
     pub(crate) seq_id: i64,
 }
 
 impl Transaction {
+    fn write_buf_or_init(&mut self) -> &mut SkipMap<Bytes, Option<Bytes>> {
+        self.write_buf.get_or_insert_with(|| SkipMap::new())
+    }
+
     /// 通过Key获取对应的Value
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
     #[inline]
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        if let Some(value) = self.writer_buf.get(key) {
+        if let Some(value) = self.write_buf.as_ref().and_then(|buf| buf.get(key)) {
             return Ok(value.clone());
         }
 
@@ -61,32 +65,36 @@ impl Transaction {
 
     #[inline]
     pub fn set(&mut self, key: Bytes, value: Bytes) {
-        let _ignore = self.writer_buf.insert(key, Some(value));
+        let _ignore = self.write_buf_or_init().insert(key, Some(value));
     }
 
     #[inline]
     pub fn remove(&mut self, key: &[u8]) -> Result<()> {
         let _ = self.get(key)?.ok_or(KernelError::KeyNotFound)?;
         let bytes = Bytes::copy_from_slice(key);
-        let _ignore = self.writer_buf.insert(bytes, None);
+        let _ignore = self.write_buf_or_init().insert(bytes, None);
 
         Ok(())
     }
 
     #[inline]
-    pub async fn commit(self) -> Result<()> {
-        let mem_table = self.mem_table();
-        let batch_data = self
-            .writer_buf
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect_vec();
+    pub async fn commit(mut self) -> Result<()> {
+        if let Some(buf) = self.write_buf.take() {
+            let batch_data = buf.into_iter()
+                .map(|(key, value)| (key, value))
+                .collect_vec();
 
-        if mem_table.insert_batch_data(batch_data, Sequence::create())? {
-            if let Err(TrySendError::Closed(_)) =
-                self.compactor_tx.try_send(CompactTask::Flush(None))
-            {
-                return Err(KernelError::ChannelClose);
+            let is_exceeds = self
+                .store_inner
+                .mem_table
+                .insert_batch_data(batch_data, Sequence::create())?;
+
+            if is_exceeds {
+                if let Err(TrySendError::Closed(_)) =
+                    self.compactor_tx.try_send(CompactTask::Flush(None))
+                {
+                    return Err(KernelError::ChannelClose);
+                }
             }
         }
 
@@ -97,20 +105,26 @@ impl Transaction {
     pub fn mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<KeyValue> {
         let mem_table_range = self.mem_table().range_scan(min, max, Some(self.seq_id));
 
-        self._mem_range(min, max)
-            .chain(mem_table_range)
-            .unique_by(|(key, _)| key.clone())
-            .sorted_by_key(|(key, _)| key.clone())
-            .collect_vec()
+        if let Some(buf_iter) = self._mem_range(min, max) {
+            buf_iter.chain(mem_table_range)
+                .unique_by(|(key, _)| key.clone())
+                .sorted_by_key(|(key, _)| key.clone())
+                .collect_vec()
+        } else {
+            mem_table_range
+        }
     }
 
-    fn _mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> MapIter {
-        self.writer_buf
-            .range(
+    fn _mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Option<MapIter> {
+        if let Some(buf) = &self.write_buf {
+            Some(buf.range(
                 min.map(Bytes::copy_from_slice).as_ref(),
                 max.map(Bytes::copy_from_slice).as_ref(),
             )
-            .map(|(key, value)| (key.clone(), value.clone()))
+                .map(|(key, value)| (key.clone(), value.clone())))
+        } else {
+            None
+        }
     }
 
     fn mem_table(&self) -> &MemTable {

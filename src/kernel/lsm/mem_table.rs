@@ -13,6 +13,7 @@ use std::cmp::Ordering;
 use std::collections::Bound;
 use std::io::Cursor;
 use std::mem;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Acquire;
 use std::vec::IntoIter;
@@ -148,7 +149,7 @@ pub(crate) struct MemTable {
 
 pub(crate) struct TableInner {
     pub(crate) _mem: MemMap,
-    pub(crate) _immut: Option<MemMap>,
+    pub(crate) _immut: Option<Arc<MemMap>>,
     /// WAL载入器
     ///
     /// 用于异常停机时MemTable的恢复
@@ -156,6 +157,19 @@ pub(crate) struct TableInner {
     log_loader: LogLoader,
     log_writer: (LogWriter<Box<dyn IoWriter>>, i64),
     trigger: Box<dyn Trigger + Send>,
+}
+
+macro_rules! check_count {
+    ($count:ident, $is_force:ident) => {
+        if 0 != $count.load(Acquire) {
+            if $is_force {
+                std::hint::spin_loop();
+                continue;
+            } else {
+                return Ok(None);
+            }
+        }
+    };
 }
 
 impl MemTable {
@@ -233,46 +247,48 @@ impl MemTable {
         self.inner.lock().log_loader.clone()
     }
 
-    /// MemTable将数据弹出并转移到immutable中  (弹出数据为有序的)
-    pub(crate) fn swap(&self) -> Result<Option<(i64, Vec<KeyValue>)>> {
+    /// MemTable将数据弹出并转移到immut table中  (弹出数据为转移至immut table中数据的迭代器)
+    pub(crate) fn try_swap(&self, is_force: bool) -> Result<Option<(i64, Vec<KeyValue>)>> {
+        let count = &self.tx_count;
+
         loop {
-            if 0 == self.tx_count.load(Acquire) {
-                let mut inner = self.inner.lock();
-                // 二重检测防止lock时(前)突然出现事务
-                // 当lock后，即使出现事务，会因为lock已被Compactor获取而无法读写，
-                // 因此不会对读写进行干扰
-                // 并且事务即使在lock后出现，所持有的seq为该压缩之前，
-                // 也不会丢失该seq的_mem，因为转移到了_immut，可以从_immut得到对应seq的数据
-                if 0 != self.tx_count.load(Acquire) {
-                    continue;
-                }
-                return if !inner._mem.is_empty() {
-                    inner.trigger.reset();
+            check_count!(count, is_force);
 
-                    let mut vec_data = inner
-                        ._mem
-                        .iter()
-                        .map(|(k, v)| (k.key.clone(), v.clone()))
-                        // rev以使用最后(最新)的key
-                        .rev()
-                        .unique_by(|(k, _)| k.clone())
-                        .collect_vec();
+            let mut inner = self.inner.lock();
+            // 二重检测防止lock时(前)突然出现事务
+            // 当lock后，即使出现事务，会因为lock已被Compactor获取而无法读写，
+            // 因此不会对读写进行干扰
+            // 并且事务即使在lock后出现，所持有的seq为该压缩之前，
+            // 也不会丢失该seq的_mem，因为转移到了_immut，可以从_immut得到对应seq的数据
+            check_count!(count, is_force);
 
-                    vec_data.reverse();
+            return if !inner._mem.is_empty() {
+                inner.trigger.reset();
 
-                    inner._immut = Some(mem::replace(&mut inner._mem, SkipMap::new()));
+                let mut vec_data = inner
+                    ._mem
+                    .iter()
+                    .map(|(k, v)| (k.key.clone(), v.clone()))
+                    // rev以使用最后(最新)的key
+                    .rev()
+                    .unique_by(|(k, _)| k.clone())
+                    .collect_vec();
 
-                    let new_gen = Gen::create();
-                    let new_writer = (inner.log_loader.writer(new_gen)?, new_gen);
-                    let (mut old_writer, old_gen) = mem::replace(&mut inner.log_writer, new_writer);
-                    old_writer.flush()?;
+                vec_data.reverse();
 
-                    Ok(Some((old_gen, vec_data)))
-                } else {
-                    Ok(None)
-                };
-            }
-            std::hint::spin_loop();
+                inner._immut = Some(Arc::new(
+                    mem::replace(&mut inner._mem, SkipMap::new())
+                ));
+
+                let new_gen = Gen::create();
+                let new_writer = (inner.log_loader.writer(new_gen)?, new_gen);
+                let (mut old_writer, old_gen) = mem::replace(&mut inner.log_writer, new_writer);
+                old_writer.flush()?;
+
+                Ok(Some((old_gen, vec_data)))
+            } else {
+                Ok(None)
+            };
         }
     }
 
@@ -472,7 +488,7 @@ mod tests {
         let _ = mem_table
             .insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?;
 
-        let (_, mut vec) = mem_table.swap()?.unwrap();
+        let (_, mut vec) = mem_table.try_swap(false)?.unwrap();
 
         assert_eq!(
             vec.pop(),
