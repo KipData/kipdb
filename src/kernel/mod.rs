@@ -11,7 +11,7 @@ use std::{fs, path::PathBuf};
 use tokio::time;
 
 use crate::kernel::io::FileExtension;
-use crate::proto::net_pb::{CommandOption, KeyValue};
+use crate::proto::{CommandOption, KeyValue};
 use crate::KernelError;
 
 pub mod io;

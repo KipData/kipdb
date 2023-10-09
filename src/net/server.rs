@@ -3,7 +3,7 @@ use crate::kernel::{options_none, ByteUtils, CommandData, Storage};
 use crate::net::connection::Connection;
 use crate::net::shutdown::Shutdown;
 use crate::net::{key_value_from_option, kv_encode_with_len, Result};
-use crate::proto::net_pb::{CommandOption, KeyValue, KeyValueType, OptionType};
+use crate::proto::{CommandOption, KeyValue, KeyValueType, OptionType};
 use bytes::Bytes;
 use chrono::Local;
 use itertools::Itertools;

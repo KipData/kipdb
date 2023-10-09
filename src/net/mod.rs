@@ -1,7 +1,7 @@
 use crate::error::ConnectionError;
 
 use crate::kernel::ByteUtils;
-use crate::proto::net_pb::{CommandOption, KeyValue};
+use crate::proto::{CommandOption, KeyValue};
 use crate::KernelError;
 use prost::Message;
 

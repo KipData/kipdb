@@ -2,7 +2,7 @@ use crate::error::ConnectionError;
 use crate::kernel::{ByteUtils, CommandData};
 use crate::net::connection::Connection;
 use crate::net::{kv_encode_with_len, option_from_key_value, Result};
-use crate::proto::net_pb::{CommandOption, KeyValue};
+use crate::proto::{CommandOption, KeyValue};
 use crate::KernelError;
 use itertools::Itertools;
 use prost::Message;
