@@ -1,5 +1,5 @@
 use crate::error::ConnectionError;
-use crate::proto::net_pb::CommandOption;
+use crate::proto::CommandOption;
 use bytes::BytesMut;
 use prost::Message;
 use tokio_util::codec::{Decoder, Encoder};

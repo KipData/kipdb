@@ -7,7 +7,7 @@ use crate::error::ConnectionError;
 use crate::kernel::options_none;
 use crate::net::codec::NetCommandCodec;
 use crate::net::Result;
-use crate::proto::net_pb::CommandOption;
+use crate::proto::CommandOption;
 
 type CommandFramedStream = SplitStream<Framed<TcpStream, NetCommandCodec>>;
 type CommandFramedSink = SplitSink<Framed<TcpStream, NetCommandCodec>, CommandOption>;
