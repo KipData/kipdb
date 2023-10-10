@@ -1,8 +1,5 @@
-#![feature(type_ascription)]
 #![feature(fs_try_exists)]
 #![feature(cursor_remaining)]
-#![feature(result_flattening)]
-#![feature(buf_read_has_data_left)]
 #![feature(slice_pattern)]
 #![feature(bound_map)]
 pub mod cmd;
