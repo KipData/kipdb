@@ -8,6 +8,7 @@ pub mod error;
 pub mod kernel;
 pub mod net;
 pub mod proto;
+pub mod server;
 
 pub use error::KernelError;
 

@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package kipdb;
+
+service GrpcService {
+  rpc set (SetReq) returns (SetReq) {}
+}
+message SetReq {
+  bytes key = 1;
+  bytes value = 2;
+}
+message SetResp {
+  bool success = 1;
+}

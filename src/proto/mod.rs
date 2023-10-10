@@ -1,1 +1,2 @@
-include!(concat!(env!("OUT_DIR"), "/net_pb.rs"));
+tonic::include_proto!("net_pb");
+tonic::include_proto!("kipdb");
