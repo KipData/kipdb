@@ -1,8 +1,8 @@
 use clap::Parser;
 use itertools::Itertools;
 use kip_db::cmd::Command;
-use kip_db::kernel::CommandData;
-use kip_db::net::{client::Client, Result};
+use kip_db::server::client::KipdbClient;
+use kip_db::server::client::Result;
 use kip_db::DEFAULT_PORT;
 use tracing::{error, info};
 
@@ -40,9 +40,9 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().unwrap();
     let cli: Cli = Cli::parse();
 
-    let addr = format!("{}:{}", cli.host, cli.port);
+    let addr = format!("http://{}:{}", cli.host, cli.port);
 
-    let mut client = Client::connect(&addr).await?;
+    let mut client = KipdbClient::connect(addr).await?;
 
     let line = match cli.command {
         Command::Set { key, value } => {
@@ -56,20 +56,38 @@ async fn main() -> Result<()> {
         Command::Get { key } => {
             format!("{:?}", client.get(encode(&key)).await?.map(decode))
         }
-        Command::BatchSet { batch } => batch_set(&mut client, batch).await?,
-        Command::BatchRemove { keys } => {
-            let vec_batch_rm = keys
-                .into_iter()
-                .map(|key| CommandData::Remove { key: encode(&key) })
+        Command::BatchSet { batch } => {
+            if batch.len() % 2 != 0 {
+                error!(
+                    "BatchSet len is:{}, key-value cannot be aligned",
+                    batch.len()
+                )
+            }
+            let (keys, values) = batch.split_at(batch.len() / 2);
+            let kvs = keys
+                .iter()
+                .zip(values)
+                .map(|(key, value)| (encode(key), encode(value)))
                 .collect_vec();
-            batch_run(&mut client, vec_batch_rm, DONE).await?
+            client.batch_set(kvs).await?;
+            DONE.to_string()
+        }
+        Command::BatchRemove { keys } => {
+            let keys = keys.into_iter().map(|key| encode(&key)).collect_vec();
+            client.batch_remove(keys).await?;
+            DONE.to_string()
         }
         Command::BatchGet { keys } => {
-            let vec_batch_get = keys
-                .into_iter()
-                .map(|key| CommandData::Get { key: encode(&key) })
-                .collect_vec();
-            batch_run(&mut client, vec_batch_get, "").await?
+            let keys = keys.into_iter().map(|key| encode(&key)).collect_vec();
+            format!(
+                "{:?}",
+                client
+                    .batch_get(keys)
+                    .await?
+                    .into_iter()
+                    .map(|(key, value)| { (decode(key), decode(value)) })
+                    .collect_vec()
+            )
         }
         Command::SizeOfDisk => client.size_of_disk().await?.to_string(),
         Command::Len => client.len().await?.to_string(),
@@ -83,45 +101,6 @@ async fn main() -> Result<()> {
     info!("{line}");
 
     Ok(())
-}
-
-#[allow(clippy::needless_pass_by_ref_mut)]
-async fn batch_set(client: &mut Client, batch: Vec<String>) -> Result<String> {
-    if batch.len() % 2 != 0 {
-        error!(
-            "BatchSet len is:{}, key-value cannot be aligned",
-            batch.len()
-        )
-    }
-    let (keys, values) = batch.split_at(batch.len() / 2);
-    let vec_batch_set = keys
-        .iter()
-        .zip(values)
-        .map(|(key, value)| CommandData::Set {
-            key: encode(key),
-            value: encode(value),
-        })
-        .collect_vec();
-    batch_run(client, vec_batch_set, DONE).await
-}
-
-async fn batch_run(
-    client: &mut Client,
-    vec_batch: Vec<CommandData>,
-    default_null: &str,
-) -> Result<String> {
-    let vec_string = client
-        .batch(vec_batch)
-        .await?
-        .into_iter()
-        .map(|option_vec_u8| {
-            option_vec_u8
-                .and_then(|bytes| (!bytes.is_empty()).then(|| decode(bytes)))
-                .unwrap_or(default_null.to_string())
-        })
-        .collect_vec();
-
-    Ok(format!("{vec_string:?}",))
 }
 
 fn encode(value: &String) -> Vec<u8> {

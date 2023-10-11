@@ -32,20 +32,21 @@ async fn main() -> Result<(), KernelError> {
         CommandData::set(b"moon".to_vec(), b"star".to_vec()),
         // CommandData::remove(b"apple".to_vec()),
     ];
-    println!(
-        "Join 1: {:?} -> {:?}",
-        join_cmd_1.clone(),
-        kip_storage.join(join_cmd_1).await?
-    );
+    // TODO need refactor join
+    // println!(
+    //     "Join 1: {:?} -> {:?}",
+    //     join_cmd_1.clone(),
+    //     kip_storage.join(join_cmd_1).await?
+    // );
     let join_cmd_2 = vec![
         CommandData::get(b"moon".to_vec()),
         CommandData::get(b"apple".to_vec()),
     ];
-    println!(
-        "Join 2: {:?} -> {:?}",
-        join_cmd_2.clone(),
-        kip_storage.join(join_cmd_2).await?
-    );
+    // println!(
+    //     "Join 2: {:?} -> {:?}",
+    //     join_cmd_2.clone(),
+    //     kip_storage.join(join_cmd_2).await?
+    // );
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 use clap::Parser;
-use tokio::net::TcpListener;
 
-use kip_db::net::{server, Result};
+use kip_db::server::client::Result;
+use kip_db::server::server::serve;
 use kip_db::{DEFAULT_PORT, LOCAL_IP};
 
 /// 服务启动方法
@@ -14,31 +14,9 @@ pub async fn main() -> Result<()> {
     let ip = cli.ip.unwrap_or(LOCAL_IP.to_string());
     let port = cli.port.unwrap_or(DEFAULT_PORT);
 
-    // Bind a TCP listener
-    let listener = TcpListener::bind(&format!("{ip}:{port}")).await?;
-
-    server::run(listener, quit()).await?;
+    serve(&ip, port).await?;
 
     Ok(())
-}
-
-pub async fn quit() -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut interrupt =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            _ = interrupt.recv() => (),
-            _ = terminate.recv() => (),
-        }
-        Ok(())
-    }
-    #[cfg(windows)]
-    {
-        Ok(tokio::signal::ctrl_c().await?)
-    }
 }
 
 #[derive(Parser, Debug)]
