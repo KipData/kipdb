@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package kipdb;
+
+service KipdbRpc {
+  rpc set (SetReq) returns (SetResp) {}
+  rpc remove (RemoveReq) returns (RemoveResp) {}
+  rpc get (GetReq) returns (GetResp) {}
+
+  rpc batch_set (BatchSetReq) returns (BatchSetResp) {}
+  rpc batch_remove (BatchRemoveReq) returns (BatchRemoveResp) {}
+  rpc batch_get (BatchGetReq) returns (BatchGetResp) {}
+
+  rpc size_of_disk (Empty) returns (SizeOfDiskResp) {}
+  rpc len (Empty) returns (LenResp) {}
+  rpc flush (Empty) returns (FlushResp) {}
+}
+
+message Empty {}
+message KV {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message SetReq {
+  bytes key = 1;
+  bytes value = 2;
+}
+message SetResp {
+  bool success = 1;
+}
+
+message BatchSetReq {
+  repeated KV kvs = 1;
+}
+message BatchSetResp {
+  repeated KV failure = 1;
+}
+
+message RemoveReq {
+  bytes key = 1;
+}
+message RemoveResp {
+  bool success = 1;
+}
+
+message BatchRemoveReq {
+  repeated bytes keys = 1;
+}
+message BatchRemoveResp {
+  repeated bytes failure = 1;
+}
+
+message GetReq {
+  bytes key = 1;
+}
+message GetResp {
+  optional bytes value = 1;
+}
+
+message BatchGetReq {
+  repeated bytes keys = 1;
+}
+message BatchGetResp {
+  repeated bytes values = 1;
+}
+
+message SizeOfDiskResp {
+  uint64 size = 1;
+}
+
+message LenResp {
+  uint64 len = 1;
+}
+message FlushResp {
+  bool success = 1;
+}

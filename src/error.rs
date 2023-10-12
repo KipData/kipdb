@@ -70,6 +70,12 @@ pub enum ConnectionError {
     FlushError,
     #[fail(display = "{}", _0)]
     StoreErr(#[cause] KernelError),
+    #[fail(display = "Failed to connect to server, {}", _0)]
+    TonicTransportErr(#[cause] tonic::transport::Error),
+    #[fail(display = "Failed to call server, {}", _0)]
+    TonicFailureStatus(#[cause] tonic::Status),
+    #[fail(display = "Failed to parse addr, {}", _0)]
+    AddrParseError(#[cause] std::net::AddrParseError),
 }
 
 #[derive(Fail, Debug)]
@@ -130,6 +136,27 @@ impl From<KernelError> for ConnectionError {
     #[inline]
     fn from(err: KernelError) -> Self {
         ConnectionError::StoreErr(err)
+    }
+}
+
+impl From<tonic::Status> for ConnectionError {
+    #[inline]
+    fn from(status: tonic::Status) -> Self {
+        ConnectionError::TonicFailureStatus(status)
+    }
+}
+
+impl From<tonic::transport::Error> for ConnectionError {
+    #[inline]
+    fn from(err: tonic::transport::Error) -> Self {
+        ConnectionError::TonicTransportErr(err)
+    }
+}
+
+impl From<std::net::AddrParseError> for ConnectionError {
+    #[inline]
+    fn from(err: std::net::AddrParseError) -> Self {
+        ConnectionError::AddrParseError(err)
     }
 }
 

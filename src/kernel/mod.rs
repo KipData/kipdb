@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use fslock::LockFile;
-use futures::future;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -11,7 +10,6 @@ use std::{fs, path::PathBuf};
 use tokio::time;
 
 use crate::kernel::io::FileExtension;
-use crate::proto::{CommandOption, KeyValue};
 use crate::KernelError;
 
 pub mod io;
@@ -47,15 +45,9 @@ pub trait Storage: Send + Sync + 'static + Sized {
     async fn remove(&self, key: &[u8]) -> Result<()>;
 
     /// 并行批量执行
-    #[inline]
-    async fn join(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {
-        let map_cmd = vec_cmd.into_iter().map(|cmd| cmd.apply(self));
-        Ok(future::try_join_all(map_cmd)
-            .await?
-            .into_iter()
-            .map(CommandOption::into)
-            .collect_vec())
-    }
+    /// TODO need refactor
+    // #[inline]
+    // async fn join(&self, vec_cmd: Vec<CommandData>) -> Result<Vec<Option<Vec<u8>>>> {}
 
     async fn size_of_disk(&self) -> Result<u64>;
 
@@ -172,22 +164,6 @@ impl CommandData {
             }
     }
 
-    /// 命令消费
-    ///
-    /// Command对象通过调用这个方法调用持久化内核进行命令交互
-    /// 内部对该类型进行模式匹配而进行不同命令的相应操作
-    #[inline]
-    pub async fn apply<K: Storage>(self, kv_store: &K) -> Result<CommandOption> {
-        match self {
-            CommandData::Set { key, value } => kv_store
-                .set(Bytes::from(key), Bytes::from(value))
-                .await
-                .map(|_| options_none()),
-            CommandData::Remove { key } => kv_store.remove(&key).await.map(|_| options_none()),
-            CommandData::Get { key } => kv_store.get(&key).await.map(CommandOption::from),
-        }
-    }
-
     #[inline]
     pub fn set(key: Vec<u8>, value: Vec<u8>) -> Self {
         Self::Set { key, value }
@@ -201,86 +177,6 @@ impl CommandData {
     #[inline]
     pub fn get(key: Vec<u8>) -> Self {
         Self::Get { key }
-    }
-}
-
-pub(crate) fn options_none() -> CommandOption {
-    CommandOption {
-        r#type: 7,
-        bytes: vec![],
-        value: 0,
-    }
-}
-
-impl From<KeyValue> for CommandData {
-    #[inline]
-    fn from(key_value: KeyValue) -> Self {
-        let KeyValue { r#type, key, value } = key_value;
-        match r#type {
-            0 => CommandData::Get { key },
-            2 => CommandData::Remove { key },
-            _ => CommandData::Set { key, value },
-        }
-    }
-}
-
-impl From<CommandData> for KeyValue {
-    #[inline]
-    fn from(cmd_data: CommandData) -> Self {
-        match cmd_data {
-            CommandData::Set { key, value } => KeyValue {
-                key,
-                value,
-                r#type: 1,
-            },
-            CommandData::Remove { key } => KeyValue {
-                key,
-                value: vec![],
-                r#type: 2,
-            },
-            CommandData::Get { key } => KeyValue {
-                key,
-                value: vec![],
-                r#type: 0,
-            },
-        }
-    }
-}
-
-/// Option<String>与CommandOption的转换方法
-/// 能够与CommandOption::None或CommandOption::Value进行转换
-impl From<CommandOption> for Option<Vec<u8>> {
-    #[inline]
-    fn from(item: CommandOption) -> Self {
-        (item.r#type == 2).then_some(item.bytes)
-    }
-}
-
-impl From<Option<Vec<u8>>> for CommandOption {
-    #[inline]
-    fn from(item: Option<Vec<u8>>) -> Self {
-        match item {
-            Some(bytes) => CommandOption {
-                r#type: 2,
-                bytes,
-                value: 0,
-            },
-            None => options_none(),
-        }
-    }
-}
-
-impl From<Option<Bytes>> for CommandOption {
-    #[inline]
-    fn from(item: Option<Bytes>) -> Self {
-        match item {
-            Some(bytes) => CommandOption {
-                r#type: 2,
-                bytes: bytes.to_vec(),
-                value: 0,
-            },
-            None => options_none(),
-        }
     }
 }
 
