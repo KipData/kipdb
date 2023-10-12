@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
                     .batch_get(keys)
                     .await?
                     .into_iter()
-                    .map(|(key, value)| { (decode(key), decode(value)) })
+                    .map(|value| decode(value))
                     .collect_vec()
             )
         }

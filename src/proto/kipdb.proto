@@ -62,7 +62,7 @@ message BatchGetReq {
   repeated bytes keys = 1;
 }
 message BatchGetResp {
-  repeated KV kvs = 1;
+  repeated bytes values = 1;
 }
 
 message SizeOfDiskResp {

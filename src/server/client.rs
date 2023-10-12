@@ -74,15 +74,10 @@ impl KipdbClient {
     }
 
     #[inline]
-    pub async fn batch_get(&mut self, keys: Vec<Key>) -> Result<Vec<KV>> {
+    pub async fn batch_get(&mut self, keys: Vec<Key>) -> Result<Vec<Value>> {
         let req = tonic::Request::new(BatchGetReq { keys });
         let resp = self.conn.batch_get(req).await?;
-        Ok(resp
-            .into_inner()
-            .kvs
-            .into_iter()
-            .map(|kv| (kv.key, kv.value))
-            .collect())
+        Ok(resp.into_inner().values)
     }
 
     #[inline]

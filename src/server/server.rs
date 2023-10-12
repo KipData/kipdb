@@ -8,6 +8,7 @@ use crate::proto::{
     SizeOfDiskResp,
 };
 use bytes::Bytes;
+use itertools::Itertools;
 use std::sync::Arc;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -111,18 +112,18 @@ impl KipdbRpc for KipdbServer {
         request: Request<BatchGetReq>,
     ) -> Result<Response<BatchGetResp>, Status> {
         let req = request.into_inner();
-        let mut kvs = Vec::new();
+        let mut values = Vec::new();
         // TODO change kv_store.get return type for parallel processing
         for key in req.keys {
-            let value = self.kv_store.get(key.as_slice()).await.map_or(None, |v| v);
-            if value.is_some() {
-                kvs.push(Kv {
-                    key,
-                    value: value.unwrap().to_vec(),
-                });
-            }
+            values.push(
+                self.kv_store
+                    .get(key.as_slice())
+                    .await
+                    .map_or(None, |v| v)
+                    .map_or(vec![], |v| v.to_vec()),
+            );
         }
-        Ok(Response::new(BatchGetResp { kvs }))
+        Ok(Response::new(BatchGetResp { values }))
     }
 
     async fn size_of_disk(
