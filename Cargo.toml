@@ -9,6 +9,7 @@ repository = "https://gitee.com/Kould/KipDB"
 readme = "README.md"
 keywords = ["async", "KV-Store", "Persistence"]
 categories = ["development-tools", "database"]
+default-run = "server"
 
 [[bin]]
 name = "cli"
