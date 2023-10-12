@@ -2,8 +2,9 @@ FROM rust:1.62 as builder
 
 ADD ./src ./builder/src
 ADD ./Cargo.toml ./builder/Cargo.toml
-ADD ./.cargo ./builder/.cargo
 ADD ./build.rs ./builder/build.rs
+
+RUN apt update && apt install -y protobuf-compiler
 
 WORKDIR /builder
 
