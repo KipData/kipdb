@@ -34,6 +34,8 @@ jobs:
           profile: minimal
           toolchain: nightly-2023-04-07
       - uses: actions/checkout@v2
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
       - name: Build
         uses: actions-rs/cargo@v1
         with:
@@ -48,6 +50,8 @@ jobs:
           profile: minimal
           toolchain: nightly-2023-04-07
       - uses: actions/checkout@v2
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
       - name: Test
         uses: actions-rs/cargo@v1
         with:

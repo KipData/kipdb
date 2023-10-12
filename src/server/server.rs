@@ -4,11 +4,9 @@ use crate::kernel::Storage;
 use crate::proto::kipdb_rpc_server::{KipdbRpc, KipdbRpcServer};
 use crate::proto::{
     BatchGetReq, BatchGetResp, BatchRemoveReq, BatchRemoveResp, BatchSetReq, BatchSetResp, Empty,
-    FlushResp, GetReq, GetResp, Kv, LenResp, RemoveReq, RemoveResp, SetReq, SetResp,
-    SizeOfDiskResp,
+    FlushResp, GetReq, GetResp, LenResp, RemoveReq, RemoveResp, SetReq, SetResp, SizeOfDiskResp,
 };
 use bytes::Bytes;
-use itertools::Itertools;
 use std::sync::Arc;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};

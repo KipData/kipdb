@@ -1,14 +1,12 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use itertools::Itertools;
-use kip_db::cmd::Command;
 use kip_db::server::client::KipdbClient;
 use kip_db::server::client::Result;
 use kip_db::DEFAULT_PORT;
+use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 const DONE: &str = "Done!";
-
-const UNKNOWN_COMMAND: &str = "Unknown Command!";
 
 #[derive(Parser, Debug)]
 #[clap(name = "KipDB-Cli", version, author, about = "Issue KipDB Commands")]
@@ -95,7 +93,6 @@ async fn main() -> Result<()> {
             client.flush().await?;
             DONE.to_string()
         }
-        _ => UNKNOWN_COMMAND.to_string(),
     };
 
     info!("{line}");
@@ -109,4 +106,33 @@ fn encode(value: &String) -> Vec<u8> {
 
 fn decode(value: Vec<u8>) -> String {
     bincode::deserialize(value.as_slice()).unwrap()
+}
+
+#[derive(Serialize, Deserialize, Debug, Subcommand)]
+#[non_exhaustive]
+pub enum Command {
+    Set {
+        key: String,
+        value: String,
+    },
+    Remove {
+        key: String,
+    },
+    Get {
+        key: String,
+    },
+    Flush,
+
+    #[clap(about = "cli.exe batch-set [keys]... [values]...")]
+    BatchSet {
+        batch: Vec<String>,
+    },
+    BatchRemove {
+        keys: Vec<String>,
+    },
+    BatchGet {
+        keys: Vec<String>,
+    },
+    SizeOfDisk,
+    Len,
 }

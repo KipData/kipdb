@@ -2,7 +2,7 @@
 #![feature(cursor_remaining)]
 #![feature(slice_pattern)]
 #![feature(bound_map)]
-pub mod cmd;
+
 pub mod config;
 pub mod error;
 pub mod kernel;
