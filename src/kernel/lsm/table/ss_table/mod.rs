@@ -9,7 +9,7 @@ use crate::kernel::lsm::table::ss_table::block::{
 use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
 use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::table::Table;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
 use growable_bloom_filter::GrowableBloom;
@@ -49,7 +49,7 @@ impl SSTable {
         vec_data: Vec<KeyValue>,
         level: usize,
         io_type: IoType,
-    ) -> Result<SSTable> {
+    ) -> KernelResult<SSTable> {
         let len = vec_data.len();
         let data_restart_interval = config.data_restart_interval;
         let index_restart_interval = config.index_restart_interval;
@@ -115,7 +115,7 @@ impl SSTable {
     pub(crate) fn load_from_file(
         mut reader: Box<dyn IoReader>,
         cache: Arc<BlockCache>,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         let gen = reader.get_gen();
         let footer = Footer::read_to_file(reader.as_mut())?;
         let Footer {
@@ -145,7 +145,7 @@ impl SSTable {
         })
     }
 
-    pub(crate) fn data_block(&self, index: Index) -> Result<BlockType> {
+    pub(crate) fn data_block(&self, index: Index) -> KernelResult<BlockType> {
         Ok(BlockType::Data(Self::loading_block(
             self.reader.lock().as_mut(),
             index.offset(),
@@ -155,7 +155,7 @@ impl SSTable {
         )?))
     }
 
-    pub(crate) fn index_block(&self) -> Result<&Block<Index>> {
+    pub(crate) fn index_block(&self) -> KernelResult<&Block<Index>> {
         self.cache
             .get_or_insert((self.gen(), None), |_| {
                 let Footer {
@@ -184,7 +184,7 @@ impl SSTable {
         len: usize,
         compress_type: CompressType,
         restart_interval: usize,
-    ) -> Result<Block<T>>
+    ) -> KernelResult<Block<T>>
     where
         T: BlockItem,
     {
@@ -197,7 +197,7 @@ impl SSTable {
 }
 
 impl Table for SSTable {
-    fn query(&self, key: &[u8]) -> Result<Option<KeyValue>> {
+    fn query(&self, key: &[u8]) -> KernelResult<Option<KeyValue>> {
         if self.meta.filter.contains(key) {
             let index_block = self.index_block()?;
 
@@ -233,7 +233,7 @@ impl Table for SSTable {
         self.footer.level as usize
     }
 
-    fn iter<'a>(&'a self) -> Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
+    fn iter<'a>(&'a self) -> KernelResult<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
         Ok(SSTableIter::new(self).map(Box::new)?)
     }
 }
@@ -249,7 +249,7 @@ mod tests {
     use crate::kernel::lsm::table::{Table, TableType};
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use bincode::Options;
     use bytes::Bytes;
     use std::collections::hash_map::RandomState;
@@ -257,7 +257,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_ss_table() -> Result<()> {
+    fn test_ss_table() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let value = Bytes::copy_from_slice(

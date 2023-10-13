@@ -1,6 +1,6 @@
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use bytes::Bytes;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -38,7 +38,7 @@ impl<'a> MergingIter<'a> {
     #[allow(dead_code, clippy::mutable_key_type)]
     pub(crate) fn new(
         mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         let mut map_buf = BTreeMap::new();
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {
@@ -58,7 +58,7 @@ impl<'a> MergingIter<'a> {
 impl<'a> Iter<'a> for MergingIter<'a> {
     type Item = KeyValue;
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         while let Some((IterKey { num, .. }, old_item)) = self.map_buf.pop_first() {
             if let Some(item) = self.vec_iter[num].try_next()? {
                 Self::buf_map_insert(&mut self.map_buf, num, item);
@@ -86,7 +86,7 @@ impl<'a> Iter<'a> for MergingIter<'a> {
     }
 
     #[allow(clippy::mutable_key_type)]
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         let mut seek_map = BTreeMap::new();
 
         for (num, iter) in self.vec_iter.iter_mut().enumerate() {

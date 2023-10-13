@@ -1,5 +1,5 @@
 use crate::kernel::io::{FileExtension, IoReader, IoType, IoWriter};
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ impl DirectIoReader {
         dir_path: Arc<PathBuf>,
         gen: i64,
         extension: Arc<FileExtension>,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
         let fs = File::open(path)?;
 
@@ -41,7 +41,7 @@ impl DirectIoWriter {
         dir_path: Arc<PathBuf>,
         gen: i64,
         extension: Arc<FileExtension>,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
         let fs = OpenOptions::new()
             .create(true)
@@ -96,7 +96,7 @@ impl Seek for DirectIoWriter {
 }
 
 impl IoWriter for DirectIoWriter {
-    fn current_pos(&mut self) -> Result<u64> {
+    fn current_pos(&mut self) -> KernelResult<u64> {
         Ok(self.fs.stream_position()?)
     }
 }

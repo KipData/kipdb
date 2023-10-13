@@ -6,7 +6,7 @@ use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::{collect_gen, Table};
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::status::VersionStatus;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
 use futures::future;
@@ -56,7 +56,7 @@ impl Compactor {
     pub(crate) async fn check_then_compaction(
         &mut self,
         option_tx: Option<oneshot::Sender<()>>,
-    ) -> Result<()> {
+    ) -> KernelResult<()> {
         let is_force = option_tx.is_some();
 
         if let Some((gen, values)) = self.mem_table().try_swap(is_force)? {
@@ -79,7 +79,11 @@ impl Compactor {
     /// 持久化immutable_table为SSTable
     ///
     /// 请注意：vec_values必须是依照key值有序的
-    pub(crate) async fn minor_compaction(&self, gen: i64, values: Vec<KeyValue>) -> Result<()> {
+    pub(crate) async fn minor_compaction(
+        &self,
+        gen: i64,
+        values: Vec<KeyValue>,
+    ) -> KernelResult<()> {
         if !values.is_empty() {
             let (scope, meta) = self.ver_status().loader().create(
                 gen,
@@ -120,7 +124,7 @@ impl Compactor {
         scope: Scope,
         mut vec_ver_edit: Vec<VersionEdit>,
         mut is_skip_sized: bool,
-    ) -> Result<()> {
+    ) -> KernelResult<()> {
         let config = self.config();
         let mut is_over = false;
 
@@ -188,7 +192,7 @@ impl Compactor {
         level: usize,
         target: &Scope,
         is_skip_sized: bool,
-    ) -> Result<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
+    ) -> KernelResult<Option<(usize, DelNodeTuple, MergeShardingVec)>> {
         let version = self.ver_status().current().await;
         let config = self.config();
         let next_level = level + 1;
@@ -238,7 +242,7 @@ impl Compactor {
         tables_l: Vec<&dyn Table>,
         tables_ll: Vec<&dyn Table>,
         file_size: usize,
-    ) -> Result<MergeShardingVec> {
+    ) -> KernelResult<MergeShardingVec> {
         // SSTables的Gen会基于时间有序生成,所有以此作为SSTables的排序依据
         let map_futures_l = tables_l
             .iter()
@@ -274,7 +278,7 @@ impl Compactor {
         Ok(data_sharding(vec_cmd_data, file_size))
     }
 
-    fn table_load_data<F>(table: &&dyn Table, fn_is_filter: F) -> Result<Vec<KeyValue>>
+    fn table_load_data<F>(table: &&dyn Table, fn_is_filter: F) -> KernelResult<Vec<KeyValue>>
     where
         F: Fn(&Bytes) -> bool,
     {
@@ -314,7 +318,7 @@ mod tests {
     use crate::kernel::lsm::version::edit::VersionEdit;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
-    use crate::kernel::{Result, Storage};
+    use crate::kernel::{KernelResult, Storage};
     use bytes::Bytes;
     use itertools::Itertools;
     use std::collections::hash_map::RandomState;
@@ -324,7 +328,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_lsm_major_compactor() -> Result<()> {
+    fn test_lsm_major_compactor() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {
@@ -409,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn test_data_merge() -> Result<()> {
+    fn test_data_merge() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let config = Config::new(temp_dir.into_path());
@@ -503,7 +507,7 @@ mod tests {
     /// Level 1: [1,2]
     /// Level 2: [1,2],[3,4,5,6]
     #[test]
-    fn test_seek_compaction() -> Result<()> {
+    fn test_seek_compaction() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let config = Config::new(temp_dir.into_path());
 

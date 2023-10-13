@@ -1,4 +1,5 @@
-use crate::error::CacheError;
+use crate::kernel::KernelResult;
+use crate::KernelError;
 use parking_lot::Mutex;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -9,8 +10,6 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
-
-pub type Result<T> = std::result::Result<T, CacheError>;
 
 // 只读Node操作裸指针
 // https://course.rs/advance/concurrency-with-threads/send-sync.html#:~:text=%E5%AE%89%E5%85%A8%E7%9A%84%E4%BD%BF%E7%94%A8%E3%80%82-,%E4%B8%BA%E8%A3%B8%E6%8C%87%E9%92%88%E5%AE%9E%E7%8E%B0Send,-%E4%B8%8A%E9%9D%A2%E6%88%91%E4%BB%AC%E6%8F%90%E5%88%B0
@@ -115,10 +114,10 @@ impl<K, V> Node<K, V> {
 
 impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     #[inline]
-    pub fn new(cap: usize, sharding_size: usize, hasher: S) -> Result<Self> {
+    pub fn new(cap: usize, sharding_size: usize, hasher: S) -> KernelResult<Self> {
         let mut sharding_vec = Vec::with_capacity(sharding_size);
         if cap % sharding_size != 0 {
-            return Err(CacheError::ShardingNotAlign);
+            return Err(KernelError::ShardingNotAlign);
         }
         let sharding_cap = cap / sharding_size;
         for _ in 0..sharding_size {
@@ -160,9 +159,9 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     }
 
     #[inline]
-    pub fn get_or_insert<F>(&self, key: K, fn_once: F) -> Result<&V>
+    pub fn get_or_insert<F>(&self, key: K, fn_once: F) -> KernelResult<&V>
     where
-        F: FnOnce(&K) -> Result<V>,
+        F: FnOnce(&K) -> KernelResult<V>,
     {
         self.shard(&key)
             .lock()
@@ -184,9 +183,9 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
 
 impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     #[inline]
-    pub fn new(cap: usize) -> Result<Self> {
+    pub fn new(cap: usize) -> KernelResult<Self> {
         if cap < 1 {
-            return Err(CacheError::CacheSizeOverFlow);
+            return Err(KernelError::CacheSizeOverFlow);
         }
 
         Ok(Self {
@@ -306,9 +305,9 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         })
     }
 
-    fn get_or_insert_node<F>(&mut self, key: K, fn_once: F) -> Result<NodeReadPtr<K, V>>
+    fn get_or_insert_node<F>(&mut self, key: K, fn_once: F) -> KernelResult<NodeReadPtr<K, V>>
     where
-        F: FnOnce(&K) -> Result<V>,
+        F: FnOnce(&K) -> KernelResult<V>,
     {
         if let Some(node) = self.inner.get(&key) {
             let node = *node;
@@ -330,9 +329,9 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     }
 
     #[inline]
-    pub fn get_or_insert<F>(&mut self, key: K, fn_once: F) -> Result<&V>
+    pub fn get_or_insert<F>(&mut self, key: K, fn_once: F) -> KernelResult<&V>
     where
-        F: FnOnce(&K) -> Result<V>,
+        F: FnOnce(&K) -> KernelResult<V>,
     {
         self.get_or_insert_node(key, fn_once)
             .map(|node| unsafe { &node.as_ref().value })

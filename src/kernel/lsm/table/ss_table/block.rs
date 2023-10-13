@@ -1,6 +1,6 @@
 use crate::kernel::lsm::storage::Config;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::{Buf, BufMut, Bytes};
 use growable_bloom_filter::GrowableBloom;
@@ -58,7 +58,7 @@ where
         }
     }
 
-    pub(crate) fn encode(&self) -> Result<Vec<u8>> {
+    pub(crate) fn encode(&self) -> KernelResult<Vec<u8>> {
         let mut buf = Vec::new();
 
         let _ignore = buf.write_varint(self.unshared_len as u32)?;
@@ -69,7 +69,7 @@ where
         Ok(buf)
     }
 
-    pub(crate) fn batch_decode(cursor: &mut Cursor<Vec<u8>>) -> Result<Vec<(usize, Self)>> {
+    pub(crate) fn batch_decode(cursor: &mut Cursor<Vec<u8>>) -> KernelResult<Vec<(usize, Self)>> {
         let mut vec_entry = Vec::new();
         let mut index = 0;
 
@@ -81,7 +81,7 @@ where
         Ok(vec_entry)
     }
 
-    pub(crate) fn decode<R: Read>(reader: &mut R) -> Result<Entry<T>> {
+    pub(crate) fn decode<R: Read>(reader: &mut R) -> KernelResult<Entry<T>> {
         let unshared_len = reader.read_varint::<u32>()? as usize;
         let shared_len = reader.read_varint::<u32>()? as usize;
 
@@ -134,15 +134,15 @@ impl Index {
 
 pub(crate) trait BlockItem: Sized + Clone {
     /// 由于需要直接连续序列化，因此使用Read进行Bytes读取
-    fn decode<T>(reader: &mut T) -> Result<Self>
+    fn decode<T>(reader: &mut T) -> KernelResult<Self>
     where
         T: Read + ?Sized;
 
-    fn encode(&self) -> Result<Vec<u8>>;
+    fn encode(&self) -> KernelResult<Vec<u8>>;
 }
 
 impl BlockItem for Value {
-    fn decode<T>(mut reader: &mut T) -> Result<Self>
+    fn decode<T>(mut reader: &mut T) -> KernelResult<Self>
     where
         T: Read + ?Sized,
     {
@@ -158,7 +158,7 @@ impl BlockItem for Value {
         Ok(Value { value_len, bytes })
     }
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    fn encode(&self) -> KernelResult<Vec<u8>> {
         let mut buf = Vec::new();
         let _ = buf.write_varint(self.value_len as u32)?;
         if let Some(value) = &self.bytes {
@@ -169,7 +169,7 @@ impl BlockItem for Value {
 }
 
 impl BlockItem for Index {
-    fn decode<T>(mut reader: &mut T) -> Result<Self>
+    fn decode<T>(mut reader: &mut T) -> KernelResult<Self>
     where
         T: Read + ?Sized,
     {
@@ -179,7 +179,7 @@ impl BlockItem for Index {
         Ok(Index { offset, len })
     }
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    fn encode(&self) -> KernelResult<Vec<u8>> {
         let mut buf = Vec::new();
         let _ = buf.write_varint(self.offset)?;
         let _ = buf.write_varint(self.len as u32)?;
@@ -359,7 +359,7 @@ impl BlockBuilder {
     }
 
     /// 构建多个Block连续序列化组合成的两个Bytes 前者为多个DataBlock，后者为单个IndexBlock
-    pub(crate) fn build(mut self) -> Result<(Vec<u8>, Vec<u8>)> {
+    pub(crate) fn build(mut self) -> KernelResult<(Vec<u8>, Vec<u8>)> {
         self.build_();
 
         let mut offset = 0;
@@ -534,7 +534,7 @@ where
     /// 序列化后进行压缩
     ///
     /// 可选LZ4与不压缩
-    pub(crate) fn encode(&self, compress_type: CompressType) -> Result<Vec<u8>> {
+    pub(crate) fn encode(&self, compress_type: CompressType) -> KernelResult<Vec<u8>> {
         let buf = self.to_raw()?;
         Ok(match compress_type {
             CompressType::None => buf,
@@ -558,7 +558,7 @@ where
         buf: Vec<u8>,
         compress_type: CompressType,
         restart_interval: usize,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         let buf = match compress_type {
             CompressType::None => buf,
             CompressType::LZ4 => {
@@ -572,7 +572,7 @@ where
     }
 
     /// 读取Bytes进行Block的反序列化
-    pub(crate) fn from_raw(mut buf: Vec<u8>, restart_interval: usize) -> Result<Self> {
+    pub(crate) fn from_raw(mut buf: Vec<u8>, restart_interval: usize) -> KernelResult<Self> {
         let date_bytes_len = buf.len() - CRC_SIZE;
         if crc32fast::hash(&buf) == u32::decode_fixed(&buf[date_bytes_len..]) {
             return Err(KernelError::CrcMisMatch);
@@ -590,7 +590,7 @@ where
     /// 序列化该Block
     ///
     /// 与from_raw对应，序列化时会生成crc_code用于反序列化时校验
-    pub(crate) fn to_raw(&self) -> Result<Vec<u8>> {
+    pub(crate) fn to_raw(&self) -> KernelResult<Vec<u8>> {
         let mut bytes_block = Vec::with_capacity(DEFAULT_BLOCK_SIZE);
 
         bytes_block.append(
@@ -666,7 +666,7 @@ mod tests {
         Block, BlockBuilder, BlockItem, BlockOptions, CompressType, Entry, Index, Value,
     };
     use crate::kernel::utils::lru_cache::LruCache;
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use bincode::Options;
     use bytes::Bytes;
     use itertools::Itertools;
@@ -676,7 +676,7 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn test_entry_serialization() -> Result<()> {
+    fn test_entry_serialization() -> KernelResult<()> {
         let entry1 = Entry::new(
             0,
             1,
@@ -704,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn test_block() -> Result<()> {
+    fn test_block() -> KernelResult<()> {
         let value = Bytes::from_static(b"Let life be beautiful like summer flowers");
         let mut vec_data = Vec::new();
 
@@ -767,7 +767,7 @@ mod tests {
         Ok(())
     }
 
-    fn test_block_range<T: BlockItem + Eq + Debug>(block: &Block<T>) -> Result<()> {
+    fn test_block_range<T: BlockItem + Eq + Debug>(block: &Block<T>) -> KernelResult<()> {
         let all_item = block
             .vec_entry
             .iter()
@@ -814,7 +814,7 @@ mod tests {
         block: Block<Value>,
         compress_type: CompressType,
         restart_interval: usize,
-    ) -> Result<()> {
+    ) -> KernelResult<()> {
         let de_block = Block::decode(
             block.encode(compress_type)?,
             compress_type,

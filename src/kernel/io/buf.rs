@@ -1,5 +1,5 @@
 use crate::kernel::io::{FileExtension, IoReader, IoType, IoWriter};
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -22,7 +22,7 @@ impl BufIoReader {
         dir_path: Arc<PathBuf>,
         gen: i64,
         extension: Arc<FileExtension>,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
 
         let reader = BufReaderWithPos::new(File::open(path)?)?;
@@ -46,7 +46,7 @@ impl BufIoWriter {
         dir_path: Arc<PathBuf>,
         gen: i64,
         extension: Arc<FileExtension>,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         // 通过路径构造写入器
         let file = OpenOptions::new()
             .create(true)
@@ -103,7 +103,7 @@ impl Seek for BufIoWriter {
 }
 
 impl IoWriter for BufIoWriter {
-    fn current_pos(&mut self) -> Result<u64> {
+    fn current_pos(&mut self) -> KernelResult<u64> {
         Ok(self.writer.pos)
     }
 }
@@ -115,7 +115,7 @@ pub(crate) struct BufReaderWithPos<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> BufReaderWithPos<R> {
-    fn new(mut inner: R) -> Result<Self> {
+    fn new(mut inner: R) -> KernelResult<Self> {
         let pos = inner.stream_position()?;
         Ok(BufReaderWithPos {
             reader: BufReader::new(inner),
@@ -146,7 +146,7 @@ pub(crate) struct BufWriterWithPos<W: Write + Seek> {
 }
 
 impl<W: Write + Seek> BufWriterWithPos<W> {
-    fn new(mut inner: W) -> Result<Self> {
+    fn new(mut inner: W) -> KernelResult<Self> {
         let pos = inner.stream_position()?;
         Ok(BufWriterWithPos {
             writer: BufWriter::new(inner),

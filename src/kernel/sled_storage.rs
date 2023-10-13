@@ -23,26 +23,26 @@ impl Storage for SledStorage {
     }
 
     #[inline]
-    async fn open(path: impl Into<PathBuf> + Send) -> crate::kernel::Result<Self> {
+    async fn open(path: impl Into<PathBuf> + Send) -> crate::kernel::KernelResult<Self> {
         let db = Arc::new(sled::open(path.into())?);
 
         Ok(SledStorage { data_base: db })
     }
 
     #[inline]
-    async fn flush(&self) -> crate::kernel::Result<()> {
+    async fn flush(&self) -> crate::kernel::KernelResult<()> {
         let _ignore = self.data_base.flush_async().await?;
         Ok(())
     }
 
     #[inline]
-    async fn set(&self, key: Bytes, value: Bytes) -> crate::kernel::Result<()> {
+    async fn set(&self, key: Bytes, value: Bytes) -> crate::kernel::KernelResult<()> {
         let _ignore = self.data_base.insert(key.as_slice(), value.to_vec())?;
         Ok(())
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> crate::kernel::Result<Option<Bytes>> {
+    async fn get(&self, key: &[u8]) -> crate::kernel::KernelResult<Option<Bytes>> {
         match self.data_base.get(key)? {
             None => Ok(None),
             Some(i_vec) => Ok(Some(Bytes::from(i_vec.to_vec()))),
@@ -50,7 +50,7 @@ impl Storage for SledStorage {
     }
 
     #[inline]
-    async fn remove(&self, key: &[u8]) -> crate::kernel::Result<()> {
+    async fn remove(&self, key: &[u8]) -> crate::kernel::KernelResult<()> {
         match self.data_base.remove(key) {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(KernelError::KeyNotFound),
@@ -59,12 +59,12 @@ impl Storage for SledStorage {
     }
 
     #[inline]
-    async fn size_of_disk(&self) -> crate::kernel::Result<u64> {
+    async fn size_of_disk(&self) -> crate::kernel::KernelResult<u64> {
         Ok(self.data_base.size_on_disk()?)
     }
 
     #[inline]
-    async fn len(&self) -> crate::kernel::Result<usize> {
+    async fn len(&self) -> crate::kernel::KernelResult<usize> {
         Ok(self.data_base.len())
     }
 

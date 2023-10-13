@@ -3,7 +3,7 @@ pub(crate) mod direct;
 
 use crate::kernel::io::buf::{BufIoReader, BufIoWriter};
 use crate::kernel::io::direct::{DirectIoReader, DirectIoWriter};
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ pub enum IoType {
 
 impl IoFactory {
     #[inline]
-    pub fn reader(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoReader>> {
+    pub fn reader(&self, gen: i64, io_type: IoType) -> KernelResult<Box<dyn IoReader>> {
         let dir_path = Arc::clone(&self.dir_path);
         let extension = Arc::clone(&self.extension);
 
@@ -55,7 +55,7 @@ impl IoFactory {
     }
 
     #[inline]
-    pub fn writer(&self, gen: i64, io_type: IoType) -> Result<Box<dyn IoWriter>> {
+    pub fn writer(&self, gen: i64, io_type: IoType) -> KernelResult<Box<dyn IoWriter>> {
         let dir_path = Arc::clone(&self.dir_path);
         let extension = Arc::clone(&self.extension);
 
@@ -71,7 +71,7 @@ impl IoFactory {
     }
 
     #[inline]
-    pub fn new(dir_path: impl Into<PathBuf>, extension: FileExtension) -> Result<Self> {
+    pub fn new(dir_path: impl Into<PathBuf>, extension: FileExtension) -> KernelResult<Self> {
         let path_buf = dir_path.into();
         // 创建文件夹（如果他们缺失）
         fs::create_dir_all(&path_buf)?;
@@ -85,13 +85,13 @@ impl IoFactory {
     }
 
     #[inline]
-    pub fn clean(&self, gen: i64) -> Result<()> {
+    pub fn clean(&self, gen: i64) -> KernelResult<()> {
         fs::remove_file(self.extension.path_with_gen(&self.dir_path, gen))?;
         Ok(())
     }
 
     #[inline]
-    pub fn exists(&self, gen: i64) -> Result<bool> {
+    pub fn exists(&self, gen: i64) -> KernelResult<bool> {
         let path = self.extension.path_with_gen(&self.dir_path, gen);
         Ok(fs::try_exists(path)?)
     }
@@ -103,7 +103,7 @@ pub trait IoReader: Send + Sync + 'static + Read + Seek {
     fn get_path(&self) -> PathBuf;
 
     #[inline]
-    fn file_size(&self) -> Result<u64> {
+    fn file_size(&self) -> KernelResult<u64> {
         let path_buf = self.get_path();
         Ok(fs::metadata(path_buf)?.len())
     }
@@ -112,5 +112,5 @@ pub trait IoReader: Send + Sync + 'static + Read + Seek {
 }
 
 pub trait IoWriter: Send + Sync + 'static + Write + Seek {
-    fn current_pos(&mut self) -> Result<u64>;
+    fn current_pos(&mut self) -> KernelResult<u64>;
 }

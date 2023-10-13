@@ -1,6 +1,6 @@
 use crate::kernel::io::{FileExtension, IoFactory, IoType, IoWriter};
 use crate::kernel::lsm::storage::Gen;
-use crate::kernel::{sorted_gen_list, Result};
+use crate::kernel::{sorted_gen_list, KernelResult};
 use crate::KernelError;
 use integer_encoding::FixedInt;
 use std::cmp::min;
@@ -26,9 +26,9 @@ impl LogLoader {
         path_name: (&str, Option<i64>),
         io_type: IoType,
         fn_decode: F,
-    ) -> Result<(Self, Vec<R>, i64)>
+    ) -> KernelResult<(Self, Vec<R>, i64)>
     where
-        F: Fn(&mut Vec<u8>) -> Result<R>,
+        F: Fn(&mut Vec<u8>) -> KernelResult<R>,
     {
         let (loader, log_gen) = Self::_reload(wal_dir_path, path_name, io_type)?;
         let reload_data = loader.load(log_gen, fn_decode).unwrap_or(Vec::new());
@@ -40,7 +40,7 @@ impl LogLoader {
         wal_dir_path: &Path,
         path_name: (&str, Option<i64>),
         io_type: IoType,
-    ) -> Result<(Self, i64)> {
+    ) -> KernelResult<(Self, i64)> {
         let (path, name) = path_name;
         let wal_path = wal_dir_path.join(path);
 
@@ -58,9 +58,9 @@ impl LogLoader {
     }
 
     /// 通过Gen载入数据进行读取
-    pub(crate) fn load<F, R>(&self, gen: i64, fn_decode: F) -> Result<Vec<R>>
+    pub(crate) fn load<F, R>(&self, gen: i64, fn_decode: F) -> KernelResult<Vec<R>>
     where
-        F: Fn(&mut Vec<u8>) -> Result<R>,
+        F: Fn(&mut Vec<u8>) -> KernelResult<R>,
     {
         let mut reader = LogReader::new(self.factory.reader(gen, self.io_type)?);
         let mut vec_data = Vec::new();
@@ -75,11 +75,11 @@ impl LogLoader {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn clean(&self, gen: i64) -> Result<()> {
+    pub(crate) fn clean(&self, gen: i64) -> KernelResult<()> {
         self.factory.clean(gen)
     }
 
-    pub(crate) fn writer(&self, gen: i64) -> Result<LogWriter<Box<dyn IoWriter>>> {
+    pub(crate) fn writer(&self, gen: i64) -> KernelResult<LogWriter<Box<dyn IoWriter>>> {
         let new_fs = self.factory.writer(gen, self.io_type)?;
         Ok(LogWriter::new(new_fs))
     }
@@ -129,11 +129,11 @@ impl<W: Write + Seek> LogWriter<W> {
         w
     }
 
-    pub(crate) fn seek_end(&mut self) -> Result<u64> {
+    pub(crate) fn seek_end(&mut self) -> KernelResult<u64> {
         Ok(self.dst.seek(SeekFrom::End(0))?)
     }
 
-    pub(crate) fn add_record(&mut self, r: &[u8]) -> Result<usize> {
+    pub(crate) fn add_record(&mut self, r: &[u8]) -> KernelResult<usize> {
         let mut record = r;
         let mut len = 0;
 
@@ -171,7 +171,7 @@ impl<W: Write + Seek> LogWriter<W> {
         Ok(len)
     }
 
-    fn emit_record(&mut self, t: RecordType, data: &[u8], len: usize) -> Result<usize> {
+    fn emit_record(&mut self, t: RecordType, data: &[u8], len: usize) -> KernelResult<usize> {
         let crc = crc32fast::hash(&data[0..len]);
 
         let mut header_bytes = crc.encode_fixed_vec();
@@ -187,7 +187,7 @@ impl<W: Write + Seek> LogWriter<W> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn flush(&mut self) -> Result<()> {
+    pub(crate) fn flush(&mut self) -> KernelResult<()> {
         self.dst.flush()?;
         Ok(())
     }
@@ -211,7 +211,7 @@ impl<R: Read + Seek> LogReader<R> {
     }
 
     /// EOF is signalled by Ok(0)
-    pub(crate) fn read(&mut self, dst: &mut Vec<u8>) -> Result<usize> {
+    pub(crate) fn read(&mut self, dst: &mut Vec<u8>) -> KernelResult<usize> {
         let mut dst_offset = 0;
         let mut head_pos = 0;
 
@@ -267,7 +267,7 @@ mod tests {
     use crate::kernel::lsm::log::{LogLoader, LogReader, LogWriter, HEADER_SIZE};
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::storage::Config;
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use std::fs::{File, OpenOptions};
     use std::io::Cursor;
     use std::mem;
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reader() -> Result<()> {
+    fn test_reader() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let file_path = temp_dir.path().join("test.txt");
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn test_log_loader() -> Result<()> {
+    fn test_log_loader() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let config = Config::new(temp_dir.into_path());

@@ -1,13 +1,13 @@
 use clap::Parser;
 
-use kip_db::server::client::Result;
+use kip_db::server::client::ConnectionResult;
 use kip_db::server::server::serve;
 use kip_db::{DEFAULT_PORT, LOCAL_IP};
 
 /// 服务启动方法
 /// 二进制执行文件调用方法:./kip-db-cli
 #[tokio::main]
-pub async fn main() -> Result<()> {
+pub async fn main() -> ConnectionResult<()> {
     tracing_subscriber::fmt::try_init().unwrap();
 
     let cli = Cli::parse();

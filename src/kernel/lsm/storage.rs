@@ -9,7 +9,7 @@ use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::lsm::{query_and_compaction, version};
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::kernel::{lock_or_time_out, Storage, DEFAULT_LOCK_FILE};
 use crate::KernelError;
 use async_trait::async_trait;
@@ -83,7 +83,7 @@ pub(crate) struct StoreInner {
 }
 
 impl StoreInner {
-    pub(crate) async fn new(config: Config) -> Result<Self> {
+    pub(crate) async fn new(config: Config) -> KernelResult<Self> {
         let mem_table = MemTable::new(&config)?;
         let ver_status =
             VersionStatus::load_with_path(config.clone(), mem_table.log_loader_clone())?;
@@ -107,12 +107,12 @@ impl Storage for KipStorage {
     }
 
     #[inline]
-    async fn open(path: impl Into<PathBuf> + Send) -> Result<Self> {
+    async fn open(path: impl Into<PathBuf> + Send) -> KernelResult<Self> {
         KipStorage::open_with_config(Config::new(path.into())).await
     }
 
     #[inline]
-    async fn flush(&self) -> Result<()> {
+    async fn flush(&self) -> KernelResult<()> {
         let (tx, rx) = oneshot::channel();
 
         self.compactor_tx.send(CompactTask::Flush(Some(tx))).await?;
@@ -123,12 +123,12 @@ impl Storage for KipStorage {
     }
 
     #[inline]
-    async fn set(&self, key: Bytes, value: Bytes) -> Result<()> {
+    async fn set(&self, key: Bytes, value: Bytes) -> KernelResult<()> {
         self.append_cmd_data((key, Some(value))).await
     }
 
     #[inline]
-    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+    async fn get(&self, key: &[u8]) -> KernelResult<Option<Bytes>> {
         if let Some((_, value)) = self.mem_table().find(key) {
             return Ok(value);
         }
@@ -142,7 +142,7 @@ impl Storage for KipStorage {
     }
 
     #[inline]
-    async fn remove(&self, key: &[u8]) -> Result<()> {
+    async fn remove(&self, key: &[u8]) -> KernelResult<()> {
         match self.get(key).await? {
             Some(_) => {
                 self.append_cmd_data((Bytes::copy_from_slice(key), None))
@@ -153,12 +153,12 @@ impl Storage for KipStorage {
     }
 
     #[inline]
-    async fn size_of_disk(&self) -> Result<u64> {
+    async fn size_of_disk(&self) -> KernelResult<u64> {
         Ok(self.current_version().await.size_of_disk())
     }
 
     #[inline]
-    async fn len(&self) -> Result<usize> {
+    async fn len(&self) -> KernelResult<usize> {
         Ok(self.current_version().await.len() + self.mem_table().len())
     }
 
@@ -180,7 +180,7 @@ impl Drop for KipStorage {
 
 impl KipStorage {
     /// 追加数据
-    async fn append_cmd_data(&self, data: KeyValue) -> Result<()> {
+    async fn append_cmd_data(&self, data: KeyValue) -> KernelResult<()> {
         if self.mem_table().insert_data(data)? {
             if let Err(TrySendError::Closed(_)) =
                 self.compactor_tx.try_send(CompactTask::Flush(None))
@@ -194,7 +194,7 @@ impl KipStorage {
 
     /// 使用Config进行LsmStore初始化
     #[inline]
-    pub async fn open_with_config(config: Config) -> Result<Self>
+    pub async fn open_with_config(config: Config) -> KernelResult<Self>
     where
         Self: Sized,
     {
@@ -257,7 +257,12 @@ impl KipStorage {
     }
 
     #[inline]
-    pub async fn manual_compaction(&self, min: Bytes, max: Bytes, level: usize) -> Result<()> {
+    pub async fn manual_compaction(
+        &self,
+        min: Bytes,
+        max: Bytes,
+        level: usize,
+    ) -> KernelResult<()> {
         if min <= max {
             self.compactor_tx
                 .send(CompactTask::Seek((Scope::from_range(0, min, max), level)))
@@ -268,7 +273,7 @@ impl KipStorage {
     }
 
     #[allow(dead_code)]
-    async fn flush_background(&self) -> Result<()> {
+    async fn flush_background(&self) -> KernelResult<()> {
         self.compactor_tx.send(CompactTask::Flush(None)).await?;
 
         Ok(())

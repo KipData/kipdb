@@ -6,7 +6,7 @@ use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::lsm::version::DEFAULT_VERSION_PATH;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use bytes::Bytes;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use tokio::time;
 
 #[test]
-fn test_version_clean() -> Result<()> {
+fn test_version_clean() -> KernelResult<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {
@@ -108,7 +108,7 @@ fn test_version_clean() -> Result<()> {
 }
 
 #[test]
-fn test_version_apply_and_log() -> Result<()> {
+fn test_version_apply_and_log() -> KernelResult<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
     tokio_test::block_on(async move {

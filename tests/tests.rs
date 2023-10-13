@@ -2,20 +2,20 @@ use bytes::Bytes;
 use kip_db::kernel::io::{FileExtension, IoFactory, IoType};
 use kip_db::kernel::lsm::storage::KipStorage;
 use kip_db::kernel::sled_storage::SledStorage;
-use kip_db::kernel::Result;
+use kip_db::kernel::KernelResult;
 use kip_db::kernel::Storage;
 use std::io::{Read, Seek, SeekFrom, Write};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
 #[test]
-fn get_stored_value() -> Result<()> {
+fn get_stored_value() -> KernelResult<()> {
     get_stored_value_with_kv_store::<SledStorage>()?;
     get_stored_value_with_kv_store::<KipStorage>()?;
     Ok(())
 }
 
-fn get_stored_value_with_kv_store<T: Storage>() -> Result<()> {
+fn get_stored_value_with_kv_store<T: Storage>() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let key2: Vec<u8> = encode_key("key2")?;
@@ -48,14 +48,14 @@ fn get_stored_value_with_kv_store<T: Storage>() -> Result<()> {
 
 // Should overwrite existent value.
 #[test]
-fn overwrite_value() -> Result<()> {
+fn overwrite_value() -> KernelResult<()> {
     overwrite_value_with_kv_store::<SledStorage>()?;
     overwrite_value_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
 
-fn overwrite_value_with_kv_store<T: Storage>() -> Result<()> {
+fn overwrite_value_with_kv_store<T: Storage>() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let value1: Vec<u8> = encode_key("value1")?;
@@ -103,14 +103,14 @@ fn overwrite_value_with_kv_store<T: Storage>() -> Result<()> {
 
 // Should get `None` when getting a non-existent key.
 #[test]
-fn get_non_existent_value() -> Result<()> {
+fn get_non_existent_value() -> KernelResult<()> {
     get_non_existent_value_with_kv_store::<SledStorage>()?;
     get_non_existent_value_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
 
-fn get_non_existent_value_with_kv_store<T: Storage>() -> Result<()> {
+fn get_non_existent_value_with_kv_store<T: Storage>() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let key2: Vec<u8> = encode_key("key2")?;
@@ -135,13 +135,13 @@ fn get_non_existent_value_with_kv_store<T: Storage>() -> Result<()> {
 }
 
 #[test]
-fn remove_non_existent_key() -> Result<()> {
+fn remove_non_existent_key() -> KernelResult<()> {
     remove_non_existent_key_with_kv_store::<SledStorage>()?;
     remove_non_existent_key_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
-fn remove_non_existent_key_with_kv_store<T: Storage>() -> Result<()> {
+fn remove_non_existent_key_with_kv_store<T: Storage>() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
 
@@ -154,14 +154,14 @@ fn remove_non_existent_key_with_kv_store<T: Storage>() -> Result<()> {
 }
 
 #[test]
-fn remove_key() -> Result<()> {
+fn remove_key() -> KernelResult<()> {
     remove_key_with_kv_store::<SledStorage>()?;
     remove_key_with_kv_store::<KipStorage>()?;
 
     Ok(())
 }
 
-fn remove_key_with_kv_store<T: Storage>() -> Result<()> {
+fn remove_key_with_kv_store<T: Storage>() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let key1: Vec<u8> = encode_key("key1")?;
         let value1: Vec<u8> = encode_key("value1")?;
@@ -181,7 +181,7 @@ fn remove_key_with_kv_store<T: Storage>() -> Result<()> {
 // Insert data until total size of the directory decreases.
 // Test data correctness after compaction.
 #[test]
-fn compaction() -> Result<()> {
+fn compaction() -> KernelResult<()> {
     compaction_with_kv_store::<SledStorage>()?;
     compaction_with_kv_store::<KipStorage>()?;
 
@@ -189,7 +189,7 @@ fn compaction() -> Result<()> {
 }
 
 // 如果此处出现异常，可以尝试降低压缩阈值或者提高检测时间
-fn compaction_with_kv_store<T: Storage>() -> Result<()> {
+fn compaction_with_kv_store<T: Storage>() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let kv_store = T::open(temp_dir.path()).await?;
@@ -243,7 +243,7 @@ fn compaction_with_kv_store<T: Storage>() -> Result<()> {
 }
 
 #[test]
-fn test_io() -> Result<()> {
+fn test_io() -> KernelResult<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let factory = IoFactory::new(temp_dir.path(), FileExtension::Log).unwrap();
 
@@ -253,7 +253,7 @@ fn test_io() -> Result<()> {
     Ok(())
 }
 
-fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
+fn io_type_test(factory: &IoFactory, io_type: IoType) -> KernelResult<()> {
     let mut writer = factory.writer(1, io_type)?;
     let data_write1 = vec![b'1', b'2', b'3'];
     let data_write2 = vec![b'4', b'5', b'6'];
@@ -286,6 +286,6 @@ fn io_type_test(factory: &IoFactory, io_type: IoType) -> Result<()> {
     Ok(())
 }
 
-fn encode_key(key: &str) -> Result<Vec<u8>> {
+fn encode_key(key: &str) -> KernelResult<Vec<u8>> {
     Ok(bincode::serialize(key)?)
 }

@@ -1,5 +1,5 @@
 use crate::kernel::io::IoReader;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use serde::{Deserialize, Serialize};
 use std::io::SeekFrom;
 
@@ -20,7 +20,7 @@ pub(crate) struct Footer {
 
 impl Footer {
     /// 从对应文件的IOHandler中将Footer读取出来
-    pub(crate) fn read_to_file(reader: &mut dyn IoReader) -> Result<Self> {
+    pub(crate) fn read_to_file(reader: &mut dyn IoReader) -> KernelResult<Self> {
         let mut buf = [0; TABLE_FOOTER_SIZE];
 
         let _ = reader.seek(SeekFrom::End(-(TABLE_FOOTER_SIZE as i64)))?;
@@ -33,10 +33,10 @@ impl Footer {
 #[cfg(test)]
 mod test {
     use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
 
     #[test]
-    fn test_footer() -> Result<()> {
+    fn test_footer() -> KernelResult<()> {
         let info = Footer {
             level: 0,
             index_offset: 0,

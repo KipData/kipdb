@@ -4,7 +4,7 @@ use crate::kernel::lsm::table::ss_table::block::{BlockType, Index, Value};
 use crate::kernel::lsm::table::ss_table::block_iter::BlockIter;
 use crate::kernel::lsm::table::ss_table::SSTable;
 use crate::kernel::lsm::table::Table;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::KernelError;
 
 pub(crate) struct SSTableIter<'a> {
@@ -14,7 +14,7 @@ pub(crate) struct SSTableIter<'a> {
 }
 
 impl<'a> SSTableIter<'a> {
-    pub(crate) fn new(ss_table: &'a SSTable) -> Result<SSTableIter<'a>> {
+    pub(crate) fn new(ss_table: &'a SSTable) -> KernelResult<SSTableIter<'a>> {
         let mut index_iter = BlockIter::new(ss_table.index_block()?);
         let index = index_iter.try_next()?.ok_or(KernelError::DataEmpty)?.1;
         let data_iter = Self::data_iter_init(ss_table, index)?;
@@ -26,7 +26,7 @@ impl<'a> SSTableIter<'a> {
         })
     }
 
-    fn data_iter_init(ss_table: &'a SSTable, index: Index) -> Result<BlockIter<'a, Value>> {
+    fn data_iter_init(ss_table: &'a SSTable, index: Index) -> KernelResult<BlockIter<'a, Value>> {
         let block = {
             ss_table
                 .cache
@@ -44,7 +44,7 @@ impl<'a> SSTableIter<'a> {
         Ok(BlockIter::new(block))
     }
 
-    fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> Result<Option<KeyValue>> {
+    fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> KernelResult<Option<KeyValue>> {
         self.data_iter = Self::data_iter_init(self.ss_table, index)?;
         Ok(self
             .data_iter
@@ -54,7 +54,7 @@ impl<'a> SSTableIter<'a> {
 }
 
 impl<'a> ForwardIter<'a> for SSTableIter<'a> {
-    fn try_prev(&mut self) -> Result<Option<Self::Item>> {
+    fn try_prev(&mut self) -> KernelResult<Option<Self::Item>> {
         match self.data_iter.try_prev()? {
             None => {
                 if let Some((_, index)) = self.index_iter.try_prev()? {
@@ -71,7 +71,7 @@ impl<'a> ForwardIter<'a> for SSTableIter<'a> {
 impl<'a> Iter<'a> for SSTableIter<'a> {
     type Item = KeyValue;
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         match self.data_iter.try_next()? {
             None => {
                 if let Some((_, index)) = self.index_iter.try_next()? {
@@ -88,7 +88,7 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
         self.data_iter.is_valid()
     }
 
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         if let Some((_, index)) = self.index_iter.seek(seek)? {
             self.data_iter_seek(seek, index)
         } else {
@@ -106,7 +106,7 @@ mod tests {
     use crate::kernel::lsm::table::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
     use crate::kernel::utils::lru_cache::ShardingLruCache;
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use bincode::Options;
     use bytes::Bytes;
     use std::collections::hash_map::RandomState;
@@ -114,7 +114,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_iterator() -> Result<()> {
+    fn test_iterator() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let config = Config::new(temp_dir.into_path());
