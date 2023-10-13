@@ -10,10 +10,10 @@ use tokio::sync::oneshot::error::RecvError;
 #[non_exhaustive]
 pub enum KernelError {
     /// IO error
-    #[error("{0}")]
+    #[error(transparent)]
     Io(#[from] io::Error),
 
-    #[error("{0}")]
+    #[error(transparent)]
     RecvError(#[from] RecvError),
 
     #[error("Failed to send compact task")]
@@ -23,7 +23,7 @@ pub enum KernelError {
     SendCleanTagError(#[from] SendError<CleanTag>),
 
     /// Serialization or deserialization error
-    #[error("{0}")]
+    #[error(transparent)]
     SerdeBinCode(#[from] Box<bincode::ErrorKind>),
 
     /// Remove no-existent key error
@@ -42,7 +42,7 @@ pub enum KernelError {
     #[error("CRC code does not match")]
     CrcMisMatch,
 
-    #[error("{0}")]
+    #[error(transparent)]
     SledErr(#[from] sled::Error),
 
     #[error("Cache size overflow")]
@@ -80,26 +80,36 @@ pub enum KernelError {
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum ConnectionError {
-    #[error("{0}")]
+    #[error(transparent)]
     IO(#[from] io::Error),
+
     #[error("disconnected")]
     Disconnected,
+
     #[error("write failed")]
     WriteFailed,
+
     #[error("wrong instruction")]
     WrongInstruction,
+
     #[error("encode error")]
     EncodeErr,
+
     #[error("decode error")]
     DecodeErr,
+
     #[error("server flush error")]
     FlushError,
+
     #[error("Failed to connect to server, {0}")]
     TonicTransportErr(#[from] tonic::transport::Error),
+
     #[error("Failed to call server, {0}")]
     TonicFailureStatus(#[from] tonic::Status),
+
     #[error("Failed to parse addr, {0}")]
     AddrParseError(#[from] std::net::AddrParseError),
-    #[error("{0}")]
+
+    #[error(transparent)]
     KernelError(#[from] KernelError),
 }
