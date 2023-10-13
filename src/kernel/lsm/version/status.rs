@@ -7,7 +7,7 @@ use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::{
     snapshot_gen, Version, DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH,
 };
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use itertools::Itertools;
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,7 +30,7 @@ pub(crate) struct VersionStatus {
 }
 
 impl VersionStatus {
-    pub(crate) fn load_with_path(config: Config, wal: LogLoader) -> Result<Self> {
+    pub(crate) fn load_with_path(config: Config, wal: LogLoader) -> KernelResult<Self> {
         let sst_path = config.path().join(DEFAULT_SS_TABLE_PATH);
         let sst_factory = Arc::new(IoFactory::new(sst_path, FileExtension::SSTable)?);
         let ss_table_loader = Arc::new(TableLoader::new(
@@ -81,7 +81,7 @@ impl VersionStatus {
         &self,
         vec_version_edit: Vec<VersionEdit>,
         snapshot_threshold: usize,
-    ) -> Result<()> {
+    ) -> KernelResult<()> {
         let mut new_version = Version::clone(self.current().await.as_ref());
         let mut inner = self.inner.write().await;
         info!("[Version Status][log_and_apply]: {new_version}");
@@ -103,7 +103,10 @@ impl VersionStatus {
         Ok(())
     }
 
-    async fn write_snap_shot(inner: &mut VersionInner, log_factory: &IoFactory) -> Result<()> {
+    async fn write_snap_shot(
+        inner: &mut VersionInner,
+        log_factory: &IoFactory,
+    ) -> KernelResult<()> {
         let version = &inner.version;
         info!(
             "[Version: {}][write_snap_shot]: Start Snapshot!",

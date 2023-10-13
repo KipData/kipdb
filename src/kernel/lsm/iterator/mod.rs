@@ -1,7 +1,7 @@
 pub(crate) mod level_iter;
 pub(crate) mod merging_iter;
 
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -18,14 +18,14 @@ pub enum Seek<'s> {
 pub trait Iter<'a> {
     type Item;
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>>;
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>>;
 
     fn is_valid(&self) -> bool;
 
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>>;
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>>;
 }
 
 /// 向前迭代器
 pub(crate) trait ForwardIter<'a>: Iter<'a> {
-    fn try_prev(&mut self) -> Result<Option<Self::Item>>;
+    fn try_prev(&mut self) -> KernelResult<Option<Self::Item>>;
 }

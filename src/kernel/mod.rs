@@ -16,7 +16,7 @@ pub mod lsm;
 pub mod sled_storage;
 pub mod utils;
 
-pub type Result<T> = std::result::Result<T, KernelError>;
+pub type KernelResult<T> = std::result::Result<T, KernelError>;
 
 pub(crate) const DEFAULT_LOCK_FILE: &str = "KipDB.lock";
 
@@ -29,23 +29,23 @@ pub trait Storage: Send + Sync + 'static + Sized {
         Self: Sized;
 
     /// 通过数据目录路径开启数据库
-    async fn open(path: impl Into<PathBuf> + Send) -> Result<Self>;
+    async fn open(path: impl Into<PathBuf> + Send) -> KernelResult<Self>;
 
     /// 强制将数据刷入硬盘
-    async fn flush(&self) -> Result<()>;
+    async fn flush(&self) -> KernelResult<()>;
 
     /// 设置键值对
-    async fn set(&self, key: Bytes, value: Bytes) -> Result<()>;
+    async fn set(&self, key: Bytes, value: Bytes) -> KernelResult<()>;
 
     /// 通过键获取对应的值
-    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>>;
+    async fn get(&self, key: &[u8]) -> KernelResult<Option<Bytes>>;
 
     /// 通过键删除键值对
-    async fn remove(&self, key: &[u8]) -> Result<()>;
+    async fn remove(&self, key: &[u8]) -> KernelResult<()>;
 
-    async fn size_of_disk(&self) -> Result<u64>;
+    async fn size_of_disk(&self) -> KernelResult<u64>;
 
-    async fn len(&self) -> Result<usize>;
+    async fn len(&self) -> KernelResult<usize>;
 
     async fn is_empty(&self) -> bool;
 }
@@ -126,9 +126,9 @@ impl CommandData {
 }
 
 /// 现有日志文件序号排序
-fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64>> {
+fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> KernelResult<Vec<i64>> {
     let mut gen_list: Vec<i64> = fs::read_dir(file_path)?
-        .flat_map(|res| -> Result<_> { Ok(res?.path()) })
+        .flat_map(|res| -> KernelResult<_> { Ok(res?.path()) })
         .filter(|path| {
             path.is_file() && path.extension() == Some(extension.extension_str().as_ref())
         })
@@ -147,7 +147,7 @@ fn sorted_gen_list(file_path: &Path, extension: FileExtension) -> Result<Vec<i64
 }
 
 /// 尝试锁定文件或超时
-async fn lock_or_time_out(path: &PathBuf) -> Result<LockFile> {
+async fn lock_or_time_out(path: &PathBuf) -> KernelResult<LockFile> {
     let mut lock_file = LockFile::open(path)?;
 
     let mut backoff = 1;

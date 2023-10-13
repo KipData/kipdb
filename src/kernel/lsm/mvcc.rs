@@ -6,7 +6,7 @@ use crate::kernel::lsm::query_and_compaction;
 use crate::kernel::lsm::storage::{Sequence, StoreInner};
 use crate::kernel::lsm::version::iter::VersionIter;
 use crate::kernel::lsm::version::Version;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
 use itertools::Itertools;
@@ -47,7 +47,7 @@ impl Transaction {
     ///
     /// 此处不需要等待压缩，因为在Transaction存活时不会触发Compaction
     #[inline]
-    pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+    pub fn get(&self, key: &[u8]) -> KernelResult<Option<Bytes>> {
         if let Some(value) = self.write_buf.as_ref().and_then(|buf| buf.get(key)) {
             return Ok(value.clone());
         }
@@ -69,7 +69,7 @@ impl Transaction {
     }
 
     #[inline]
-    pub fn remove(&mut self, key: &[u8]) -> Result<()> {
+    pub fn remove(&mut self, key: &[u8]) -> KernelResult<()> {
         let _ = self.get(key)?.ok_or(KernelError::KeyNotFound)?;
         let bytes = Bytes::copy_from_slice(key);
         let _ignore = self.write_buf_or_init().insert(bytes, None);
@@ -78,7 +78,7 @@ impl Transaction {
     }
 
     #[inline]
-    pub async fn commit(mut self) -> Result<()> {
+    pub async fn commit(mut self) -> KernelResult<()> {
         if let Some(buf) = self.write_buf.take() {
             let batch_data = buf
                 .into_iter()
@@ -136,12 +136,16 @@ impl Transaction {
     }
 
     #[inline]
-    pub fn disk_iter(&self) -> Result<VersionIter> {
+    pub fn disk_iter(&self) -> KernelResult<VersionIter> {
         VersionIter::new(&self.version)
     }
 
     #[inline]
-    pub fn iter<'a>(&'a self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Result<TransactionIter> {
+    pub fn iter<'a>(
+        &'a self,
+        min: Bound<&[u8]>,
+        max: Bound<&[u8]>,
+    ) -> KernelResult<TransactionIter> {
         let range_buf = self.mem_range(min, max);
         let ptr = BufPtr(Box::leak(Box::new(range_buf)).into());
 
@@ -212,7 +216,7 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
     type Item = KeyValue;
 
     #[inline]
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         if let Some(item) = self.seek_buf.take() {
             return Ok(Some(item));
         }
@@ -238,7 +242,7 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
     }
 
     #[inline]
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         self.inner.seek(seek)
     }
 }
@@ -258,7 +262,7 @@ struct BufIter<'a> {
 impl<'a> Iter<'a> for BufIter<'a> {
     type Item = KeyValue;
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         Ok(self.is_valid().then(|| {
             let item = self.inner[self.pos].clone();
             self.pos += 1;
@@ -270,7 +274,7 @@ impl<'a> Iter<'a> for BufIter<'a> {
         self.pos < self.inner.len()
     }
 
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         match seek {
             Seek::First => self.pos = 0,
             Seek::Last => self.pos = self.inner.len() - 1,
@@ -291,7 +295,7 @@ impl<'a> Iter<'a> for BufIter<'a> {
 mod tests {
     use crate::kernel::lsm::iterator::Iter;
     use crate::kernel::lsm::storage::{Config, KipStorage};
-    use crate::kernel::{Result, Storage};
+    use crate::kernel::{KernelResult, Storage};
     use bincode::Options;
     use bytes::Bytes;
     use itertools::Itertools;
@@ -299,7 +303,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_transaction() -> Result<()> {
+    fn test_transaction() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {

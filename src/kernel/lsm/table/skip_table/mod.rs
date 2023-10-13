@@ -32,7 +32,7 @@ impl SkipTable {
 }
 
 impl Table for SkipTable {
-    fn query(&self, key: &[u8]) -> crate::kernel::Result<Option<KeyValue>> {
+    fn query(&self, key: &[u8]) -> crate::kernel::KernelResult<Option<KeyValue>> {
         Ok(self.inner.get(key).cloned())
     }
 
@@ -55,7 +55,7 @@ impl Table for SkipTable {
     #[allow(clippy::todo)]
     fn iter<'a>(
         &'a self,
-    ) -> crate::kernel::Result<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
+    ) -> crate::kernel::KernelResult<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
         todo!("skiplist cannot support")
     }
 }

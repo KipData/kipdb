@@ -3,7 +3,7 @@ use crate::kernel::lsm::iterator::merging_iter::MergingIter;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 
 /// Version键值对迭代器
 pub struct VersionIter<'a> {
@@ -11,7 +11,7 @@ pub struct VersionIter<'a> {
 }
 
 impl<'a> VersionIter<'a> {
-    pub(crate) fn new(version: &'a Version) -> Result<VersionIter<'a>> {
+    pub(crate) fn new(version: &'a Version) -> KernelResult<VersionIter<'a>> {
         let vec_iter = Self::merging_with_version(version)?;
 
         Ok(Self {
@@ -21,7 +21,7 @@ impl<'a> VersionIter<'a> {
 
     pub(crate) fn merging_with_version(
         version: &'a Version,
-    ) -> Result<Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>> {
+    ) -> KernelResult<Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>> {
         let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> = Vec::new();
 
         for table in version.tables_by_level_0() {
@@ -41,7 +41,7 @@ impl<'a> VersionIter<'a> {
 impl<'a> Iter<'a> for VersionIter<'a> {
     type Item = KeyValue;
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         self.merge_iter.try_next()
     }
 
@@ -49,7 +49,7 @@ impl<'a> Iter<'a> for VersionIter<'a> {
         self.merge_iter.is_valid()
     }
 
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         self.merge_iter.seek(seek)
     }
 }

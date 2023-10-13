@@ -2,7 +2,7 @@ use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::KernelError;
 
 const LEVEL_0_SEEK_MESSAGE: &str = "level 0 cannot seek";
@@ -18,7 +18,7 @@ pub(crate) struct LevelIter<'a> {
 
 impl<'a> LevelIter<'a> {
     #[allow(dead_code)]
-    pub(crate) fn new(version: &'a Version, level: usize) -> Result<LevelIter<'a>> {
+    pub(crate) fn new(version: &'a Version, level: usize) -> KernelResult<LevelIter<'a>> {
         let table = version.table(level, 0).ok_or(KernelError::DataEmpty)?;
         let child_iter = table.iter()?;
         let level_len = version.level_len(level);
@@ -32,7 +32,7 @@ impl<'a> LevelIter<'a> {
         })
     }
 
-    fn child_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> Result<Option<KeyValue>> {
+    fn child_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> KernelResult<Option<KeyValue>> {
         self.offset = offset;
         if self.is_valid() {
             if let Some(table) = self.version.table(self.level, offset) {
@@ -44,7 +44,7 @@ impl<'a> LevelIter<'a> {
         Ok(None)
     }
 
-    fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> Result<Option<KeyValue>> {
+    fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> KernelResult<Option<KeyValue>> {
         let level = self.level;
 
         if level == LEVEL_0 {
@@ -57,7 +57,7 @@ impl<'a> LevelIter<'a> {
 impl<'a> Iter<'a> for LevelIter<'a> {
     type Item = KeyValue;
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         match self.child_iter.try_next()? {
             None => self.child_iter_seek(Seek::First, self.offset + 1),
             Some(item) => Ok(Some(item)),
@@ -70,7 +70,7 @@ impl<'a> Iter<'a> for LevelIter<'a> {
 
     /// Tips: Level 0的LevelIter不支持Seek
     /// 因为Level 0中的SSTable并非有序排列，其中数据范围是可能交错的
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         match seek {
             Seek::First => self.child_iter_seek(Seek::First, 0),
             Seek::Last => self.child_iter_seek(Seek::Last, self.level_len - 1),
@@ -91,13 +91,13 @@ mod tests {
     use crate::kernel::lsm::table::TableType;
     use crate::kernel::lsm::version::edit::VersionEdit;
     use crate::kernel::lsm::version::status::VersionStatus;
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use bincode::Options;
     use bytes::Bytes;
     use tempfile::TempDir;
 
     #[test]
-    fn test_iterator() -> Result<()> {
+    fn test_iterator() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         tokio_test::block_on(async move {

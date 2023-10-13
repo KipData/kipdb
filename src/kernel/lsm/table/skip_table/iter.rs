@@ -33,7 +33,7 @@ impl<'a> SkipTableIter<'a> {
 impl<'a> Iter<'a> for SkipTableIter<'a> {
     type Item = KeyValue;
 
-    fn try_next(&mut self) -> crate::kernel::Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> crate::kernel::KernelResult<Option<Self::Item>> {
         Ok(self
             .inner
             .as_mut()
@@ -45,7 +45,7 @@ impl<'a> Iter<'a> for SkipTableIter<'a> {
         true
     }
 
-    fn seek(&mut self, seek: Seek<'_>) -> crate::kernel::Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> crate::kernel::KernelResult<Option<Self::Item>> {
         self._seek(seek);
 
         if let Seek::Last = seek {

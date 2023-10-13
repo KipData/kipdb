@@ -9,14 +9,14 @@ use crate::kernel::lsm::table::Table;
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
-use crate::kernel::{sorted_gen_list, Result};
+use crate::kernel::{sorted_gen_list, KernelResult};
 use itertools::Itertools;
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
 
-mod cleaner;
+pub(crate) mod cleaner;
 pub(crate) mod edit;
 pub(crate) mod iter;
 mod meta;
@@ -35,7 +35,7 @@ pub(crate) enum SeekOption<T> {
     Miss(Option<SeekScope>),
 }
 
-fn snapshot_gen(factory: &IoFactory) -> Result<i64> {
+fn snapshot_gen(factory: &IoFactory) -> KernelResult<i64> {
     if let Ok(gen_list) = sorted_gen_list(factory.get_path(), FileExtension::Log) {
         return Ok(match *gen_list.as_slice() {
             [.., old_snapshot, new_snapshot] => {
@@ -89,7 +89,7 @@ impl Version {
         vec_log: Vec<VersionEdit>,
         ss_table_loader: &Arc<TableLoader>,
         clean_tx: UnboundedSender<CleanTag>,
-    ) -> Result<Self> {
+    ) -> KernelResult<Self> {
         let mut version = Self {
             version_num: 0,
             table_loader: Arc::clone(ss_table_loader),
@@ -114,7 +114,7 @@ impl Version {
     /// 也就是可能存在一次Version的冗余Table
     /// 可能是个确定，但是Minor Compactor比较起来更加频繁，也就是大多数情况不会冗余，因此我觉得影响较小
     /// 也可以算作是一种Major Compaction异常时的备份？
-    pub(crate) fn apply(&mut self, vec_version_edit: Vec<VersionEdit>) -> Result<()> {
+    pub(crate) fn apply(&mut self, vec_version_edit: Vec<VersionEdit>) -> KernelResult<()> {
         let mut del_gens = Vec::new();
         let mut vec_statistics_sst_meta = Vec::new();
 
@@ -236,7 +236,7 @@ impl Version {
     }
 
     /// 使用Key从现有Tables中获取对应的数据
-    pub(crate) fn query(&self, key: &[u8]) -> Result<(Option<KeyValue>, Option<SeekScope>)> {
+    pub(crate) fn query(&self, key: &[u8]) -> KernelResult<(Option<KeyValue>, Option<SeekScope>)> {
         let table_loader = &self.table_loader;
         // Level 0的Table是无序且Table间的数据是可能重复的,因此需要遍历
         for scope in self.level_slice[LEVEL_0].iter().rev() {
@@ -271,7 +271,7 @@ impl Version {
         table_loader: &Arc<TableLoader>,
         scope: &Scope,
         level: usize,
-    ) -> Result<SeekOption<KeyValue>> {
+    ) -> KernelResult<SeekOption<KeyValue>> {
         if scope.meet_by_key(key) {
             if let Some(ss_table) = table_loader.get(scope.gen()) {
                 if let Some(value) = ss_table.query(key)? {

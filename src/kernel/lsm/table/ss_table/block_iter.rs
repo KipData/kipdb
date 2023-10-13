@@ -1,6 +1,6 @@
 use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
 use crate::kernel::lsm::table::ss_table::block::{Block, BlockItem, Entry};
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use bytes::Bytes;
 
 /// Block迭代器
@@ -63,7 +63,7 @@ impl<'a, V> ForwardIter<'a> for BlockIter<'a, V>
 where
     V: Sync + Send + BlockItem,
 {
-    fn try_prev(&mut self) -> Result<Option<Self::Item>> {
+    fn try_prev(&mut self) -> KernelResult<Option<Self::Item>> {
         Ok((self.is_valid() || self.offset == self.entry_len)
             .then(|| self.offset_move(self.offset - 1))
             .flatten())
@@ -76,7 +76,7 @@ where
 {
     type Item = (Bytes, V);
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         Ok((self.is_valid() || self.offset == 0)
             .then(|| self.offset_move(self.offset + 1))
             .flatten())
@@ -86,7 +86,7 @@ where
         self.offset > 0 && self.offset < self.entry_len
     }
 
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         Ok(match seek {
             Seek::First => Some(0),
             Seek::Last => Some(self.entry_len - 1),
@@ -104,13 +104,13 @@ mod tests {
     use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
     use crate::kernel::lsm::table::ss_table::block::{Block, Value, DEFAULT_DATA_RESTART_INTERVAL};
     use crate::kernel::lsm::table::ss_table::block_iter::BlockIter;
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use bincode::Options;
     use bytes::Bytes;
     use std::vec;
 
     #[test]
-    fn test_iterator() -> Result<()> {
+    fn test_iterator() -> KernelResult<()> {
         let data = vec![
             (Bytes::from(vec![b'1']), Value::from(None)),
             (
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_iterator_1000() -> Result<()> {
+    fn test_iterator_1000() -> KernelResult<()> {
         let mut vec_data = Vec::new();
         let value =
             Bytes::from_static(b"What you are you do not see, what you see is your shadow.");

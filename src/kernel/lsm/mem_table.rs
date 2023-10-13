@@ -4,7 +4,7 @@ use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::lsm::storage::{Config, Gen, Sequence};
 use crate::kernel::lsm::table::ss_table::block::{Entry, Value};
 use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use bytes::Bytes;
 use itertools::Itertools;
 use parking_lot::Mutex;
@@ -92,7 +92,7 @@ impl<'a> MemMapIter<'a> {
 impl<'a> Iter<'a> for MemMapIter<'a> {
     type Item = KeyValue;
 
-    fn try_next(&mut self) -> Result<Option<Self::Item>> {
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         if let Some(iter) = &mut self.iter {
             for (InternalKey { key, .. }, value) in iter.by_ref() {
                 if let Some(prev_item) = &self.prev_item {
@@ -116,7 +116,7 @@ impl<'a> Iter<'a> for MemMapIter<'a> {
         true
     }
 
-    fn seek(&mut self, seek: Seek<'_>) -> Result<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
         self.prev_item = None;
         self.iter = match seek {
             Seek::First => Some(self.mem_map.iter()),
@@ -173,7 +173,7 @@ macro_rules! check_count {
 }
 
 impl MemTable {
-    pub(crate) fn new(config: &Config) -> Result<Self> {
+    pub(crate) fn new(config: &Config) -> KernelResult<Self> {
         let (log_loader, log_bytes, log_gen) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, None),
@@ -204,7 +204,7 @@ impl MemTable {
     /// 插入并判断是否溢出
     ///
     /// 插入时不会去除重复键值，而是进行追加
-    pub(crate) fn insert_data(&self, data: KeyValue) -> Result<bool> {
+    pub(crate) fn insert_data(&self, data: KeyValue) -> KernelResult<bool> {
         let (key, value) = data.clone();
         let mut inner = self.inner.lock();
 
@@ -217,7 +217,11 @@ impl MemTable {
     }
 
     /// Tips: 当数据在插入mem_table中停机，则不会存入日志中
-    pub(crate) fn insert_batch_data(&self, vec_data: Vec<KeyValue>, seq_id: i64) -> Result<bool> {
+    pub(crate) fn insert_batch_data(
+        &self,
+        vec_data: Vec<KeyValue>,
+        seq_id: i64,
+    ) -> KernelResult<bool> {
         let mut inner = self.inner.lock();
 
         let mut buf = Vec::new();
@@ -248,7 +252,7 @@ impl MemTable {
     }
 
     /// MemTable将数据弹出并转移到immut table中  (弹出数据为转移至immut table中数据的迭代器)
-    pub(crate) fn try_swap(&self, is_force: bool) -> Result<Option<(i64, Vec<KeyValue>)>> {
+    pub(crate) fn try_swap(&self, is_force: bool) -> KernelResult<Option<(i64, Vec<KeyValue>)>> {
         let count = &self.tx_count;
 
         loop {
@@ -389,7 +393,9 @@ impl MemTable {
     }
 }
 
-pub(crate) fn logs_decode(log_bytes: Vec<Vec<u8>>) -> Result<IntoIter<(Bytes, Option<Bytes>)>> {
+pub(crate) fn logs_decode(
+    log_bytes: Vec<Vec<u8>>,
+) -> KernelResult<IntoIter<(Bytes, Option<Bytes>)>> {
     let flatten_bytes = log_bytes.into_iter().flatten().collect_vec();
     Entry::<Value>::batch_decode(&mut Cursor::new(flatten_bytes)).map(|vec| {
         vec.into_iter()
@@ -400,7 +406,7 @@ pub(crate) fn logs_decode(log_bytes: Vec<Vec<u8>>) -> Result<IntoIter<(Bytes, Op
     })
 }
 
-pub(crate) fn data_to_bytes(data: KeyValue) -> Result<Vec<u8>> {
+pub(crate) fn data_to_bytes(data: KeyValue) -> KernelResult<Vec<u8>> {
     let (key, value) = data;
     Entry::new(0, key.len(), key, Value::from(value)).encode()
 }
@@ -412,13 +418,13 @@ mod tests {
         data_to_bytes, InternalKey, KeyValue, MemMap, MemMapIter, MemTable,
     };
     use crate::kernel::lsm::storage::{Config, Sequence};
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use bytes::Bytes;
     use std::collections::Bound;
     use tempfile::TempDir;
 
     impl MemTable {
-        pub(crate) fn insert_data_with_seq(&self, data: KeyValue, seq: i64) -> Result<usize> {
+        pub(crate) fn insert_data_with_seq(&self, data: KeyValue, seq: i64) -> KernelResult<usize> {
             let (key, value) = data.clone();
             let mut inner = self.inner.lock();
 
@@ -432,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mem_table_find() -> Result<()> {
+    fn test_mem_table_find() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
@@ -472,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mem_table_swap() -> Result<()> {
+    fn test_mem_table_swap() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
@@ -501,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mem_table_range_scan() -> Result<()> {
+    fn test_mem_table_range_scan() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
@@ -594,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mem_map_iter() -> Result<()> {
+    fn test_mem_map_iter() -> KernelResult<()> {
         let mut map = MemMap::new();
 
         let key_1_1 = InternalKey::new(Bytes::from(vec![b'1']));

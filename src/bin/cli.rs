@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
+use kip_db::server::client::ConnectionResult;
 use kip_db::server::client::KipdbClient;
-use kip_db::server::client::Result;
 use kip_db::DEFAULT_PORT;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
@@ -33,7 +33,7 @@ struct Cli {
 /// 就是说客户端没必要多线程，强制单线程避免产生额外线程
 /// 调用方法基本:./kip-db-cli get key1 value1
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() -> ConnectionResult<()> {
     // Enable logging
     tracing_subscriber::fmt::try_init().unwrap();
     let cli: Cli = Cli::parse();

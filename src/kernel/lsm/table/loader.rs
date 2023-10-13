@@ -9,7 +9,7 @@ use crate::kernel::lsm::table::ss_table::block::BlockCache;
 use crate::kernel::lsm::table::ss_table::SSTable;
 use crate::kernel::lsm::table::{BoxTable, Table, TableType};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use bytes::Bytes;
 use itertools::Itertools;
 use std::collections::hash_map::RandomState;
@@ -27,7 +27,11 @@ pub(crate) struct TableLoader {
 }
 
 impl TableLoader {
-    pub(crate) fn new(config: Config, factory: Arc<IoFactory>, wal: LogLoader) -> Result<Self> {
+    pub(crate) fn new(
+        config: Config,
+        factory: Arc<IoFactory>,
+        wal: LogLoader,
+    ) -> KernelResult<Self> {
         let inner = Arc::new(ShardingLruCache::new(
             config.table_cache_size,
             16,
@@ -54,7 +58,7 @@ impl TableLoader {
         vec_data: Vec<KeyValue>,
         level: usize,
         table_type: TableType,
-    ) -> Result<(Scope, TableMeta)> {
+    ) -> KernelResult<(Scope, TableMeta)> {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_sorted_vec_data(gen, &vec_data)?;
         let table: Box<dyn Table> = match table_type {
@@ -103,7 +107,7 @@ impl TableLoader {
         gen: i64,
         reload_data: Vec<(Bytes, Option<Bytes>)>,
         level: usize,
-    ) -> Result<SSTable> {
+    ) -> KernelResult<SSTable> {
         SSTable::new(
             &self.factory,
             &self.config,
@@ -124,7 +128,7 @@ impl TableLoader {
         self.inner.is_empty()
     }
 
-    pub(crate) fn clean(&self, gen: i64) -> Result<()> {
+    pub(crate) fn clean(&self, gen: i64) -> KernelResult<()> {
         let _ = self.remove(&gen);
         self.factory.clean(gen)?;
         self.wal.clean(gen)?;
@@ -134,7 +138,7 @@ impl TableLoader {
 
     // Tips: 仅仅对持久化Table有效，SkipTable类内存Table始终为false
     #[allow(dead_code)]
-    pub(crate) fn is_table_file_exist(&self, gen: i64) -> Result<bool> {
+    pub(crate) fn is_table_file_exist(&self, gen: i64) -> KernelResult<bool> {
         self.factory.exists(gen)
     }
 }
@@ -147,14 +151,14 @@ mod tests {
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::table::loader::{TableLoader, TableType};
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
-    use crate::kernel::Result;
+    use crate::kernel::KernelResult;
     use bincode::Options;
     use bytes::Bytes;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     #[test]
-    fn test_ss_table_loader() -> Result<()> {
+    fn test_ss_table_loader() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let value = Bytes::copy_from_slice(
@@ -233,7 +237,7 @@ mod tests {
         Ok(())
     }
 
-    fn clean_sst(gen: i64, loader: &TableLoader) -> Result<()> {
+    fn clean_sst(gen: i64, loader: &TableLoader) -> KernelResult<()> {
         loader.factory.clean(gen)?;
 
         Ok(())

@@ -1,5 +1,5 @@
 use crate::kernel::lsm::mem_table::KeyValue;
-use crate::kernel::Result;
+use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -120,7 +120,10 @@ impl Scope {
 
     /// 由一组有序KeyValue组成一个scope
     #[allow(clippy::pattern_type_mismatch)]
-    pub(crate) fn from_sorted_vec_data(gen: i64, vec_mem_data: &Vec<KeyValue>) -> Result<Self> {
+    pub(crate) fn from_sorted_vec_data(
+        gen: i64,
+        vec_mem_data: &Vec<KeyValue>,
+    ) -> KernelResult<Self> {
         match vec_mem_data.as_slice() {
             [first, .., last] => Ok(Self::from_range(gen, first.0.clone(), last.0.clone())),
             [one] => Ok(Self::from_range(gen, one.0.clone(), one.0.clone())),
