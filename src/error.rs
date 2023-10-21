@@ -45,6 +45,9 @@ pub enum KernelError {
     #[error(transparent)]
     SledErr(#[from] sled::Error),
 
+    #[error(transparent)]
+    RocksdbErr(#[from] rocksdb::Error),
+
     #[error("Cache size overflow")]
     CacheSizeOverFlow,
 

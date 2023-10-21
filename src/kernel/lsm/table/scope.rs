@@ -14,7 +14,7 @@ const SEEK_COMPACTION_COUNT: u32 = 100;
 /// 用于缓存SSTable中所有数据的第一个和最后一个数据的Key
 /// 标明数据的范围以做到快速区域定位
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub(crate) struct Scope {
+pub struct Scope {
     pub(crate) start: Bytes,
     pub(crate) end: Bytes,
     gen: i64,

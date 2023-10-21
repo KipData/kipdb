@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
 
 use kip_db::kernel::lsm::storage::KipStorage;
+use kip_db::kernel::rocksdb_storage::RocksdbStorage;
 use kip_db::kernel::sled_storage::SledStorage;
 use kip_db::kernel::Storage;
 
@@ -109,7 +110,7 @@ fn monotonic_crud<T: Storage>(c: &mut Criterion) {
             let count = AtomicU32::new(0_u32);
             b.iter(|| async {
                 db.set(
-                    Bytes::from(count.fetch_add(1, Relaxed).to_be_bytes()),
+                    Bytes::from(count.fetch_add(1, Relaxed).to_be_bytes().to_vec()),
                     Bytes::new(),
                 )
                 .await
@@ -150,9 +151,12 @@ fn random_crud<T: Storage>(c: &mut Criterion) {
 
         c.bench_function(&format!("Store: {}, random inserts", T::name()), |b| {
             b.iter(|| async {
-                db.set(Bytes::from(random(SIZE).to_be_bytes()), Bytes::new())
-                    .await
-                    .unwrap();
+                db.set(
+                    Bytes::from(random(SIZE).to_be_bytes().to_vec()),
+                    Bytes::new(),
+                )
+                .await
+                .unwrap();
             })
         });
 
@@ -191,21 +195,25 @@ fn empty_opens<T: Storage>(c: &mut Criterion) {
 fn kv_bulk_load(c: &mut Criterion) {
     bulk_load::<KipStorage>(c);
     bulk_load::<SledStorage>(c);
+    bulk_load::<RocksdbStorage>(c);
 }
 
 fn kv_monotonic_crud(c: &mut Criterion) {
     monotonic_crud::<KipStorage>(c);
     monotonic_crud::<SledStorage>(c);
+    monotonic_crud::<RocksdbStorage>(c);
 }
 
 fn kv_random_crud(c: &mut Criterion) {
     random_crud::<KipStorage>(c);
     random_crud::<SledStorage>(c);
+    random_crud::<RocksdbStorage>(c);
 }
 
 fn kv_empty_opens(c: &mut Criterion) {
     empty_opens::<KipStorage>(c);
     empty_opens::<SledStorage>(c);
+    empty_opens::<RocksdbStorage>(c);
 }
 
 criterion_group!(

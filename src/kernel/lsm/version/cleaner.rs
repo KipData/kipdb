@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::error;
 
 #[derive(Debug)]
-pub(crate) enum CleanTag {
+pub enum CleanTag {
     Clean(u64),
     Add { version: u64, gens: Vec<i64> },
 }

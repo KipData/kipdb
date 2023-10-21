@@ -13,6 +13,7 @@ use crate::KernelError;
 
 pub mod io;
 pub mod lsm;
+pub mod rocksdb_storage;
 pub mod sled_storage;
 pub mod utils;
 
