@@ -26,11 +26,11 @@ pub(crate) type MergeShardingVec = Vec<(i64, Vec<KeyValue>)>;
 pub(crate) type DelNode = (Vec<i64>, TableMeta);
 /// Major压缩时的待删除Gen封装(N为此次Major所压缩的Level)，第一个为Level N级，第二个为Level N+1级
 pub(crate) type DelNodeTuple = (DelNode, DelNode);
-pub(crate) type SeekScope = (Scope, usize);
+pub type SeekScope = (Scope, usize);
 
 /// Store与Compactor的交互信息
 #[derive(Debug)]
-pub(crate) enum CompactTask {
+pub enum CompactTask {
     Seek(SeekScope),
     Flush(Option<oneshot::Sender<()>>),
 }
