@@ -9,7 +9,7 @@ env:
   CARGO_REGISTRIES_MY_REGISTRY_INDEX: https://github.com/rust-lang/crates.io-index
 
 jobs:
-  check:
+  fmt:
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
@@ -45,7 +45,8 @@ jobs:
       - name: Build
         uses: actions-rs/cargo@v1
         with:
-          command: build --all-features
+          command: build
+          args: --all-features
 
   test:
     runs-on: ubuntu-20.04
