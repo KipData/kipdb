@@ -5,11 +5,10 @@ use bytes::Bytes;
 use core::slice::SlicePattern;
 use sled::Db;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct SledStorage {
-    data_base: Arc<Db>,
+    data_base: Db,
 }
 
 #[async_trait]
@@ -24,7 +23,7 @@ impl Storage for SledStorage {
 
     #[inline]
     async fn open(path: impl Into<PathBuf> + Send) -> crate::kernel::KernelResult<Self> {
-        let db = Arc::new(sled::open(path.into())?);
+        let db = sled::open(path.into())?;
 
         Ok(SledStorage { data_base: db })
     }

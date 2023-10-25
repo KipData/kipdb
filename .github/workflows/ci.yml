@@ -23,6 +23,12 @@ jobs:
         with:
           command: fmt
           args: --all -- --check
+# TODO follow up pr to fix clippy lints
+#      - name: Run cargo clippy
+#        uses: actions-rs/cargo@v1
+#        with:
+#          command: clippy
+#          args: -- -D warnings
 
 
   build:
@@ -39,7 +45,7 @@ jobs:
       - name: Build
         uses: actions-rs/cargo@v1
         with:
-          command: build
+          command: build --all-features
 
   test:
     runs-on: ubuntu-20.04
@@ -56,4 +62,4 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --release --no-fail-fast
+          args: --release --all-features --no-fail-fast

@@ -6,8 +6,6 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
 
 use kip_db::kernel::lsm::storage::KipStorage;
-use kip_db::kernel::rocksdb_storage::RocksdbStorage;
-use kip_db::kernel::sled_storage::SledStorage;
 use kip_db::kernel::Storage;
 
 fn counter() -> usize {
@@ -194,26 +192,58 @@ fn empty_opens<T: Storage>(c: &mut Criterion) {
 
 fn kv_bulk_load(c: &mut Criterion) {
     bulk_load::<KipStorage>(c);
-    bulk_load::<SledStorage>(c);
-    bulk_load::<RocksdbStorage>(c);
+    #[cfg(feature = "sled")]
+    {
+        use kip_db::kernel::sled_storage::SledStorage;
+        bulk_load::<SledStorage>(c);
+    }
+    #[cfg(feature = "rocksdb")]
+    {
+        use kip_db::kernel::rocksdb_storage::RocksdbStorage;
+        bulk_load::<RocksdbStorage>(c);
+    }
 }
 
 fn kv_monotonic_crud(c: &mut Criterion) {
     monotonic_crud::<KipStorage>(c);
-    monotonic_crud::<SledStorage>(c);
-    monotonic_crud::<RocksdbStorage>(c);
+    #[cfg(feature = "sled")]
+    {
+        use kip_db::kernel::sled_storage::SledStorage;
+        monotonic_crud::<SledStorage>(c);
+    }
+    #[cfg(feature = "rocksdb")]
+    {
+        use kip_db::kernel::rocksdb_storage::RocksdbStorage;
+        monotonic_crud::<RocksdbStorage>(c);
+    }
 }
 
 fn kv_random_crud(c: &mut Criterion) {
     random_crud::<KipStorage>(c);
-    random_crud::<SledStorage>(c);
-    random_crud::<RocksdbStorage>(c);
+    #[cfg(feature = "sled")]
+    {
+        use kip_db::kernel::sled_storage::SledStorage;
+        random_crud::<SledStorage>(c);
+    }
+    #[cfg(feature = "rocksdb")]
+    {
+        use kip_db::kernel::rocksdb_storage::RocksdbStorage;
+        random_crud::<RocksdbStorage>(c);
+    }
 }
 
 fn kv_empty_opens(c: &mut Criterion) {
     empty_opens::<KipStorage>(c);
-    empty_opens::<SledStorage>(c);
-    empty_opens::<RocksdbStorage>(c);
+    #[cfg(feature = "sled")]
+    {
+        use kip_db::kernel::sled_storage::SledStorage;
+        empty_opens::<SledStorage>(c);
+    }
+    #[cfg(feature = "rocksdb")]
+    {
+        use kip_db::kernel::rocksdb_storage::RocksdbStorage;
+        empty_opens::<RocksdbStorage>(c);
+    }
 }
 
 criterion_group!(
