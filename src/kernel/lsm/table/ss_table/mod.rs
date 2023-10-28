@@ -205,7 +205,7 @@ impl Table for SSTable {
                 (self.gen(), Some(index_block.find_with_upper(key))),
                 |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                    Ok(Self::data_block(self, index)?)
+                    Self::data_block(self, index)
                 },
             )? {
                 if let (value, true) = data_block.find(key) {
@@ -291,20 +291,14 @@ mod tests {
 
         let ss_table = sst_loader.get(1).unwrap();
 
-        for i in 0..times {
-            assert_eq!(
-                ss_table.query(&vec_data[i].0)?.unwrap().1,
-                Some(value.clone())
-            )
+        for kv in vec_data.iter().take(times) {
+            assert_eq!(ss_table.query(&kv.0)?.unwrap().1, Some(value.clone()))
         }
         let cache = ShardingLruCache::new(config.table_cache_size, 16, RandomState::default())?;
         let ss_table =
             SSTable::load_from_file(sst_factory.reader(1, IoType::Direct)?, Arc::new(cache))?;
-        for i in 0..times {
-            assert_eq!(
-                ss_table.query(&vec_data[i].0)?.unwrap().1,
-                Some(value.clone())
-            )
+        for kv in vec_data.iter().take(times) {
+            assert_eq!(ss_table.query(&kv.0)?.unwrap().1, Some(value.clone()))
         }
 
         Ok(())

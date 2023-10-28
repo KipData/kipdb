@@ -40,7 +40,7 @@ pub struct Transaction {
 
 impl Transaction {
     fn write_buf_or_init(&mut self) -> &mut SkipMap<Bytes, Option<Bytes>> {
-        self.write_buf.get_or_insert_with(|| SkipMap::new())
+        self.write_buf.get_or_insert_with(SkipMap::new)
     }
 
     /// 通过Key获取对应的Value
@@ -118,7 +118,8 @@ impl Transaction {
     }
 
     fn _mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Option<MapIter> {
-        if let Some(buf) = &self.write_buf {
+        #[allow(clippy::option_map_or_none)]
+        self.write_buf.as_ref().map_or(None, |buf| {
             Some(
                 buf.range(
                     min.map(Bytes::copy_from_slice).as_ref(),
@@ -126,9 +127,7 @@ impl Transaction {
                 )
                 .map(|(key, value)| (key.clone(), value.clone())),
             )
-        } else {
-            None
-        }
+        })
     }
 
     fn mem_table(&self) -> &MemTable {
@@ -325,38 +324,34 @@ mod tests {
             }
 
             // 模拟数据分布在MemTable以及SSTable中
-            for i in 0..50 {
-                kv_store
-                    .set(vec_kv[i].0.clone(), vec_kv[i].1.clone())
-                    .await?;
+            for kv in vec_kv.iter().take(50) {
+                kv_store.set(kv.0.clone(), kv.1.clone()).await?;
             }
 
             kv_store.flush().await?;
 
-            for i in 50..100 {
-                kv_store
-                    .set(vec_kv[i].0.clone(), vec_kv[i].1.clone())
-                    .await?;
+            for kv in vec_kv.iter().take(100).skip(50) {
+                kv_store.set(kv.0.clone(), kv.1.clone()).await?;
             }
 
             let mut tx_1 = kv_store.new_transaction().await;
 
-            for i in 100..times {
-                tx_1.set(vec_kv[i].0.clone(), vec_kv[i].1.clone());
+            for kv in vec_kv.iter().take(times).skip(100) {
+                tx_1.set(kv.0.clone(), kv.1.clone());
             }
 
             tx_1.remove(&vec_kv[times - 1].0)?;
 
             // 事务在提交前事务可以读取到自身以及Store已写入的数据
-            for i in 0..times - 1 {
-                assert_eq!(tx_1.get(&vec_kv[i].0)?, Some(vec_kv[i].1.clone()));
+            for kv in vec_kv.iter().take(times - 1) {
+                assert_eq!(tx_1.get(&kv.0)?, Some(kv.1.clone()));
             }
 
             assert_eq!(tx_1.get(&vec_kv[times - 1].0)?, None);
 
             // 事务在提交前Store不应该读取到事务中的数据
-            for i in 100..times {
-                assert_eq!(kv_store.get(&vec_kv[i].0).await?, None);
+            for kv in vec_kv.iter().take(times).skip(100) {
+                assert_eq!(kv_store.get(&kv.0).await?, None);
             }
 
             let vec_test = vec_kv[25..]
@@ -368,17 +363,17 @@ mod tests {
             let mut iter = tx_1.iter(Bound::Included(&vec_kv[25].0), Bound::Unbounded)?;
 
             // -1是因为最后一个元素在之前tx中删除了，因此为None
-            for i in 0..vec_test.len() - 1 {
+            for kv in vec_test.iter().take(vec_test.len() - 1) {
                 // 元素太多，因此这里就单个对比，否则会导致报错时日志过多
-                assert_eq!(iter.try_next()?.unwrap(), vec_test[i]);
+                assert_eq!(iter.try_next()?.unwrap(), kv.clone());
             }
 
             drop(iter);
 
             tx_1.commit().await?;
 
-            for i in 0..times - 1 {
-                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
+            for kv in vec_kv.iter().take(times - 1) {
+                assert_eq!(kv_store.get(&kv.0).await?, Some(kv.1.clone()));
             }
 
             Ok(())

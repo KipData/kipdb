@@ -346,7 +346,7 @@ impl MemTable {
             ._immut
             .as_ref()
             .map(|mem_map| Self::_range_scan(mem_map, min, max, option_seq))
-            .unwrap_or(vec![])
+            .unwrap_or_default()
             .into_iter()
             .chain(Self::_range_scan(&inner._mem, min, max, option_seq))
             .rev()
@@ -451,26 +451,26 @@ mod tests {
         let old_seq_id = Sequence::create();
 
         assert_eq!(
-            mem_table.find(&vec![b'k']),
+            mem_table.find(&[b'k']),
             Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'1']))))
         );
 
         let _ = mem_table.insert_data(data_2)?;
 
         assert_eq!(
-            mem_table.find(&vec![b'k']),
+            mem_table.find(&[b'k']),
             Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'2']))))
         );
 
         assert_eq!(
-            mem_table.find_with_sequence_id(&vec![b'k'], old_seq_id),
+            mem_table.find_with_sequence_id(&[b'k'], old_seq_id),
             Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'1']))))
         );
 
         let new_seq_id = Sequence::create();
 
         assert_eq!(
-            mem_table.find_with_sequence_id(&vec![b'k'], new_seq_id),
+            mem_table.find_with_sequence_id(&[b'k'], new_seq_id),
             Some((Bytes::from(vec![b'k']), Some(Bytes::from(vec![b'2']))))
         );
 
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(iter.try_next()?, None);
 
         assert_eq!(
-            iter.seek(Seek::Backward(&vec![b'3']))?,
+            iter.seek(Seek::Backward(&[b'3']))?,
             Some((key_4_2.key.clone(), None))
         );
 

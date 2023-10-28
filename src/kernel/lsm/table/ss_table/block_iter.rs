@@ -171,7 +171,7 @@ mod tests {
         );
 
         assert_eq!(
-            iterator.seek(Seek::Backward(&vec![b'2']))?,
+            iterator.seek(Seek::Backward(&[b'2']))?,
             Some((
                 Bytes::from(vec![b'2']),
                 Value::from(Some(Bytes::from(vec![b'0'])))
@@ -179,7 +179,7 @@ mod tests {
         );
 
         assert_eq!(
-            iterator.seek(Seek::Backward(&vec![b'3']))?,
+            iterator.seek(Seek::Backward(&[b'3']))?,
             Some((Bytes::from(vec![b'4']), Value::from(None)))
         );
 
@@ -204,8 +204,8 @@ mod tests {
         tokio_test::block_on(async move {
             let mut iterator = BlockIter::new(&block);
 
-            for i in 0..times {
-                assert_eq!(iterator.try_next()?.unwrap(), vec_data[i]);
+            for kv in vec_data.iter().take(times) {
+                assert_eq!(iterator.try_next()?.unwrap(), kv.clone());
             }
 
             for i in (0..times - 1).rev() {

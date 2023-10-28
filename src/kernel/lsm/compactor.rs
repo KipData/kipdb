@@ -386,7 +386,7 @@ mod tests {
                     || !level_slice[6].is_empty()
             );
 
-            for (level, slice) in level_slice.into_iter().enumerate() {
+            for (level, slice) in level_slice.iter().enumerate() {
                 if !slice.is_empty() && level != LEVEL_0 {
                     let mut tmp_scope: Option<&Scope> = None;
 
@@ -402,8 +402,8 @@ mod tests {
             assert_eq!(kv_store.len().await?, times);
 
             let start = Instant::now();
-            for i in 0..times {
-                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
+            for kv in vec_kv.iter().take(times) {
+                assert_eq!(kv_store.get(&kv.0).await?, Some(kv.1.clone()));
             }
             println!("[get_for][Time: {:?}]", start.elapsed());
             kv_store.flush().await?;

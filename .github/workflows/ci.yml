@@ -9,26 +9,21 @@ env:
   CARGO_REGISTRIES_MY_REGISTRY_INDEX: https://github.com/rust-lang/crates.io-index
 
 jobs:
-  fmt:
-    runs-on: ubuntu-20.04
+  lint:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-          profile: minimal
-          toolchain: nightly
           components: rustfmt, clippy
       - name: Check code format
         uses: actions-rs/cargo@v1
         with:
           command: fmt
           args: --all -- --check
-# TODO follow up pr to fix clippy lints
-#      - name: Run cargo clippy
-#        uses: actions-rs/cargo@v1
-#        with:
-#          command: clippy
-#          args: -- -D warnings
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
 
   build:

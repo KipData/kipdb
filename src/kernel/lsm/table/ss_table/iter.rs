@@ -32,7 +32,7 @@ impl<'a> SSTableIter<'a> {
                 .cache
                 .get_or_insert((ss_table.gen(), Some(index)), |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                    Ok(ss_table.data_block(index)?)
+                    ss_table.data_block(index)
                 })
                 .map(|block_type| match block_type {
                     BlockType::Data(data_block) => Some(data_block),
@@ -154,8 +154,8 @@ mod tests {
 
         let mut iterator = SSTableIter::new(&ss_table)?;
 
-        for i in 0..times {
-            assert_eq!(iterator.try_next()?.unwrap(), vec_data[i]);
+        for kv in vec_data.iter().take(times) {
+            assert_eq!(iterator.try_next()?.unwrap(), kv.clone());
         }
 
         for i in (0..times - 1).rev() {

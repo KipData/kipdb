@@ -298,8 +298,7 @@ mod tests {
             "and my third",
         ];
 
-        let mut dst = Vec::new();
-        dst.resize(1024, 0u8);
+        let mut dst = vec![0; 1024];
 
         {
             let mut lw = LogWriter::new(Cursor::new(dst.as_mut_slice()));
@@ -355,7 +354,7 @@ mod tests {
         loop {
             let r = lr.read(&mut dst);
 
-            if !r.is_ok() {
+            if r.is_err() {
                 panic!("{}", r.unwrap_err());
             } else if r.unwrap() == 0 {
                 break;
