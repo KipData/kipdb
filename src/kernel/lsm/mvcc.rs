@@ -324,38 +324,38 @@ mod tests {
             }
 
             // 模拟数据分布在MemTable以及SSTable中
-            for i in 0..50 {
+            for kv in vec_kv.iter().take(50) {
                 kv_store
-                    .set(vec_kv[i].0.clone(), vec_kv[i].1.clone())
+                    .set(kv.0.clone(), kv.1.clone())
                     .await?;
             }
 
             kv_store.flush().await?;
 
-            for i in 50..100 {
+            for kv in vec_kv.iter().take(100).skip(50) {
                 kv_store
-                    .set(vec_kv[i].0.clone(), vec_kv[i].1.clone())
+                    .set(kv.0.clone(), kv.1.clone())
                     .await?;
             }
 
             let mut tx_1 = kv_store.new_transaction().await;
 
-            for i in 100..times {
-                tx_1.set(vec_kv[i].0.clone(), vec_kv[i].1.clone());
+            for kv in vec_kv.iter().take(times).skip(100) {
+                tx_1.set(kv.0.clone(), kv.1.clone());
             }
 
             tx_1.remove(&vec_kv[times - 1].0)?;
 
             // 事务在提交前事务可以读取到自身以及Store已写入的数据
-            for i in 0..times - 1 {
-                assert_eq!(tx_1.get(&vec_kv[i].0)?, Some(vec_kv[i].1.clone()));
+            for kv in vec_kv.iter().take(times - 1) {
+                assert_eq!(tx_1.get(&kv.0)?, Some(kv.1.clone()));
             }
 
             assert_eq!(tx_1.get(&vec_kv[times - 1].0)?, None);
 
             // 事务在提交前Store不应该读取到事务中的数据
-            for i in 100..times {
-                assert_eq!(kv_store.get(&vec_kv[i].0).await?, None);
+            for kv in vec_kv.iter().take(times).skip(100) {
+                assert_eq!(kv_store.get(&kv.0).await?, None);
             }
 
             let vec_test = vec_kv[25..]

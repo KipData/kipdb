@@ -779,8 +779,8 @@ mod tests {
         let rand_max_idx: usize = rng.gen_range(2..all_item.len() - 1);
         let rand_min_idx: usize = rng.gen_range(0..rand_max_idx - 1);
 
-        let min_key = full_key(&block, &block.vec_entry, rand_min_idx);
-        let max_key = full_key(&block, &block.vec_entry, rand_max_idx);
+        let min_key = full_key(block, &block.vec_entry, rand_min_idx);
+        let max_key = full_key(block, &block.vec_entry, rand_max_idx);
 
         let excluded_vec = block.range(Bound::Excluded(&min_key), Bound::Excluded(&max_key));
 
@@ -803,7 +803,7 @@ mod tests {
 
     fn full_key<T: BlockItem + Eq + Debug>(
         block: &Block<T>,
-        all_entry: &Vec<(usize, Entry<T>)>,
+        all_entry: &[(usize, Entry<T>)],
         index: usize,
     ) -> Vec<u8> {
         let entry = &all_entry[index].1;
