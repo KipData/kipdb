@@ -83,7 +83,7 @@ async fn main() -> ConnectionResult<()> {
                     .batch_get(keys)
                     .await?
                     .into_iter()
-                    .map(|value| decode(value))
+                    .map(decode)
                     .collect_vec()
             )
         }

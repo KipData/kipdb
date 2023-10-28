@@ -205,7 +205,7 @@ impl Table for SSTable {
                 (self.gen(), Some(index_block.find_with_upper(key))),
                 |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                    Ok(Self::data_block(self, index)?)
+                    Self::data_block(self, index)
                 },
             )? {
                 if let (value, true) = data_block.find(key) {

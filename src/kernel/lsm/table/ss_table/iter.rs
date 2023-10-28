@@ -32,7 +32,7 @@ impl<'a> SSTableIter<'a> {
                 .cache
                 .get_or_insert((ss_table.gen(), Some(index)), |(_, index)| {
                     let index = (*index).ok_or_else(|| KernelError::DataEmpty)?;
-                    Ok(ss_table.data_block(index)?)
+                    ss_table.data_block(index)
                 })
                 .map(|block_type| match block_type {
                     BlockType::Data(data_block) => Some(data_block),

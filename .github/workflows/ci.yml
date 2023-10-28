@@ -9,7 +9,7 @@ env:
   CARGO_REGISTRIES_MY_REGISTRY_INDEX: https://github.com/rust-lang/crates.io-index
 
 jobs:
-  fmt:
+  lint:
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
@@ -23,12 +23,11 @@ jobs:
         with:
           command: fmt
           args: --all -- --check
-# TODO follow up pr to fix clippy lints
-#      - name: Run cargo clippy
-#        uses: actions-rs/cargo@v1
-#        with:
-#          command: clippy
-#          args: -- -D warnings
+      - name: Run cargo clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: -- -D warnings
 
 
   build:

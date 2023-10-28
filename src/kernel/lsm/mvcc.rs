@@ -40,7 +40,7 @@ pub struct Transaction {
 
 impl Transaction {
     fn write_buf_or_init(&mut self) -> &mut SkipMap<Bytes, Option<Bytes>> {
-        self.write_buf.get_or_insert_with(|| SkipMap::new())
+        self.write_buf.get_or_insert_with(SkipMap::new)
     }
 
     /// 通过Key获取对应的Value
@@ -118,7 +118,8 @@ impl Transaction {
     }
 
     fn _mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Option<MapIter> {
-        if let Some(buf) = &self.write_buf {
+        #[allow(clippy::option_map_or_none)]
+        self.write_buf.as_ref().map_or(None, |buf| {
             Some(
                 buf.range(
                     min.map(Bytes::copy_from_slice).as_ref(),
@@ -126,9 +127,7 @@ impl Transaction {
                 )
                 .map(|(key, value)| (key.clone(), value.clone())),
             )
-        } else {
-            None
-        }
+        })
     }
 
     fn mem_table(&self) -> &MemTable {
