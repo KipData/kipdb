@@ -209,9 +209,9 @@ mod tests {
             ss_table_loaded.query(&repeat_data.0)?,
             Some(repeat_data.clone())
         );
-        for i in 1..times {
+        for kv in vec_data.iter().take(times).skip(1) {
             assert_eq!(
-                ss_table_loaded.query(&vec_data[i].0)?.unwrap().1,
+                ss_table_loaded.query(&kv.0)?.unwrap().1,
                 Some(value.clone())
             )
         }
@@ -228,9 +228,9 @@ mod tests {
             ss_table_backup.query(&repeat_data.0)?,
             Some(repeat_data.clone())
         );
-        for i in 1..times {
+        for kv in vec_data.iter().take(times).skip(1) {
             assert_eq!(
-                ss_table_backup.query(&vec_data[i].0)?.unwrap().1,
+                ss_table_backup.query(&kv.0)?.unwrap().1,
                 Some(value.clone())
             )
         }

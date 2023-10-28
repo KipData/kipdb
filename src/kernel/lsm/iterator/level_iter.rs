@@ -136,7 +136,7 @@ mod tests {
                 ver_status
                     .loader()
                     .create(2, slice_2.to_vec(), 1, TableType::Skip)?;
-            let fusion_meta = TableMeta::fusion(&vec![meta_1, meta_2]);
+            let fusion_meta = TableMeta::fusion(&[meta_1, meta_2]);
 
             let vec_edit = vec![
                 // Tips: 由于level 0只是用于测试seek是否发生错误，因此可以忽略此处重复使用
@@ -156,8 +156,8 @@ mod tests {
             let version = ver_status.current().await;
 
             let mut iterator = LevelIter::new(&version, 1)?;
-            for i in 0..times {
-                assert_eq!(iterator.try_next()?.unwrap(), vec_data[i]);
+            for kv in vec_data.iter().take(times) {
+                assert_eq!(iterator.try_next()?.unwrap(), kv.clone());
             }
 
             assert_eq!(

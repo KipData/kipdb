@@ -367,17 +367,17 @@ mod tests {
             let mut iter = tx_1.iter(Bound::Included(&vec_kv[25].0), Bound::Unbounded)?;
 
             // -1是因为最后一个元素在之前tx中删除了，因此为None
-            for i in 0..vec_test.len() - 1 {
+            for kv in vec_test.iter().take(vec_test.len() - 1) {
                 // 元素太多，因此这里就单个对比，否则会导致报错时日志过多
-                assert_eq!(iter.try_next()?.unwrap(), vec_test[i]);
+                assert_eq!(iter.try_next()?.unwrap(), kv.clone());
             }
 
             drop(iter);
 
             tx_1.commit().await?;
 
-            for i in 0..times - 1 {
-                assert_eq!(kv_store.get(&vec_kv[i].0).await?, Some(vec_kv[i].1.clone()));
+            for kv in vec_kv.iter().take(times - 1) {
+                assert_eq!(kv_store.get(&kv.0).await?, Some(kv.1.clone()));
             }
 
             Ok(())

@@ -735,8 +735,8 @@ mod tests {
 
         let mut cache = LruCache::new(5)?;
 
-        for i in 0..times {
-            let key = &vec_data[i].0;
+        for kv in vec_data.iter().take(times) {
+            let key = &kv.0;
             let data_block = cache.get_or_insert(index_block.find_with_upper(key), |index| {
                 let &Index { offset, len } = index;
                 let target_block = Block::<Value>::decode(

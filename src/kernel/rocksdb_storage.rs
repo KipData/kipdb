@@ -35,7 +35,7 @@ impl Storage for RocksdbStorage {
 
     #[inline]
     async fn set(&self, key: Bytes, value: Bytes) -> crate::kernel::KernelResult<()> {
-        let _ignore = self.data_base.put(key.as_slice(), value.to_vec())?;
+        let _ignore = self.data_base.put(key.as_slice(), &value)?;
         Ok(())
     }
 

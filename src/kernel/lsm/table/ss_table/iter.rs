@@ -154,8 +154,8 @@ mod tests {
 
         let mut iterator = SSTableIter::new(&ss_table)?;
 
-        for i in 0..times {
-            assert_eq!(iterator.try_next()?.unwrap(), vec_data[i]);
+        for kv in vec_data.iter().take(times) {
+            assert_eq!(iterator.try_next()?.unwrap(), kv.clone());
         }
 
         for i in (0..times - 1).rev() {

@@ -10,13 +10,11 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-          profile: minimal
-          toolchain: nightly
           components: rustfmt, clippy
       - name: Check code format
         uses: actions-rs/cargo@v1
@@ -25,11 +23,7 @@ jobs:
           args: --all -- --check
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
-      - name: Run cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -D warnings
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
 
   build:
