@@ -9,11 +9,7 @@ env:
   CARGO_REGISTRIES_MY_REGISTRY_INDEX: https://github.com/rust-lang/crates.io-index
 
 jobs:
-<<<<<<< HEAD
   lint:
-=======
-  fmt:
->>>>>>> master
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
