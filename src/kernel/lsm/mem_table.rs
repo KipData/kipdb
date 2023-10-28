@@ -346,7 +346,7 @@ impl MemTable {
             ._immut
             .as_ref()
             .map(|mem_map| Self::_range_scan(mem_map, min, max, option_seq))
-            .unwrap_or(vec![])
+            .unwrap_or_default()
             .into_iter()
             .chain(Self::_range_scan(&inner._mem, min, max, option_seq))
             .rev()

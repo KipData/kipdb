@@ -177,6 +177,7 @@ impl<K: Hash + Eq + PartialEq, V, S: BuildHasher> ShardingLruCache<K, V, S> {
     fn shard(&self, key: &K) -> Arc<Mutex<LruCache<K, V>>> {
         let mut hasher = self.hasher.build_hasher();
         key.hash(&mut hasher);
+        #[allow(clippy::manual_hash_one)]
         Arc::clone(&self.sharding_vec[hasher.finish() as usize % self.sharding_size()])
     }
 }

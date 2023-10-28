@@ -298,8 +298,7 @@ mod tests {
             "and my third",
         ];
 
-        let mut dst = Vec::new();
-        dst.resize(1024, 0u8);
+        let mut dst = vec![0; 1024];
 
         {
             let mut lw = LogWriter::new(Cursor::new(dst.as_mut_slice()));

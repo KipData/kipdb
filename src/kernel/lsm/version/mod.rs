@@ -178,6 +178,7 @@ impl Version {
             }
         }
 
+        #[allow(clippy::filter_map_bool_then)]
         self.level_slice
             .iter()
             .enumerate()
