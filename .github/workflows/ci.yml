@@ -23,6 +23,8 @@ jobs:
         with:
           command: fmt
           args: --all -- --check
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
       - name: Run cargo clippy
         uses: actions-rs/cargo@v1
         with:
