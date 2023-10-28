@@ -1,3 +1,5 @@
+mod util;
+
 use bytes::Bytes;
 /// 参考Sled Benchmark
 /// https://github.com/spacejam/sled/blob/main/benchmarks/criterion/benches/sled.rs
@@ -5,43 +7,9 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
 
+use crate::util::{counter, prepare_data, random, random_bytes};
 use kip_db::kernel::lsm::storage::KipStorage;
 use kip_db::kernel::Storage;
-
-fn counter() -> usize {
-    use std::sync::atomic::AtomicUsize;
-
-    static C: AtomicUsize = AtomicUsize::new(0);
-
-    C.fetch_add(1, Relaxed)
-}
-
-/// Generates a random number in `0..n`.
-fn random(n: u32) -> u32 {
-    use std::cell::Cell;
-    use std::num::Wrapping;
-
-    thread_local! {
-        static RNG: Cell<Wrapping<u32>> = Cell::new(Wrapping(1406868647));
-    }
-
-    RNG.with(|rng| {
-        // This is the 32-bit variant of Xorshift.
-        //
-        // Source: https://en.wikipedia.org/wiki/Xorshift
-        let mut x = rng.get();
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        rng.set(x);
-
-        // This is a fast alternative to `x % n`.
-        //
-        // Author: Daniel Lemire
-        // Source: https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/
-        ((x.0 as u64).wrapping_mul(n as u64) >> 32) as u32
-    })
-}
 
 fn bulk_load<T: Storage>(c: &mut Criterion) {
     let count = AtomicU32::new(0_u32);
@@ -136,39 +104,64 @@ fn monotonic_crud<T: Storage>(c: &mut Criterion) {
     });
 }
 
-fn random_crud<T: Storage>(c: &mut Criterion) {
-    const SIZE: u32 = 65536;
-
+fn random_read<T: Storage>(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(8)
         .enable_all()
         .build()
         .unwrap();
-    rt.block_on(async {
-        let db = T::open(format!("{}_random_crud", T::name())).await.unwrap();
 
-        c.bench_function(&format!("Store: {}, random inserts", T::name()), |b| {
+    rt.block_on(async {
+        let db_path = format!("{}_random_read", T::name());
+        let db = T::open(&db_path).await.unwrap();
+
+        let key_size_range = 1usize..1025usize;
+        let keys = prepare_data(&db, 100000, key_size_range.clone(), 1usize..1025usize).await;
+        let keys = keys.into_iter().collect::<Vec<_>>();
+        let key_count = keys.len();
+        println!(
+            "db size: {:?}, key count: {}",
+            db.size_of_disk().await,
+            key_count
+        );
+
+        c.bench_function(&format!("Store: {}, random read", T::name()), |b| {
+            b.iter(|| async {
+                let index = random(key_count as u32) as usize;
+                let value = db.get(&keys[index]).await.unwrap();
+                assert!(value.is_some());
+            })
+        });
+
+        std::fs::remove_dir_all(db_path).unwrap();
+    });
+}
+
+fn random_write<T: Storage>(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let db_path = format!("{}_random_write", T::name());
+        let db = T::open(&db_path).await.unwrap();
+
+        c.bench_function(&format!("Store: {}, random write", T::name()), |b| {
             b.iter(|| async {
                 db.set(
-                    Bytes::from(random(SIZE).to_be_bytes().to_vec()),
-                    Bytes::new(),
+                    Bytes::from(random_bytes(1usize..1025usize)),
+                    Bytes::from(random_bytes(1usize..1025usize)),
                 )
                 .await
                 .unwrap();
             })
         });
 
-        c.bench_function(&format!("Store: {}, random gets", T::name()), |b| {
-            b.iter(|| async {
-                db.get(&random(SIZE).to_be_bytes()).await.unwrap();
-            })
-        });
+        println!("db size: {:?}", db.size_of_disk().await);
 
-        c.bench_function(&format!("Store: {}, random removals", T::name()), |b| {
-            b.iter(|| async {
-                db.remove(&random(SIZE).to_be_bytes()).await.unwrap();
-            })
-        });
+        std::fs::remove_dir_all(db_path).unwrap();
     });
 }
 
@@ -218,17 +211,31 @@ fn kv_monotonic_crud(c: &mut Criterion) {
     }
 }
 
-fn kv_random_crud(c: &mut Criterion) {
-    random_crud::<KipStorage>(c);
+fn kv_random_read(c: &mut Criterion) {
+    random_read::<KipStorage>(c);
     #[cfg(feature = "sled")]
     {
         use kip_db::kernel::sled_storage::SledStorage;
-        random_crud::<SledStorage>(c);
+        random_read::<SledStorage>(c);
     }
     #[cfg(feature = "rocksdb")]
     {
         use kip_db::kernel::rocksdb_storage::RocksdbStorage;
-        random_crud::<RocksdbStorage>(c);
+        random_read::<RocksdbStorage>(c);
+    }
+}
+
+fn kv_random_write(c: &mut Criterion) {
+    random_write::<KipStorage>(c);
+    #[cfg(feature = "sled")]
+    {
+        use kip_db::kernel::sled_storage::SledStorage;
+        random_write::<SledStorage>(c);
+    }
+    #[cfg(feature = "rocksdb")]
+    {
+        use kip_db::kernel::rocksdb_storage::RocksdbStorage;
+        random_write::<RocksdbStorage>(c);
     }
 }
 
@@ -247,10 +254,20 @@ fn kv_empty_opens(c: &mut Criterion) {
 }
 
 criterion_group!(
-    benches,
+    name = read_benches;
+    config = Criterion::default().sample_size(1000);
+    targets = kv_random_read,
+);
+criterion_group!(
+    name = write_benches;
+    config = Criterion::default().sample_size(100000);
+    targets = kv_random_write,
+);
+criterion_group!(
+    other_benches,
     kv_bulk_load,
     kv_monotonic_crud,
-    kv_random_crud,
     kv_empty_opens
 );
-criterion_main!(benches);
+
+criterion_main!(read_benches, write_benches, other_benches,);

@@ -103,7 +103,7 @@ impl Storage for KipStorage {
     where
         Self: Sized,
     {
-        "LSMStore made in Kould"
+        "KipDB"
     }
 
     #[inline]
