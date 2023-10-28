@@ -42,9 +42,11 @@ pub enum KernelError {
     #[error("CRC code does not match")]
     CrcMisMatch,
 
+    #[cfg(feature = "sled")]
     #[error(transparent)]
     SledErr(#[from] sled::Error),
 
+    #[cfg(feature = "rocksdb")]
     #[error(transparent)]
     RocksdbErr(#[from] rocksdb::Error),
 

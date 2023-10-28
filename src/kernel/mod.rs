@@ -13,7 +13,9 @@ use crate::KernelError;
 
 pub mod io;
 pub mod lsm;
+#[cfg(feature = "rocksdb")]
 pub mod rocksdb_storage;
+#[cfg(feature = "sled")]
 pub mod sled_storage;
 pub mod utils;
 
