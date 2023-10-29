@@ -18,7 +18,7 @@ impl Storage for SledStorage {
     where
         Self: Sized,
     {
-        "Sled made in spacejam"
+        "Sled"
     }
 
     #[inline]

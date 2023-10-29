@@ -57,12 +57,14 @@ impl Storage for RocksdbStorage {
 
     #[inline]
     async fn size_of_disk(&self) -> crate::kernel::KernelResult<u64> {
-        unimplemented!("Rocksdb does not support size_of_disk()")
+        Err(KernelError::NotSupport(
+            "Rocksdb does not support size_of_disk()",
+        ))
     }
 
     #[inline]
     async fn len(&self) -> crate::kernel::KernelResult<usize> {
-        unimplemented!("Rocksdb does not support len()")
+        Err(KernelError::NotSupport("Rocksdb does not support len()"))
     }
 
     #[inline]
