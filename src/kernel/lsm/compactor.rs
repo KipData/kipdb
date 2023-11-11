@@ -1,4 +1,4 @@
-use crate::kernel::lsm::data_sharding;
+use crate::kernel::lsm::{data_sharding, MAX_LEVEL};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::storage::{Config, StoreInner};
 use crate::kernel::lsm::table::meta::TableMeta;
@@ -116,7 +116,7 @@ impl Compactor {
     ///
     /// 经过压缩测试，Level 1的SSTable总是较多，根据原理推断：
     /// Level0的Key基本是无序的，容易生成大量的SSTable至Level1
-    /// 而Level1-7的Key排布有序，故转移至下一层的SSTable数量较小
+    /// 而Level1-MAX_LEVEL的Key排布有序，故转移至下一层的SSTable数量较小
     /// 因此大量数据压缩的情况下Level 1的SSTable数量会较多
     pub(crate) async fn major_compaction(
         &self,
@@ -128,11 +128,11 @@ impl Compactor {
         let config = self.config();
         let mut is_over = false;
 
-        if level > 6 {
+        if level > MAX_LEVEL - 1 {
             return Err(KernelError::LevelOver);
         }
 
-        while level < 7 && !is_over {
+        while level < MAX_LEVEL && !is_over {
             let next_level = level + 1;
 
             // Tips: is_skip_sized选项仅仅允许跳过一次
@@ -198,7 +198,7 @@ impl Compactor {
         let next_level = level + 1;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !(is_skip_sized || version.is_threshold_exceeded_major(config, level)) {
+        if level > MAX_LEVEL - 2 || !(is_skip_sized || version.is_threshold_exceeded_major(config, level)) {
             return Ok(None);
         }
 

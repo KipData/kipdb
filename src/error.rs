@@ -33,7 +33,7 @@ pub enum KernelError {
     #[error("Data is empty")]
     DataEmpty,
 
-    #[error("Max Level is 7")]
+    #[error("Level Over")]
     LevelOver,
 
     #[error("Not the correct type of Cmd")]
