@@ -339,11 +339,12 @@ mod tests {
             there with a sign.";
 
             // Tips: 此处由于倍率为1且阈值固定为4，因此容易导致Level 1高出阈值时候导致归并转移到Level 2时，
-            // 重复触发阈值，导致迁移到Level6之中，此情况是理想之中的
+            // 重复触发阈值，导致迁移到最高等级的Level之中，此情况是理想之中的
             // 普通场景下每个Level之间的阈值数量是有倍数递增的，因此除了极限情况以外，不会发送这种逐级转移的现象
             let config = Config::new(temp_dir.path().to_str().unwrap())
                 .major_threshold_with_sst_size(4)
                 .level_sst_magnification(1)
+                .enable_level_0_memorization()
                 .minor_trigger_with_threshold(TriggerType::Count, 1000);
             let kv_store = KipStorage::open_with_config(config).await?;
             let mut vec_kv = Vec::new();
@@ -381,9 +382,6 @@ mod tests {
                 !level_slice[1].is_empty()
                     || !level_slice[2].is_empty()
                     || !level_slice[3].is_empty()
-                    || !level_slice[4].is_empty()
-                    || !level_slice[5].is_empty()
-                    || !level_slice[6].is_empty()
             );
 
             for (level, slice) in level_slice.iter().enumerate() {
@@ -524,7 +522,7 @@ mod tests {
                     (Bytes::from_static(b"2"), None),
                 ],
                 1,
-                TableType::Skip,
+                TableType::BTree,
             )?;
             let (scope_2, meta_2) = table_loader.create(
                 2,
@@ -534,7 +532,7 @@ mod tests {
                     (Bytes::from_static(b"6"), None),
                 ],
                 1,
-                TableType::Skip,
+                TableType::BTree,
             )?;
             let (scope_3, meta_3) = table_loader.create(
                 3,
@@ -543,7 +541,7 @@ mod tests {
                     (Bytes::from_static(b"2"), None),
                 ],
                 2,
-                TableType::Skip,
+                TableType::BTree,
             )?;
             let (scope_4, meta_4) = table_loader.create(
                 4,
@@ -552,7 +550,7 @@ mod tests {
                     (Bytes::from_static(b"4"), None),
                 ],
                 2,
-                TableType::Skip,
+                TableType::BTree,
             )?;
             let (scope_5, meta_5) = table_loader.create(
                 5,
@@ -561,7 +559,7 @@ mod tests {
                     (Bytes::from_static(b"6"), None),
                 ],
                 2,
-                TableType::Skip,
+                TableType::BTree,
             )?;
             version_status
                 .log_and_apply(

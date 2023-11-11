@@ -349,7 +349,7 @@ impl Config {
 
     #[inline]
     pub fn enable_level_0_memorization(mut self) -> Self {
-        self.level_table_type[0] = TableType::Skip;
+        self.level_table_type[0] = TableType::BTree;
         self
     }
 

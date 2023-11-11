@@ -16,6 +16,7 @@ use std::collections::hash_map::RandomState;
 use std::mem;
 use std::sync::Arc;
 use tracing::warn;
+use crate::kernel::lsm::table::btree_table::BTreeTable;
 
 #[derive(Clone)]
 pub(crate) struct TableLoader {
@@ -62,9 +63,8 @@ impl TableLoader {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_sorted_vec_data(gen, &vec_data)?;
         let table: Box<dyn Table> = match table_type {
-            // FIXME: support SkipTable
-            _ => Box::new(self.create_ss_table(gen, vec_data, level)?),
-            // TableType::Skip => Box::new(SkipTable::new(level, gen, vec_data)),
+            TableType::SortedString => Box::new(self.create_ss_table(gen, vec_data, level)?),
+            TableType::BTree => Box::new(BTreeTable::new(level, gen, vec_data)),
         };
         let table_meta = TableMeta::from(table.as_ref());
         let _ = self.inner.put(gen, table);

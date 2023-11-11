@@ -135,7 +135,7 @@ mod tests {
             let (scope_2, meta_2) =
                 ver_status
                     .loader()
-                    .create(2, slice_2.to_vec(), 1, TableType::Skip)?;
+                    .create(2, slice_2.to_vec(), 1, TableType::BTree)?;
             let fusion_meta = TableMeta::fusion(&[meta_1, meta_2]);
 
             let vec_edit = vec![
