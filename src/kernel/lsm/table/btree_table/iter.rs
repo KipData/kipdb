@@ -104,7 +104,7 @@ mod tests {
         assert_eq!(iter.seek(Seek::First)?, Some(vec[0].clone()));
 
         assert_eq!(
-            iter.seek(Seek::Backward(&vec![b'3']))?,
+            iter.seek(Seek::Backward(&[b'3']))?,
             Some(vec[2].clone())
         );
 

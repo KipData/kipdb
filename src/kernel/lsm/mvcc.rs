@@ -82,7 +82,6 @@ impl Transaction {
         if let Some(buf) = self.write_buf.take() {
             let batch_data = buf
                 .into_iter()
-                .map(|(key, value)| (key, value))
                 .collect_vec();
 
             let is_exceeds = self

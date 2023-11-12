@@ -295,7 +295,7 @@ mod tests {
         );
 
         assert_eq!(
-            merging_iter.seek(Seek::Backward(&vec![b'5']))?,
+            merging_iter.seek(Seek::Backward(&[b'5']))?,
             sequence_iter.next().flatten()
         );
 
