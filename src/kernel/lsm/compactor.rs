@@ -481,14 +481,12 @@ mod tests {
         )
         .await?;
 
-        let (_, vec_data) = &tokio_test::block_on(async move {
-            Compactor::data_merge_and_sharding(
-                vec![&ss_table_1, &ss_table_2],
-                vec![&ss_table_3, &ss_table_4],
-                config.sst_file_size,
-            )
-            .await
-        })?[0];
+        let (_, vec_data) = &Compactor::data_merge_and_sharding(
+            vec![&ss_table_1, &ss_table_2],
+            vec![&ss_table_3, &ss_table_4],
+            config.sst_file_size,
+        )
+        .await?[0];
 
         assert_eq!(
             vec_data,
