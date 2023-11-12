@@ -141,6 +141,8 @@ mod tests {
     use crate::kernel::lsm::iterator::{Iter, Seek};
     use crate::kernel::lsm::mem_table::KeyValue;
     use crate::kernel::lsm::storage::Config;
+    use crate::kernel::lsm::table::btree_table::iter::BTreeTableIter;
+    use crate::kernel::lsm::table::btree_table::BTreeTable;
     use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
     use crate::kernel::lsm::table::ss_table::SSTable;
     use crate::kernel::lsm::version::DEFAULT_SS_TABLE_PATH;
@@ -150,11 +152,9 @@ mod tests {
     use std::collections::hash_map::RandomState;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use crate::kernel::lsm::table::btree_table::BTreeTable;
-    use crate::kernel::lsm::table::btree_table::iter::BTreeTableIter;
 
-    #[test]
-    fn test_sequential_iterator() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_sequential_iterator() -> KernelResult<()> {
         let data_1 = vec![
             (Bytes::from(vec![b'1']), None),
             (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
@@ -177,11 +177,11 @@ mod tests {
             Some((Bytes::from(vec![b'6']), None)),
         ];
 
-        test_with_data(data_1, data_2, test_sequence)
+        test_with_data(data_1, data_2, test_sequence).await
     }
 
-    #[test]
-    fn test_cross_iterator() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_cross_iterator() -> KernelResult<()> {
         let data_1 = vec![
             (Bytes::from(vec![b'1']), None),
             (Bytes::from(vec![b'2']), Some(Bytes::from(vec![b'0']))),
@@ -204,11 +204,11 @@ mod tests {
             Some((Bytes::from(vec![b'6']), None)),
         ];
 
-        test_with_data(data_1, data_2, test_sequence)
+        test_with_data(data_1, data_2, test_sequence).await
     }
 
-    #[test]
-    fn test_same_key_iterator() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_same_key_iterator() -> KernelResult<()> {
         let data_1 = vec![
             (Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0']))),
             (Bytes::from(vec![b'5']), None),
@@ -231,10 +231,10 @@ mod tests {
             Some((Bytes::from(vec![b'5']), None)),
         ];
 
-        test_with_data(data_1, data_2, test_sequence)
+        test_with_data(data_1, data_2, test_sequence).await
     }
 
-    fn test_with_data(
+    async fn test_with_data(
         data_1: Vec<KeyValue>,
         data_2: Vec<KeyValue>,
         sequence: Vec<Option<KeyValue>>,
@@ -261,7 +261,8 @@ mod tests {
             data_2,
             0,
             IoType::Direct,
-        )?;
+        )
+        .await?;
 
         let bt_iter = BTreeTableIter::new(&btree_table);
 

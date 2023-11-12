@@ -128,14 +128,14 @@ mod tests {
             }
             let (slice_1, slice_2) = vec_data.split_at(2000);
 
-            let (scope_1, meta_1) =
-                ver_status
-                    .loader()
-                    .create(1, slice_1.to_vec(), 1, TableType::SortedString)?;
-            let (scope_2, meta_2) =
-                ver_status
-                    .loader()
-                    .create(2, slice_2.to_vec(), 1, TableType::BTree)?;
+            let (scope_1, meta_1) = ver_status
+                .loader()
+                .create(1, slice_1.to_vec(), 1, TableType::SortedString)
+                .await?;
+            let (scope_2, meta_2) = ver_status
+                .loader()
+                .create(2, slice_2.to_vec(), 1, TableType::BTree)
+                .await?;
             let fusion_meta = TableMeta::fusion(&[meta_1, meta_2]);
 
             let vec_edit = vec![

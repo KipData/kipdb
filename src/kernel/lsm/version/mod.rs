@@ -9,13 +9,13 @@ use crate::kernel::lsm::table::Table;
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
+use crate::kernel::lsm::MAX_LEVEL;
 use crate::kernel::{sorted_gen_list, KernelResult};
 use itertools::Itertools;
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
-use crate::kernel::lsm::MAX_LEVEL;
 
 pub(crate) mod cleaner;
 pub(crate) mod edit;
@@ -158,12 +158,7 @@ impl Version {
     }
 
     fn level_slice_new() -> [Vec<Scope>; MAX_LEVEL] {
-        [
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ]
+        [Vec::new(), Vec::new(), Vec::new(), Vec::new()]
     }
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base

@@ -2,8 +2,8 @@ use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::btree_table::BTreeTable;
 use bytes::Bytes;
-use std::collections::Bound;
 use std::collections::btree_map::Range;
+use std::collections::Bound;
 
 pub(crate) struct BTreeTableIter<'a> {
     inner: Option<Range<'a, Bytes, KeyValue>>,
@@ -19,12 +19,23 @@ impl<'a> BTreeTableIter<'a> {
 
     fn _seek(&mut self, seek: Seek) {
         self.inner = match seek {
-            Seek::First => Some(self.table.inner.range::<Bytes, (Bound<Bytes>, Bound<Bytes>)>((Bound::Unbounded,Bound::Unbounded))),
+            Seek::First => Some(
+                self.table
+                    .inner
+                    .range::<Bytes, (Bound<Bytes>, Bound<Bytes>)>((
+                        Bound::Unbounded,
+                        Bound::Unbounded,
+                    )),
+            ),
             Seek::Last => None,
-            Seek::Backward(key) => Some(self.table.inner.range::<Bytes, (Bound<Bytes>, Bound<Bytes>)>((
-                Bound::Included(Bytes::copy_from_slice(key)),
-                Bound::Unbounded,
-            ))),
+            Seek::Backward(key) => Some(
+                self.table
+                    .inner
+                    .range::<Bytes, (Bound<Bytes>, Bound<Bytes>)>((
+                        Bound::Included(Bytes::copy_from_slice(key)),
+                        Bound::Unbounded,
+                    )),
+            ),
         };
     }
 }

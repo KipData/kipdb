@@ -8,7 +8,7 @@ use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;
-use crate::kernel::lsm::{MAX_LEVEL, query_and_compaction, version};
+use crate::kernel::lsm::{query_and_compaction, version, MAX_LEVEL};
 use crate::kernel::KernelResult;
 use crate::kernel::{lock_or_time_out, Storage, DEFAULT_LOCK_FILE};
 use crate::KernelError;

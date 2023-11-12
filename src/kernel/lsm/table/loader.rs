@@ -3,6 +3,7 @@ use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
 use crate::kernel::lsm::mem_table::{logs_decode, KeyValue};
 use crate::kernel::lsm::storage::Config;
+use crate::kernel::lsm::table::btree_table::BTreeTable;
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::ss_table::block::BlockCache;
@@ -16,7 +17,6 @@ use std::collections::hash_map::RandomState;
 use std::mem;
 use std::sync::Arc;
 use tracing::warn;
-use crate::kernel::lsm::table::btree_table::BTreeTable;
 
 #[derive(Clone)]
 pub(crate) struct TableLoader {
@@ -53,7 +53,7 @@ impl TableLoader {
     }
 
     #[allow(clippy::match_single_binding)]
-    pub(crate) fn create(
+    pub(crate) async fn create(
         &self,
         gen: i64,
         vec_data: Vec<KeyValue>,
@@ -63,7 +63,7 @@ impl TableLoader {
         // 获取数据的Key涵盖范围
         let scope = Scope::from_sorted_vec_data(gen, &vec_data)?;
         let table: Box<dyn Table> = match table_type {
-            TableType::SortedString => Box::new(self.create_ss_table(gen, vec_data, level)?),
+            TableType::SortedString => Box::new(self.create_ss_table(gen, vec_data, level).await?),
             TableType::BTree => Box::new(BTreeTable::new(level, gen, vec_data)),
         };
         let table_meta = TableMeta::from(table.as_ref());
@@ -75,13 +75,13 @@ impl TableLoader {
     pub(crate) fn get(&self, gen: i64) -> Option<&dyn Table> {
         self.inner
             .get_or_insert(gen, |gen| {
-                let sst_factory = &self.factory;
+                let table_factory = &self.factory;
 
-                let ss_table = match sst_factory
+                let table: Box<dyn Table> = match table_factory
                     .reader(*gen, IoType::Direct)
                     .and_then(|reader| SSTable::load_from_file(reader, Arc::clone(&self.cache)))
                 {
-                    Ok(ss_table) => ss_table,
+                    Ok(ss_table) => Box::new(ss_table),
                     Err(err) => {
                         // 尝试恢复仅对Level 0的Table有效
                         warn!(
@@ -92,17 +92,17 @@ impl TableLoader {
                             logs_decode(self.wal.load(*gen, |bytes| Ok(mem::take(bytes)))?)?
                                 .collect_vec();
 
-                        self.create_ss_table(*gen, reload_data, LEVEL_0)?
+                        Box::new(BTreeTable::new(LEVEL_0, *gen, reload_data))
                     }
                 };
 
-                Ok(Box::new(ss_table))
+                Ok(table)
             })
             .map(Box::as_ref)
             .ok()
     }
 
-    fn create_ss_table(
+    async fn create_ss_table(
         &self,
         gen: i64,
         reload_data: Vec<(Bytes, Option<Bytes>)>,
@@ -117,6 +117,7 @@ impl TableLoader {
             level,
             IoType::Direct,
         )
+        .await
     }
 
     pub(crate) fn remove(&self, gen: &i64) -> Option<BoxTable> {
@@ -157,8 +158,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_ss_table_loader() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_ss_table_loader() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let value = Bytes::copy_from_slice(
@@ -198,7 +199,9 @@ mod tests {
 
         let sst_loader = TableLoader::new(config, sst_factory.clone(), log_loader.clone())?;
 
-        let _ = sst_loader.create(1, vec_data.clone(), 0, TableType::SortedString)?;
+        let _ = sst_loader
+            .create(1, vec_data.clone(), 0, TableType::SortedString)
+            .await?;
 
         assert!(sst_loader.remove(&1).is_some());
         assert!(sst_loader.is_emtpy());

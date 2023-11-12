@@ -1,11 +1,11 @@
 pub(crate) mod iter;
 
-use std::collections::BTreeMap;
 use crate::kernel::lsm::iterator::Iter;
 use crate::kernel::lsm::mem_table::KeyValue;
+use crate::kernel::lsm::table::btree_table::iter::BTreeTableIter;
 use crate::kernel::lsm::table::Table;
 use bytes::Bytes;
-use crate::kernel::lsm::table::btree_table::iter::BTreeTableIter;
+use std::collections::BTreeMap;
 
 pub(crate) struct BTreeTable {
     level: usize,

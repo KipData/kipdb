@@ -3,8 +3,8 @@ use crate::kernel::lsm::iterator::merging_iter::MergingIter;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
-use crate::kernel::KernelResult;
 use crate::kernel::lsm::MAX_LEVEL;
+use crate::kernel::KernelResult;
 
 /// Version键值对迭代器
 pub struct VersionIter<'a> {

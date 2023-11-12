@@ -3,6 +3,7 @@ use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::{Buf, BufMut, Bytes};
+use futures::future;
 use growable_bloom_filter::GrowableBloom;
 use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
 use itertools::Itertools;
@@ -338,7 +339,7 @@ impl BlockBuilder {
         self.len += 1;
         // 超过指定的Block大小后进行Block构建(默认为4K大小)
         if self.is_out_of_byte() {
-            self.build_();
+            self._build();
         }
     }
 
@@ -349,7 +350,7 @@ impl BlockBuilder {
     /// 封装用的构建Block方法
     ///
     /// 刷新buf获取其中的所有键值对与其中最大的key进行前缀压缩构建为Block
-    fn build_(&mut self) {
+    fn _build(&mut self) {
         if let (vec_kv, Some(last_key)) = self.buf.flush() {
             self.vec_block.push((
                 Block::new(vec_kv, self.options.data_restart_interval),
@@ -359,28 +360,32 @@ impl BlockBuilder {
     }
 
     /// 构建多个Block连续序列化组合成的两个Bytes 前者为多个DataBlock，后者为单个IndexBlock
-    pub(crate) fn build(mut self) -> KernelResult<(Vec<u8>, Vec<u8>)> {
-        self.build_();
+    pub(crate) async fn build(mut self) -> KernelResult<(Vec<u8>, Vec<u8>)> {
+        self._build();
 
-        let mut offset = 0;
-        let mut vec_index = Vec::with_capacity(self.vec_block.len());
-
-        let blocks_bytes = self
+        let encode_block_futures = self
             .vec_block
             .into_iter()
-            .flat_map(|(block, last_key)| {
-                block.encode(self.options.compress_type).map(|block_bytes| {
-                    let len = block_bytes.len();
-                    vec_index.push((last_key, Index::new(offset, len)));
-                    offset += len as u32;
-                    block_bytes
-                })
-            })
-            .flatten()
-            .collect_vec();
+            .map(|(block, last_key)| async move {
+                block
+                    .encode(self.options.compress_type)
+                    .map(|block_bytes| ((last_key, block_bytes.len()), block_bytes))
+            });
+        let mut blocks_bytes = vec![];
+        let mut offset = 0;
+        let indexes = future::try_join_all(encode_block_futures)
+            .await?
+            .into_iter()
+            .map(|((last_key, len), mut data_bytes)| {
+                let index = Index::new(offset, len);
 
-        let indexes_bytes = Block::new(vec_index, self.options.index_restart_interval)
-            .encode(CompressType::None)?;
+                blocks_bytes.append(&mut data_bytes);
+                offset += len as u32;
+                (last_key, index)
+            })
+            .collect_vec();
+        let indexes_bytes =
+            Block::new(indexes, self.options.index_restart_interval).encode(CompressType::None)?;
 
         Ok((blocks_bytes, indexes_bytes))
     }
@@ -481,7 +486,7 @@ where
         self.vec_entry[index].1.item.clone()
     }
 
-    pub(crate) fn binary_search(&self, key: &[u8]) -> core::result::Result<usize, usize> {
+    pub(crate) fn binary_search(&self, key: &[u8]) -> Result<usize, usize> {
         self.vec_entry.binary_search_by(|(index, entry)| {
             if entry.shared_len > 0 {
                 // 对有前缀压缩的Key进行前缀拼接
@@ -573,6 +578,7 @@ where
 
     /// 读取Bytes进行Block的反序列化
     pub(crate) fn from_raw(mut buf: Vec<u8>, restart_interval: usize) -> KernelResult<Self> {
+        assert!(!buf.is_empty());
         let date_bytes_len = buf.len() - CRC_SIZE;
         if crc32fast::hash(&buf) == u32::decode_fixed(&buf[date_bytes_len..]) {
             return Err(KernelError::CrcMisMatch);
@@ -703,8 +709,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_block() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_block() -> KernelResult<()> {
         let value = Bytes::from_static(b"Let life be beautiful like summer flowers");
         let mut vec_data = Vec::new();
 
@@ -725,7 +731,7 @@ mod tests {
 
         let block = builder.vec_block[0].0.clone();
 
-        let (block_bytes, index_bytes) = builder.build()?;
+        let (block_bytes, index_bytes) = builder.build().await?;
 
         let index_block = Block::<Index>::decode(
             index_bytes,

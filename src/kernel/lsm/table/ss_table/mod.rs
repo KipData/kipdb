@@ -41,7 +41,7 @@ pub(crate) struct SSTable {
 }
 
 impl SSTable {
-    pub(crate) fn new(
+    pub(crate) async fn new(
         io_factory: &IoFactory,
         config: &Config,
         cache: Arc<BlockCache>,
@@ -72,8 +72,7 @@ impl SSTable {
             index_restart_interval,
             data_restart_interval,
         };
-
-        let (data_bytes, index_bytes) = builder.build()?;
+        let (data_bytes, index_bytes) = builder.build().await?;
         let meta_bytes = bincode::serialize(&meta)?;
         let footer = Footer {
             level: level as u8,
@@ -256,8 +255,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_ss_table() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_ss_table() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let value = Bytes::copy_from_slice(
@@ -286,7 +285,9 @@ mod tests {
             ));
         }
         // Tips: 此处Level需要为0以上，因为Level 0默认为Mem类型，容易丢失
-        let _ = sst_loader.create(1, vec_data.clone(), 1, TableType::SortedString)?;
+        let _ = sst_loader
+            .create(1, vec_data.clone(), 1, TableType::SortedString)
+            .await?;
         assert!(sst_loader.is_table_file_exist(1)?);
 
         let ss_table = sst_loader.get(1).unwrap();
