@@ -8,7 +8,7 @@ use crate::kernel::lsm::table::TableType;
 use crate::kernel::lsm::trigger::TriggerType;
 use crate::kernel::lsm::version::status::VersionStatus;
 use crate::kernel::lsm::version::Version;
-use crate::kernel::lsm::{query_and_compaction, version};
+use crate::kernel::lsm::{query_and_compaction, version, MAX_LEVEL};
 use crate::kernel::KernelResult;
 use crate::kernel::{lock_or_time_out, Storage, DEFAULT_LOCK_FILE};
 use crate::KernelError;
@@ -42,7 +42,7 @@ pub(crate) const DEFAULT_MINOR_THRESHOLD_WITH_SIZE_WITH_MEM: usize = 2 * 1024 * 
 
 pub(crate) const DEFAULT_SST_FILE_SIZE: usize = 2 * 1024 * 1024;
 
-pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 10;
+pub(crate) const DEFAULT_MAJOR_THRESHOLD_WITH_SST_SIZE: usize = 4;
 
 pub(crate) const DEFAULT_LEVEL_SST_MAGNIFICATION: usize = 10;
 
@@ -286,7 +286,7 @@ pub struct Config {
     pub(crate) dir_path: PathBuf,
     /// 各层级对应Table类型
     /// Tips: SkipTable仅可使用于Level 0之中，否则会因为Level 0外不支持WAL恢复而导致停机后丢失数据
-    pub(crate) level_table_type: [TableType; 7],
+    pub(crate) level_table_type: [TableType; MAX_LEVEL],
     /// WAL数量阈值
     pub(crate) wal_threshold: usize,
     /// SSTable文件大小
@@ -323,7 +323,7 @@ impl Config {
     pub fn new(path: impl Into<PathBuf> + Send) -> Config {
         Config {
             dir_path: path.into(),
-            level_table_type: [TableType::SortedString; 7],
+            level_table_type: [TableType::SortedString; MAX_LEVEL],
             wal_threshold: DEFAULT_WAL_THRESHOLD,
             sst_file_size: DEFAULT_SST_FILE_SIZE,
             minor_trigger_with_threshold: (
@@ -349,7 +349,7 @@ impl Config {
 
     #[inline]
     pub fn enable_level_0_memorization(mut self) -> Self {
-        self.level_table_type[0] = TableType::Skip;
+        self.level_table_type[0] = TableType::BTree;
         self
     }
 

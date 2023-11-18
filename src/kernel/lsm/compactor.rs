@@ -1,4 +1,3 @@
-use crate::kernel::lsm::data_sharding;
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::storage::{Config, StoreInner};
 use crate::kernel::lsm::table::meta::TableMeta;
@@ -6,6 +5,7 @@ use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::{collect_gen, Table};
 use crate::kernel::lsm::version::edit::VersionEdit;
 use crate::kernel::lsm::version::status::VersionStatus;
+use crate::kernel::lsm::{data_sharding, MAX_LEVEL};
 use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
@@ -85,12 +85,16 @@ impl Compactor {
         values: Vec<KeyValue>,
     ) -> KernelResult<()> {
         if !values.is_empty() {
-            let (scope, meta) = self.ver_status().loader().create(
-                gen,
-                values,
-                LEVEL_0,
-                self.config().level_table_type[LEVEL_0],
-            )?;
+            let (scope, meta) = self
+                .ver_status()
+                .loader()
+                .create(
+                    gen,
+                    values,
+                    LEVEL_0,
+                    self.config().level_table_type[LEVEL_0],
+                )
+                .await?;
 
             // `Compactor::data_loading_with_level`中会检测是否达到压缩阈值，因此此处直接调用Major压缩
             self.major_compaction(
@@ -116,7 +120,7 @@ impl Compactor {
     ///
     /// 经过压缩测试，Level 1的SSTable总是较多，根据原理推断：
     /// Level0的Key基本是无序的，容易生成大量的SSTable至Level1
-    /// 而Level1-7的Key排布有序，故转移至下一层的SSTable数量较小
+    /// 而Level1-MAX_LEVEL的Key排布有序，故转移至下一层的SSTable数量较小
     /// 因此大量数据压缩的情况下Level 1的SSTable数量会较多
     pub(crate) async fn major_compaction(
         &self,
@@ -128,11 +132,11 @@ impl Compactor {
         let config = self.config();
         let mut is_over = false;
 
-        if level > 6 {
+        if level > MAX_LEVEL - 1 {
             return Err(KernelError::LevelOver);
         }
 
-        while level < 7 && !is_over {
+        while level < MAX_LEVEL && !is_over {
             let next_level = level + 1;
 
             // Tips: is_skip_sized选项仅仅允许跳过一次
@@ -146,7 +150,7 @@ impl Compactor {
             {
                 let start = Instant::now();
                 // 并行创建SSTable
-                let table_futures = vec_sharding.into_iter().map(|(gen, sharding)| async move {
+                let table_futures = vec_sharding.into_iter().map(|(gen, sharding)| {
                     self.ver_status().loader().create(
                         gen,
                         sharding,
@@ -198,7 +202,9 @@ impl Compactor {
         let next_level = level + 1;
 
         // 如果该Level的SSTables数量尚未越出阈值则提取返回空
-        if level > 5 || !(is_skip_sized || version.is_threshold_exceeded_major(config, level)) {
+        if level > MAX_LEVEL - 2
+            || !(is_skip_sized || version.is_threshold_exceeded_major(config, level))
+        {
             return Ok(None);
         }
 
@@ -327,93 +333,87 @@ mod tests {
     use std::time::Instant;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_lsm_major_compactor() -> KernelResult<()> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_lsm_major_compactor() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-        tokio_test::block_on(async move {
-            let times = 30_000;
+        let times = 30_000;
 
-            let value = b"Stray birds of summer come to my window to sing and fly away.
+        let value = b"Stray birds of summer come to my window to sing and fly away.
             And yellow leaves of autumn, which have no songs, flutter and fall
             there with a sign.";
 
-            // Tips: 此处由于倍率为1且阈值固定为4，因此容易导致Level 1高出阈值时候导致归并转移到Level 2时，
-            // 重复触发阈值，导致迁移到Level6之中，此情况是理想之中的
-            // 普通场景下每个Level之间的阈值数量是有倍数递增的，因此除了极限情况以外，不会发送这种逐级转移的现象
-            let config = Config::new(temp_dir.path().to_str().unwrap())
-                .major_threshold_with_sst_size(4)
-                .level_sst_magnification(1)
-                .minor_trigger_with_threshold(TriggerType::Count, 1000);
-            let kv_store = KipStorage::open_with_config(config).await?;
-            let mut vec_kv = Vec::new();
+        // Tips: 此处由于倍率为1且阈值固定为4，因此容易导致Level 1高出阈值时候导致归并转移到Level 2时，
+        // 重复触发阈值，导致迁移到最高等级的Level之中，此情况是理想之中的
+        // 普通场景下每个Level之间的阈值数量是有倍数递增的，因此除了极限情况以外，不会发送这种逐级转移的现象
+        let config = Config::new(temp_dir.path().to_str().unwrap())
+            .major_threshold_with_sst_size(4)
+            .level_sst_magnification(1)
+            .enable_level_0_memorization()
+            .minor_trigger_with_threshold(TriggerType::Count, 1000);
+        let kv_store = KipStorage::open_with_config(config).await?;
+        let mut vec_kv = Vec::new();
 
-            for i in 0..times {
-                let vec_u8 = bincode::serialize(&i)?;
-                vec_kv.push((
-                    Bytes::from(vec_u8.clone()),
-                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
-                ));
+        for i in 0..times {
+            let vec_u8 = bincode::serialize(&i)?;
+            vec_kv.push((
+                Bytes::from(vec_u8.clone()),
+                Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
+            ));
+        }
+
+        let start = Instant::now();
+
+        assert_eq!(times % 1000, 0);
+
+        for i in 0..times / 1000 {
+            for j in 0..1000 {
+                kv_store
+                    .set(
+                        vec_kv[i * 1000 + j].0.clone(),
+                        vec_kv[i * 1000 + j].1.clone(),
+                    )
+                    .await?;
             }
-
-            let start = Instant::now();
-
-            assert_eq!(times % 1000, 0);
-
-            for i in 0..times / 1000 {
-                for j in 0..1000 {
-                    kv_store
-                        .set(
-                            vec_kv[i * 1000 + j].0.clone(),
-                            vec_kv[i * 1000 + j].1.clone(),
-                        )
-                        .await?;
-                }
-                kv_store.flush().await?;
-            }
-            println!("[set_for][Time: {:?}]", start.elapsed());
-
-            let version = kv_store.current_version().await;
-            let level_slice = &version.level_slice;
-            println!("MajorCompaction Test: {:#?}", level_slice);
-            assert!(!level_slice[0].is_empty());
-            assert!(
-                !level_slice[1].is_empty()
-                    || !level_slice[2].is_empty()
-                    || !level_slice[3].is_empty()
-                    || !level_slice[4].is_empty()
-                    || !level_slice[5].is_empty()
-                    || !level_slice[6].is_empty()
-            );
-
-            for (level, slice) in level_slice.iter().enumerate() {
-                if !slice.is_empty() && level != LEVEL_0 {
-                    let mut tmp_scope: Option<&Scope> = None;
-
-                    for scope in slice {
-                        if let Some(last_scope) = tmp_scope {
-                            assert!(last_scope.end < scope.start);
-                        }
-                        tmp_scope = Some(scope);
-                    }
-                }
-            }
-
-            assert_eq!(kv_store.len().await?, times);
-
-            let start = Instant::now();
-            for kv in vec_kv.iter().take(times) {
-                assert_eq!(kv_store.get(&kv.0).await?, Some(kv.1.clone()));
-            }
-            println!("[get_for][Time: {:?}]", start.elapsed());
             kv_store.flush().await?;
+        }
+        println!("[set_for][Time: {:?}]", start.elapsed());
 
-            Ok(())
-        })
+        let version = kv_store.current_version().await;
+        let level_slice = &version.level_slice;
+        println!("MajorCompaction Test: {:#?}", level_slice);
+        assert!(!level_slice[0].is_empty());
+        assert!(
+            !level_slice[1].is_empty() || !level_slice[2].is_empty() || !level_slice[3].is_empty()
+        );
+
+        for (level, slice) in level_slice.iter().enumerate() {
+            if !slice.is_empty() && level != LEVEL_0 {
+                let mut tmp_scope: Option<&Scope> = None;
+
+                for scope in slice {
+                    if let Some(last_scope) = tmp_scope {
+                        assert!(last_scope.end < scope.start);
+                    }
+                    tmp_scope = Some(scope);
+                }
+            }
+        }
+
+        assert_eq!(kv_store.len().await?, times);
+
+        let start = Instant::now();
+        for kv in vec_kv.iter().take(times) {
+            assert_eq!(kv_store.get(&kv.0).await?, Some(kv.1.clone()));
+        }
+        println!("[get_for][Time: {:?}]", start.elapsed());
+        kv_store.flush().await?;
+
+        Ok(())
     }
 
-    #[test]
-    fn test_data_merge() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_data_merge() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let config = Config::new(temp_dir.into_path());
@@ -438,7 +438,8 @@ mod tests {
             ],
             0,
             IoType::Direct,
-        )?;
+        )
+        .await?;
         let ss_table_2 = SSTable::new(
             &sst_factory,
             &config,
@@ -450,7 +451,8 @@ mod tests {
             ],
             0,
             IoType::Direct,
-        )?;
+        )
+        .await?;
         let ss_table_3 = SSTable::new(
             &sst_factory,
             &config,
@@ -462,7 +464,8 @@ mod tests {
             ],
             1,
             IoType::Direct,
-        )?;
+        )
+        .await?;
         let ss_table_4 = SSTable::new(
             &sst_factory,
             &config,
@@ -475,16 +478,15 @@ mod tests {
             ],
             1,
             IoType::Direct,
-        )?;
+        )
+        .await?;
 
-        let (_, vec_data) = &tokio_test::block_on(async move {
-            Compactor::data_merge_and_sharding(
-                vec![&ss_table_1, &ss_table_2],
-                vec![&ss_table_3, &ss_table_4],
-                config.sst_file_size,
-            )
-            .await
-        })?[0];
+        let (_, vec_data) = &Compactor::data_merge_and_sharding(
+            vec![&ss_table_1, &ss_table_2],
+            vec![&ss_table_3, &ss_table_4],
+            config.sst_file_size,
+        )
+        .await?[0];
 
         assert_eq!(
             vec_data,
@@ -517,52 +519,62 @@ mod tests {
             let version_status = compactor.ver_status();
             let table_loader = version_status.loader();
 
-            let (scope_1, meta_1) = table_loader.create(
-                1,
-                vec![
-                    (Bytes::from_static(b"1"), None),
-                    (Bytes::from_static(b"2"), None),
-                ],
-                1,
-                TableType::Skip,
-            )?;
-            let (scope_2, meta_2) = table_loader.create(
-                2,
-                vec![
-                    (Bytes::from_static(b"3"), None),
-                    (Bytes::from_static(b"5"), None),
-                    (Bytes::from_static(b"6"), None),
-                ],
-                1,
-                TableType::Skip,
-            )?;
-            let (scope_3, meta_3) = table_loader.create(
-                3,
-                vec![
-                    (Bytes::from_static(b"1"), None),
-                    (Bytes::from_static(b"2"), None),
-                ],
-                2,
-                TableType::Skip,
-            )?;
-            let (scope_4, meta_4) = table_loader.create(
-                4,
-                vec![
-                    (Bytes::from_static(b"3"), None),
-                    (Bytes::from_static(b"4"), None),
-                ],
-                2,
-                TableType::Skip,
-            )?;
-            let (scope_5, meta_5) = table_loader.create(
-                5,
-                vec![
-                    (Bytes::from_static(b"5"), None),
-                    (Bytes::from_static(b"6"), None),
-                ],
-                2,
-                TableType::Skip,
-            )?;
+            let (scope_1, meta_1) = table_loader
+                .create(
+                    1,
+                    vec![
+                        (Bytes::from_static(b"1"), None),
+                        (Bytes::from_static(b"2"), None),
+                    ],
+                    1,
+                    TableType::BTree,
+                )
+                .await?;
+            let (scope_2, meta_2) = table_loader
+                .create(
+                    2,
+                    vec![
+                        (Bytes::from_static(b"3"), None),
+                        (Bytes::from_static(b"5"), None),
+                        (Bytes::from_static(b"6"), None),
+                    ],
+                    1,
+                    TableType::BTree,
+                )
+                .await?;
+            let (scope_3, meta_3) = table_loader
+                .create(
+                    3,
+                    vec![
+                        (Bytes::from_static(b"1"), None),
+                        (Bytes::from_static(b"2"), None),
+                    ],
+                    2,
+                    TableType::BTree,
+                )
+                .await?;
+            let (scope_4, meta_4) = table_loader
+                .create(
+                    4,
+                    vec![
+                        (Bytes::from_static(b"3"), None),
+                        (Bytes::from_static(b"4"), None),
+                    ],
+                    2,
+                    TableType::BTree,
+                )
+                .await?;
+            let (scope_5, meta_5) = table_loader
+                .create(
+                    5,
+                    vec![
+                        (Bytes::from_static(b"5"), None),
+                        (Bytes::from_static(b"6"), None),
+                    ],
+                    2,
+                    TableType::BTree,
+                )
+                .await?;
             version_status
                 .log_and_apply(
                     vec![

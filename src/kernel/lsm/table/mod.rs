@@ -4,17 +4,16 @@ use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::KernelResult;
 use itertools::Itertools;
 
+pub(crate) mod btree_table;
 pub(crate) mod loader;
 pub(crate) mod meta;
 pub(crate) mod scope;
-pub(crate) mod skip_table;
 pub(crate) mod ss_table;
 
 #[derive(Copy, Clone, Debug)]
 pub enum TableType {
     SortedString,
-    #[allow(dead_code)]
-    Skip,
+    BTree,
 }
 
 pub(crate) type BoxTable = Box<dyn Table>;

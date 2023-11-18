@@ -9,6 +9,7 @@ use crate::kernel::lsm::table::Table;
 use crate::kernel::lsm::version::cleaner::CleanTag;
 use crate::kernel::lsm::version::edit::{EditType, VersionEdit};
 use crate::kernel::lsm::version::meta::VersionMeta;
+use crate::kernel::lsm::MAX_LEVEL;
 use crate::kernel::{sorted_gen_list, KernelResult};
 use itertools::Itertools;
 use std::fmt;
@@ -28,7 +29,7 @@ pub(crate) const DEFAULT_SS_TABLE_PATH: &str = "ss_table";
 pub(crate) const DEFAULT_VERSION_PATH: &str = "version";
 pub(crate) const DEFAULT_VERSION_LOG_THRESHOLD: usize = 233;
 
-pub(crate) type LevelSlice = [Vec<Scope>; 7];
+pub(crate) type LevelSlice = [Vec<Scope>; MAX_LEVEL];
 
 pub(crate) enum SeekOption<T> {
     Hit(T),
@@ -156,16 +157,8 @@ impl Version {
         Ok(())
     }
 
-    fn level_slice_new() -> [Vec<Scope>; 7] {
-        [
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ]
+    fn level_slice_new() -> [Vec<Scope>; MAX_LEVEL] {
+        [Vec::new(), Vec::new(), Vec::new(), Vec::new()]
     }
 
     /// 把当前version的leveSlice中的数据转化为一组versionEdit 作为新version_log的base
@@ -249,8 +242,8 @@ impl Version {
         }
         // 仅仅记录第一个key与SSTable的scope meet且seek miss的level
         let mut miss_seek = None;
-        // Level 1-7的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的Table
-        for level in 1..7 {
+        // Level 1-MAX_LEVEL的数据排布有序且唯一，因此在每一个等级可以直接找到唯一一个Key可能在范围内的Table
+        for level in 1..MAX_LEVEL {
             let offset = self.query_meet_index(key, level);
 
             if let Some(scope) = self.level_slice[level].get(offset) {
@@ -304,7 +297,7 @@ impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "Version: {}", self.version_num)?;
 
-        for level in 0..7 {
+        for level in 0..MAX_LEVEL {
             writeln!(f, "Level {level}:")?;
             write!(f, "\t")?;
             for scope in &self.level_slice[level] {

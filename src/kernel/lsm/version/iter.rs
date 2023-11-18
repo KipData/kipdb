@@ -3,6 +3,7 @@ use crate::kernel::lsm::iterator::merging_iter::MergingIter;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
+use crate::kernel::lsm::MAX_LEVEL;
 use crate::kernel::KernelResult;
 
 /// Version键值对迭代器
@@ -28,7 +29,7 @@ impl<'a> VersionIter<'a> {
             vec_iter.push(table.iter()?);
         }
 
-        for level in 1..6 {
+        for level in 1..MAX_LEVEL - 1 {
             if let Ok(level_iter) = LevelIter::new(version, level) {
                 vec_iter.push(Box::new(level_iter));
             }

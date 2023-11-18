@@ -113,8 +113,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_iterator() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_iterator() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
         let config = Config::new(temp_dir.into_path());
@@ -150,7 +150,8 @@ mod tests {
             vec_data.clone(),
             0,
             IoType::Direct,
-        )?;
+        )
+        .await?;
 
         let mut iterator = SSTableIter::new(&ss_table)?;
 
