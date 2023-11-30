@@ -29,6 +29,11 @@ unsafe impl Sync for BufPtr {}
 
 struct BufPtr(NonNull<Vec<KeyValue>>);
 
+pub enum CheckType {
+    None,
+    Optimistic,
+}
+
 pub struct Transaction {
     pub(crate) store_inner: Arc<StoreInner>,
     pub(crate) compactor_tx: Sender<CompactTask>,
@@ -36,6 +41,7 @@ pub struct Transaction {
     pub(crate) version: Arc<Version>,
     pub(crate) write_buf: Option<SkipMap<Bytes, Option<Bytes>>>,
     pub(crate) seq_id: i64,
+    pub(crate) check_type: CheckType,
 }
 
 impl Transaction {
@@ -80,9 +86,19 @@ impl Transaction {
     #[inline]
     pub async fn commit(mut self) -> KernelResult<()> {
         if let Some(buf) = self.write_buf.take() {
-            let batch_data = buf
-                .into_iter()
-                .collect_vec();
+            let batch_data = buf.into_iter().collect_vec();
+
+            match self.check_type {
+                CheckType::None => (),
+                CheckType::Optimistic => {
+                    if self
+                        .mem_table()
+                        .check_key_conflict(&batch_data, self.seq_id)
+                    {
+                        return Err(KernelError::RepeatedWrite);
+                    }
+                }
+            }
 
             let is_exceeds = self
                 .store_inner
@@ -292,90 +308,113 @@ impl<'a> Iter<'a> for BufIter<'a> {
 #[cfg(test)]
 mod tests {
     use crate::kernel::lsm::iterator::Iter;
+    use crate::kernel::lsm::mvcc::CheckType;
     use crate::kernel::lsm::storage::{Config, KipStorage};
     use crate::kernel::{KernelResult, Storage};
+    use crate::KernelError;
     use bincode::Options;
     use bytes::Bytes;
     use itertools::Itertools;
     use std::collections::Bound;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_transaction() -> KernelResult<()> {
+    #[tokio::test]
+    async fn test_transaction() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
-        tokio_test::block_on(async move {
-            let times = 5000;
+        let times = 5000;
 
-            let value = b"0";
+        let value = b"0";
 
-            let config = Config::new(temp_dir.into_path()).major_threshold_with_sst_size(4);
-            let kv_store = KipStorage::open_with_config(config).await?;
+        let config = Config::new(temp_dir.into_path()).major_threshold_with_sst_size(4);
+        let kv_store = KipStorage::open_with_config(config).await?;
 
-            let mut vec_kv = Vec::new();
+        let mut vec_kv = Vec::new();
 
-            for i in 0..times {
-                let vec_u8 = bincode::options().with_big_endian().serialize(&i)?;
-                vec_kv.push((
-                    Bytes::from(vec_u8.clone()),
-                    Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
-                ));
-            }
+        for i in 0..times {
+            let vec_u8 = bincode::options().with_big_endian().serialize(&i)?;
+            vec_kv.push((
+                Bytes::from(vec_u8.clone()),
+                Bytes::from(vec_u8.into_iter().chain(value.to_vec()).collect_vec()),
+            ));
+        }
 
-            // 模拟数据分布在MemTable以及SSTable中
-            for kv in vec_kv.iter().take(50) {
-                kv_store.set(kv.0.clone(), kv.1.clone()).await?;
-            }
+        // 模拟数据分布在MemTable以及SSTable中
+        for kv in vec_kv.iter().take(50) {
+            kv_store.set(kv.0.clone(), kv.1.clone()).await?;
+        }
 
-            kv_store.flush().await?;
+        kv_store.flush().await?;
 
-            for kv in vec_kv.iter().take(100).skip(50) {
-                kv_store.set(kv.0.clone(), kv.1.clone()).await?;
-            }
+        for kv in vec_kv.iter().take(100).skip(50) {
+            kv_store.set(kv.0.clone(), kv.1.clone()).await?;
+        }
 
-            let mut tx_1 = kv_store.new_transaction().await;
+        let mut tx_1 = kv_store.new_transaction(CheckType::None).await;
 
-            for kv in vec_kv.iter().take(times).skip(100) {
-                tx_1.set(kv.0.clone(), kv.1.clone());
-            }
+        for kv in vec_kv.iter().take(times).skip(100) {
+            tx_1.set(kv.0.clone(), kv.1.clone());
+        }
 
-            tx_1.remove(&vec_kv[times - 1].0)?;
+        tx_1.remove(&vec_kv[times - 1].0)?;
 
-            // 事务在提交前事务可以读取到自身以及Store已写入的数据
-            for kv in vec_kv.iter().take(times - 1) {
-                assert_eq!(tx_1.get(&kv.0)?, Some(kv.1.clone()));
-            }
+        // 事务在提交前事务可以读取到自身以及Store已写入的数据
+        for kv in vec_kv.iter().take(times - 1) {
+            assert_eq!(tx_1.get(&kv.0)?, Some(kv.1.clone()));
+        }
 
-            assert_eq!(tx_1.get(&vec_kv[times - 1].0)?, None);
+        assert_eq!(tx_1.get(&vec_kv[times - 1].0)?, None);
 
-            // 事务在提交前Store不应该读取到事务中的数据
-            for kv in vec_kv.iter().take(times).skip(100) {
-                assert_eq!(kv_store.get(&kv.0).await?, None);
-            }
+        // 事务在提交前Store不应该读取到事务中的数据
+        for kv in vec_kv.iter().take(times).skip(100) {
+            assert_eq!(kv_store.get(&kv.0).await?, None);
+        }
 
-            let vec_test = vec_kv[25..]
-                .iter()
-                .cloned()
-                .map(|(key, value)| (key, Some(value)))
-                .collect_vec();
+        let vec_test = vec_kv[25..]
+            .iter()
+            .cloned()
+            .map(|(key, value)| (key, Some(value)))
+            .collect_vec();
 
-            let mut iter = tx_1.iter(Bound::Included(&vec_kv[25].0), Bound::Unbounded)?;
+        let mut iter = tx_1.iter(Bound::Included(&vec_kv[25].0), Bound::Unbounded)?;
 
-            // -1是因为最后一个元素在之前tx中删除了，因此为None
-            for kv in vec_test.iter().take(vec_test.len() - 1) {
-                // 元素太多，因此这里就单个对比，否则会导致报错时日志过多
-                assert_eq!(iter.try_next()?.unwrap(), kv.clone());
-            }
+        // -1是因为最后一个元素在之前tx中删除了，因此为None
+        for kv in vec_test.iter().take(vec_test.len() - 1) {
+            // 元素太多，因此这里就单个对比，否则会导致报错时日志过多
+            assert_eq!(iter.try_next()?.unwrap(), kv.clone());
+        }
 
-            drop(iter);
+        drop(iter);
 
-            tx_1.commit().await?;
+        tx_1.commit().await?;
 
-            for kv in vec_kv.iter().take(times - 1) {
-                assert_eq!(kv_store.get(&kv.0).await?, Some(kv.1.clone()));
-            }
+        for kv in vec_kv.iter().take(times - 1) {
+            assert_eq!(kv_store.get(&kv.0).await?, Some(kv.1.clone()));
+        }
 
-            Ok(())
-        })
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transaction_check_optimistic() -> KernelResult<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let config = Config::new(temp_dir.into_path()).major_threshold_with_sst_size(4);
+        let kv_store = KipStorage::open_with_config(config).await?;
+
+        let mut tx_1 = kv_store.new_transaction(CheckType::None).await;
+        let mut tx_2 = kv_store.new_transaction(CheckType::Optimistic).await;
+
+        tx_1.set(Bytes::from("same_key"), Bytes::new());
+        tx_2.set(Bytes::from("same_key"), Bytes::new());
+
+        tx_1.commit().await?;
+
+        assert!(matches!(
+            tx_2.commit().await,
+            Err(KernelError::RepeatedWrite)
+        ));
+
+        Ok(())
     }
 }

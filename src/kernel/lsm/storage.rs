@@ -1,7 +1,7 @@
 use crate::kernel::io::IoType;
 use crate::kernel::lsm::compactor::{CompactTask, Compactor};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
-use crate::kernel::lsm::mvcc::Transaction;
+use crate::kernel::lsm::mvcc::{CheckType, Transaction};
 use crate::kernel::lsm::table::scope::Scope;
 use crate::kernel::lsm::table::ss_table::block;
 use crate::kernel::lsm::table::TableType;
@@ -243,7 +243,7 @@ impl KipStorage {
 
     /// 创建事务
     #[inline]
-    pub async fn new_transaction(&self) -> Transaction {
+    pub async fn new_transaction(&self, check_type: CheckType) -> Transaction {
         let _ = self.mem_table().tx_count.fetch_add(1, Ordering::Release);
 
         Transaction {
@@ -253,6 +253,7 @@ impl KipStorage {
 
             seq_id: Sequence::create(),
             write_buf: None,
+            check_type,
         }
     }
 

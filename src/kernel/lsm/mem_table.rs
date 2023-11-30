@@ -201,6 +201,24 @@ impl MemTable {
         })
     }
 
+    pub(crate) fn check_key_conflict(&self, kvs: &[KeyValue], seq_id: i64) -> bool {
+        let inner = self.inner.lock();
+
+        for (key, _) in kvs {
+            let internal_key = InternalKey::new_with_seq(key.clone(), seq_id);
+
+            if let Some(true) = inner
+                ._mem
+                .lower_bound(Bound::Excluded(&internal_key))
+                .map(|(lower_key, _)| lower_key.key == key)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// 插入并判断是否溢出
     ///
     /// 插入时不会去除重复键值，而是进行追加
@@ -502,6 +520,32 @@ mod tests {
             vec.pop(),
             Some((Bytes::from(vec![b'k', b'1']), Some(Bytes::from(vec![b'2']))))
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mem_table_check_key_conflict() -> KernelResult<()> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+        let mem_table = MemTable::new(&Config::new(temp_dir.path()))?;
+
+        let key1 = vec![b'k', b'1'];
+        let bytes_key1 = Bytes::copy_from_slice(&key1);
+        let kv_1 = (bytes_key1.clone(), Some(bytes_key1.clone()));
+
+        let key2 = vec![b'k', b'2'];
+        let bytes_key2 = Bytes::copy_from_slice(&key2);
+        let kv_2 = (bytes_key2.clone(), Some(bytes_key2.clone()));
+
+        let _ = mem_table.insert_data_with_seq(kv_1.clone(), 0)?;
+        let _ = mem_table.insert_data_with_seq(kv_1.clone(), 1)?;
+        let _ = mem_table.insert_data_with_seq(kv_1.clone(), 2)?;
+        let _ = mem_table.insert_data_with_seq(kv_2.clone(), 3)?;
+
+        assert!(mem_table.check_key_conflict(&vec![kv_1.clone()], 1));
+
+        assert!(!mem_table.check_key_conflict(&vec![kv_1.clone()], 2));
 
         Ok(())
     }
