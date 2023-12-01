@@ -12,7 +12,7 @@ async fn main() -> Result<(), KernelError> {
     let kip_storage = KipStorage::open_with_config(config).await?;
 
     println!("New Transaction");
-    let mut tx = kip_storage.new_transaction(CheckType::None).await;
+    let mut tx = kip_storage.new_transaction(CheckType::Optimistic).await;
 
     println!("Set KeyValue after the transaction -> (key_1, value_1)");
     kip_storage

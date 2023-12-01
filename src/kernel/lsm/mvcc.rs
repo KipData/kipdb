@@ -30,7 +30,6 @@ unsafe impl Sync for BufPtr {}
 struct BufPtr(NonNull<Vec<KeyValue>>);
 
 pub enum CheckType {
-    None,
     Optimistic,
 }
 
@@ -89,7 +88,6 @@ impl Transaction {
             let batch_data = buf.into_iter().collect_vec();
 
             match self.check_type {
-                CheckType::None => (),
                 CheckType::Optimistic => {
                     if self
                         .mem_table()
@@ -350,7 +348,7 @@ mod tests {
             kv_store.set(kv.0.clone(), kv.1.clone()).await?;
         }
 
-        let mut tx_1 = kv_store.new_transaction(CheckType::None).await;
+        let mut tx_1 = kv_store.new_transaction(CheckType::Optimistic).await;
 
         for kv in vec_kv.iter().take(times).skip(100) {
             tx_1.set(kv.0.clone(), kv.1.clone());
@@ -402,7 +400,7 @@ mod tests {
         let config = Config::new(temp_dir.into_path()).major_threshold_with_sst_size(4);
         let kv_store = KipStorage::open_with_config(config).await?;
 
-        let mut tx_1 = kv_store.new_transaction(CheckType::None).await;
+        let mut tx_1 = kv_store.new_transaction(CheckType::Optimistic).await;
         let mut tx_2 = kv_store.new_transaction(CheckType::Optimistic).await;
 
         tx_1.set(Bytes::from("same_key"), Bytes::new());
