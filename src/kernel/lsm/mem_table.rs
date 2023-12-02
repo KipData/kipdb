@@ -543,9 +543,9 @@ mod tests {
         let _ = mem_table.insert_data_with_seq(kv_1.clone(), 2)?;
         let _ = mem_table.insert_data_with_seq(kv_2.clone(), 3)?;
 
-        assert!(mem_table.check_key_conflict(&vec![kv_1.clone()], 1));
+        assert!(mem_table.check_key_conflict(&[kv_1.clone()], 1));
 
-        assert!(!mem_table.check_key_conflict(&vec![kv_1.clone()], 2));
+        assert!(!mem_table.check_key_conflict(&[kv_1.clone()], 2));
 
         Ok(())
     }
