@@ -25,7 +25,7 @@
  **组件原理Wiki** : https://github.com/KKould/KipDB/wiki
 
 ## 快速上手 🤞
-确保 [Protocol Buffer Compiler](https://grpc.io/docs/protoc-installation/) 已安装。
+Tips: 使用RPC时请确保 [Protocol Buffer Compiler](https://grpc.io/docs/protoc-installation/) 已安装。
 
 #### 组件引入
 ``` toml

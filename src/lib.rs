@@ -7,6 +7,8 @@ pub mod config;
 pub mod error;
 pub mod kernel;
 pub mod proto;
+
+#[cfg(feature = "net")]
 pub mod server;
 
 pub use error::KernelError;

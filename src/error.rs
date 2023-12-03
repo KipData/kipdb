@@ -109,9 +109,11 @@ pub enum ConnectionError {
     #[error("server flush error")]
     FlushError,
 
+    #[cfg(feature = "net")]
     #[error("Failed to connect to server, {0}")]
     TonicTransportErr(#[from] tonic::transport::Error),
 
+    #[cfg(feature = "net")]
     #[error("Failed to call server, {0}")]
     TonicFailureStatus(#[from] tonic::Status),
 
