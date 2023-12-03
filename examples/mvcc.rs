@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use kip_db::kernel::lsm::mvcc::CheckType;
 use kip_db::kernel::lsm::storage::{Config, KipStorage};
 use kip_db::kernel::Storage;
 use kip_db::KernelError;
@@ -11,7 +12,7 @@ async fn main() -> Result<(), KernelError> {
     let kip_storage = KipStorage::open_with_config(config).await?;
 
     println!("New Transaction");
-    let mut tx = kip_storage.new_transaction().await;
+    let mut tx = kip_storage.new_transaction(CheckType::Optimistic).await;
 
     println!("Set KeyValue after the transaction -> (key_1, value_1)");
     kip_storage

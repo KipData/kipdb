@@ -72,7 +72,7 @@ pub enum KernelError {
     #[error("Process already exists")]
     ProcessExists,
 
-    #[error("channel is closed")]
+    #[error("Channel is closed")]
     ChannelClose,
 
     #[error("{0}")]
@@ -80,6 +80,9 @@ pub enum KernelError {
 
     #[error("The number of caches cannot be divisible by the number of shards")]
     ShardingNotAlign,
+
+    #[error("Same write in different transactions")]
+    RepeatedWrite,
 }
 
 #[derive(Error, Debug)]
