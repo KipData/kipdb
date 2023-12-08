@@ -1,14 +1,13 @@
 use crate::kernel::lsm::storage::Config;
+use crate::kernel::utils::bloom_filter::BloomFilter;
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::{Buf, BufMut, Bytes};
 use futures::future;
-use growable_bloom_filter::GrowableBloom;
 use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
 use itertools::Itertools;
 use lz4::Decoder;
-use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::Bound;
 use std::io::{Cursor, Read, Write};
@@ -195,12 +194,41 @@ pub(crate) enum CompressType {
     LZ4,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 pub(crate) struct MetaBlock {
-    pub(crate) filter: GrowableBloom,
+    pub(crate) filter: BloomFilter<[u8]>,
     pub(crate) len: usize,
     pub(crate) index_restart_interval: usize,
     pub(crate) data_restart_interval: usize,
+}
+
+impl MetaBlock {
+    pub(crate) fn to_raw(&self) -> Vec<u8> {
+        let mut bytes = u32::encode_fixed_vec(self.len as u32);
+
+        bytes.append(&mut u32::encode_fixed_vec(
+            self.index_restart_interval as u32,
+        ));
+        bytes.append(&mut u32::encode_fixed_vec(
+            self.data_restart_interval as u32,
+        ));
+        bytes.append(&mut self.filter.to_raw());
+        bytes
+    }
+
+    pub(crate) fn from_raw(bytes: &[u8]) -> Self {
+        let len = u32::decode_fixed(&bytes[0..4]) as usize;
+        let index_restart_interval = u32::decode_fixed(&bytes[4..8]) as usize;
+        let data_restart_interval = u32::decode_fixed(&bytes[8..12]) as usize;
+        let filter = BloomFilter::from_raw(&bytes[12..]);
+
+        Self {
+            filter,
+            len,
+            index_restart_interval,
+            data_restart_interval,
+        }
+    }
 }
 
 /// Block SSTable最小的存储单位
