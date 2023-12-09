@@ -642,7 +642,7 @@ where
 }
 
 /// 批量以restart_interval进行shared_len的获取
-fn sharding_shared_len<T>(vec_kv: &Vec<KeyValue<T>>, restart_interval: usize) -> Vec<usize>
+fn sharding_shared_len<T>(vec_kv: &[KeyValue<T>], restart_interval: usize) -> Vec<usize>
 where
     T: BlockItem,
 {

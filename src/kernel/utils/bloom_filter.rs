@@ -41,7 +41,7 @@ impl<T: ?Sized> BloomFilter<T> {
         // g_i(x) = h1(x) + i * h2(x)
         let hashes = self.make_hash(elem);
         for fn_i in 0..self.hash_fn_count {
-            let index = self.get_index(hashes, fn_i as u64);
+            let index = self.get_index(hashes, fn_i);
             self.bits.set_bit(index, true);
         }
     }
@@ -52,7 +52,7 @@ impl<T: ?Sized> BloomFilter<T> {
     {
         let hashes = self.make_hash(elem);
         (0..self.hash_fn_count).all(|fn_i| {
-            let index = self.get_index(hashes, fn_i as u64);
+            let index = self.get_index(hashes, fn_i);
             self.bits.get_bit(index)
         })
     }
@@ -135,11 +135,15 @@ impl BitVector {
     }
 
     pub fn get_bit(&self, index: usize) -> bool {
-        (self.bit_groups[index / 8] >> index % 8) & 1 != 0
+        self.bit_groups[index / 8] >> index % 8 & 1 != 0
     }
 
     pub fn len(&self) -> usize {
         self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     pub fn to_raw(&self) -> Vec<u8> {
@@ -269,7 +273,7 @@ mod tests {
                     false_positives += 1;
                 }
                 (false, true) => {
-                    assert!(false);
+                    unreachable!()
                 } // should never happen
                 _ => {}
             }
