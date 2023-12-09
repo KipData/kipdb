@@ -9,10 +9,11 @@ use crate::kernel::lsm::table::ss_table::block::{
 use crate::kernel::lsm::table::ss_table::footer::{Footer, TABLE_FOOTER_SIZE};
 use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
 use crate::kernel::lsm::table::Table;
+use crate::kernel::utils::bloom_filter::BloomFilter;
 use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
-use growable_bloom_filter::GrowableBloom;
+use core::slice::SlicePattern;
 use itertools::Itertools;
 use parking_lot::Mutex;
 use std::io::SeekFrom;
@@ -53,7 +54,7 @@ impl SSTable {
         let len = vec_data.len();
         let data_restart_interval = config.data_restart_interval;
         let index_restart_interval = config.index_restart_interval;
-        let mut filter = GrowableBloom::new(config.desired_error_prob, len);
+        let mut filter = BloomFilter::new(len, config.desired_error_prob);
 
         let mut builder = BlockBuilder::new(
             BlockOptions::from(config)
@@ -63,7 +64,7 @@ impl SSTable {
         );
         for data in vec_data {
             let (key, value) = data;
-            let _ = filter.insert(&key);
+            filter.insert(key.as_slice());
             builder.add((key, Value::from(value)));
         }
         let meta = MetaBlock {
@@ -73,7 +74,7 @@ impl SSTable {
             data_restart_interval,
         };
         let (data_bytes, index_bytes) = builder.build().await?;
-        let meta_bytes = bincode::serialize(&meta)?;
+        let meta_bytes = meta.to_raw();
         let footer = Footer {
             level: level as u8,
             index_offset: data_bytes.len() as u32,
@@ -133,7 +134,7 @@ impl SSTable {
         let _ = reader.seek(SeekFrom::Start(*meta_offset as u64))?;
         let _ = reader.read(&mut buf)?;
 
-        let meta = bincode::deserialize(&buf)?;
+        let meta = MetaBlock::from_raw(&buf);
         let reader = Mutex::new(reader);
         Ok(SSTable {
             footer,

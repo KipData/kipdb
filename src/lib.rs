@@ -3,6 +3,8 @@
 #![feature(slice_pattern)]
 #![feature(bound_map)]
 
+extern crate core;
+
 pub mod config;
 pub mod error;
 pub mod kernel;
