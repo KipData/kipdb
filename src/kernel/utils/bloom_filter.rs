@@ -135,7 +135,7 @@ impl BitVector {
     }
 
     pub fn get_bit(&self, index: usize) -> bool {
-        self.bit_groups[index / 8] >> index % 8 & 1 != 0
+        self.bit_groups[index / 8] >> (index % 8) & 1 != 0
     }
 
     pub fn len(&self) -> usize {
