@@ -160,14 +160,10 @@ pub(crate) struct TableInner {
 }
 
 macro_rules! check_count {
-    ($count:ident, $is_force:ident) => {
+    ($count:ident) => {
         if 0 != $count.load(Acquire) {
-            if $is_force {
-                std::hint::spin_loop();
-                continue;
-            } else {
-                return Ok(None);
-            }
+            std::hint::spin_loop();
+            continue;
         }
     };
 }
@@ -270,11 +266,11 @@ impl MemTable {
     }
 
     /// MemTable将数据弹出并转移到immut table中  (弹出数据为转移至immut table中数据的迭代器)
-    pub(crate) fn try_swap(&self, is_force: bool) -> KernelResult<Option<(i64, Vec<KeyValue>)>> {
+    pub(crate) fn swap(&self) -> KernelResult<Option<(i64, Vec<KeyValue>)>> {
         let count = &self.tx_count;
 
         loop {
-            check_count!(count, is_force);
+            check_count!(count);
 
             let mut inner = self.inner.lock();
             // 二重检测防止lock时(前)突然出现事务
@@ -282,7 +278,7 @@ impl MemTable {
             // 因此不会对读写进行干扰
             // 并且事务即使在lock后出现，所持有的seq为该压缩之前，
             // 也不会丢失该seq的_mem，因为转移到了_immut，可以从_immut得到对应seq的数据
-            check_count!(count, is_force);
+            check_count!(count);
 
             return if !inner._mem.is_empty() {
                 inner.trigger.reset();
@@ -510,7 +506,7 @@ mod tests {
         let _ = mem_table
             .insert_data((Bytes::from(vec![b'k', b'2']), Some(Bytes::from(vec![b'2']))))?;
 
-        let (_, mut vec) = mem_table.try_swap(false)?.unwrap();
+        let (_, mut vec) = mem_table.swap()?.unwrap();
 
         assert_eq!(
             vec.pop(),

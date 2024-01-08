@@ -14,7 +14,7 @@ mod mem_table;
 pub mod mvcc;
 pub mod storage;
 mod table;
-mod trigger;
+pub mod trigger;
 pub mod version;
 
 const MAX_LEVEL: usize = 4;

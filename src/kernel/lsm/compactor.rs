@@ -57,9 +57,7 @@ impl Compactor {
         &mut self,
         option_tx: Option<oneshot::Sender<()>>,
     ) -> KernelResult<()> {
-        let is_force = option_tx.is_some();
-
-        if let Some((gen, values)) = self.mem_table().try_swap(is_force)? {
+        if let Some((gen, values)) = self.mem_table().swap()? {
             if !values.is_empty() {
                 let start = Instant::now();
                 // 目前minor触发major时是同步进行的，所以此处对live_tag是在此方法体保持存活
