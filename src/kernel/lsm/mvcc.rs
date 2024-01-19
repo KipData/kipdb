@@ -3,26 +3,22 @@ use crate::kernel::lsm::iterator::merging_iter::MergingIter;
 use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::query_and_compaction;
-use crate::kernel::lsm::storage::{Sequence, StoreInner};
+use crate::kernel::lsm::storage::{KipStorage, Sequence, StoreInner};
 use crate::kernel::lsm::version::iter::VersionIter;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
+use core::slice::SlicePattern;
 use itertools::Itertools;
+use once_cell::sync::OnceCell;
 use skiplist::SkipMap;
 use std::collections::Bound;
-use std::iter::Map;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
-
-type MapIter<'a> = Map<
-    skiplist::skipmap::Iter<'a, Bytes, Option<Bytes>>,
-    fn((&Bytes, &Option<Bytes>)) -> KeyValue,
->;
 
 unsafe impl Send for BufPtr {}
 unsafe impl Sync for BufPtr {}
@@ -34,16 +30,33 @@ pub enum CheckType {
 }
 
 pub struct Transaction {
-    pub(crate) store_inner: Arc<StoreInner>,
-    pub(crate) compactor_tx: Sender<CompactTask>,
+    store_inner: Arc<StoreInner>,
+    compactor_tx: Sender<CompactTask>,
 
-    pub(crate) version: Arc<Version>,
-    pub(crate) write_buf: Option<SkipMap<Bytes, Option<Bytes>>>,
-    pub(crate) seq_id: i64,
-    pub(crate) check_type: CheckType,
+    version: Arc<Version>,
+    seq_id: i64,
+    check_type: CheckType,
+
+    write_buf: Option<SkipMap<Bytes, Option<Bytes>>>,
+    mem_buf: OnceCell<BufPtr>,
 }
 
 impl Transaction {
+    pub(crate) async fn new(storage: &KipStorage, check_type: CheckType) -> Self {
+        let _ = storage.mem_table().tx_count.fetch_add(1, Ordering::Release);
+
+        Transaction {
+            store_inner: Arc::clone(&storage.inner),
+            version: storage.current_version().await,
+            compactor_tx: storage.compactor_tx.clone(),
+
+            seq_id: Sequence::create(),
+            write_buf: None,
+            check_type,
+            mem_buf: OnceCell::new(),
+        }
+    }
+
     fn write_buf_or_init(&mut self) -> &mut SkipMap<Bytes, Option<Bytes>> {
         self.write_buf.get_or_insert_with(SkipMap::new)
     }
@@ -115,34 +128,6 @@ impl Transaction {
         Ok(())
     }
 
-    #[inline]
-    pub fn mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<KeyValue> {
-        let mem_table_range = self.mem_table().range_scan(min, max, Some(self.seq_id));
-
-        if let Some(buf_iter) = self._mem_range(min, max) {
-            buf_iter
-                .chain(mem_table_range)
-                .unique_by(|(key, _)| key.clone())
-                .sorted_by_key(|(key, _)| key.clone())
-                .collect_vec()
-        } else {
-            mem_table_range
-        }
-    }
-
-    fn _mem_range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Option<MapIter> {
-        #[allow(clippy::option_map_or_none)]
-        self.write_buf.as_ref().map_or(None, |buf| {
-            Some(
-                buf.range(
-                    min.map(Bytes::copy_from_slice).as_ref(),
-                    max.map(Bytes::copy_from_slice).as_ref(),
-                )
-                .map(|(key, value)| (key.clone(), value.clone())),
-            )
-        })
-    }
-
     fn mem_table(&self) -> &MemTable {
         &self.store_inner.mem_table
     }
@@ -158,50 +143,52 @@ impl Transaction {
         min: Bound<&[u8]>,
         max: Bound<&[u8]>,
     ) -> KernelResult<TransactionIter> {
-        let range_buf = self.mem_range(min, max);
-        let ptr = BufPtr(Box::leak(Box::new(range_buf)).into());
+        let option_write_buf = self.write_buf.as_ref().map(|buf| {
+            buf.range(
+                min.map(Bytes::copy_from_slice).as_ref(),
+                max.map(Bytes::copy_from_slice).as_ref(),
+            )
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect_vec()
+        });
 
-        let mem_iter = unsafe {
+        let mem_ptr = self.mem_buf.get_or_init(|| {
+            let kvs = self.mem_table().range_scan(min, max, Some(self.seq_id));
+
+            BufPtr(Box::leak(Box::new(kvs)).into())
+        });
+        let mut write_buf_ptr = None;
+        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> =
+            Vec::with_capacity(3);
+
+        if let Some(write_buf) = option_write_buf {
+            let buf_ptr = BufPtr(Box::leak(Box::new(write_buf)).into());
+            let buf_iter = unsafe {
+                BufIter {
+                    inner: buf_ptr.0.as_ref(),
+                    pos: 0,
+                }
+            };
+
+            write_buf_ptr = Some(buf_ptr);
+            vec_iter.push(Box::new(buf_iter));
+        }
+        vec_iter.push(Box::new(unsafe {
             BufIter {
-                inner: ptr.0.as_ref(),
+                inner: mem_ptr.0.as_ref(),
                 pos: 0,
             }
-        };
+        }));
+        vec_iter.push(Box::new(VersionIter::new(&self.version)?));
 
-        let mut version_iter = VersionIter::new(&self.version)?;
-        let mut seek_buf = None;
-
-        match min {
-            Bound::Included(key) => {
-                let ver_seek_option = version_iter.seek(Seek::Backward(key))?;
-                unsafe {
-                    let op = |disk_option: Option<&KeyValue>, mem_option: Option<&KeyValue>| match (
-                        disk_option,
-                        mem_option,
-                    ) {
-                        (Some(disk), Some(mem)) => disk.0 >= mem.0,
-                        _ => false,
-                    };
-
-                    if !op(ver_seek_option.as_ref(), ptr.0.as_ref().first()) {
-                        seek_buf = ver_seek_option;
-                    }
-                }
-            }
-            Bound::Excluded(key) => {
-                let _ = version_iter.seek(Seek::Backward(key))?;
-            }
-            Bound::Unbounded => (),
-        }
-
-        let vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> =
-            vec![Box::new(mem_iter), Box::new(version_iter)];
+        let inner = MergingIter::new(vec_iter)?;
 
         Ok(TransactionIter {
-            inner: MergingIter::new(vec_iter)?,
+            inner,
+            min: min.map(Bytes::copy_from_slice),
             max: max.map(Bytes::copy_from_slice),
-            ptr,
-            seek_buf,
+            write_buf_ptr,
+            is_seeked: false,
         })
     }
 }
@@ -210,6 +197,10 @@ impl Drop for Transaction {
     #[inline]
     fn drop(&mut self) {
         let _ = self.mem_table().tx_count.fetch_sub(1, Ordering::Release);
+
+        if let Some(mem_ptr) = self.mem_buf.take() {
+            unsafe { drop(Box::from_raw(mem_ptr.0.as_ptr())) }
+        }
     }
 }
 
@@ -219,9 +210,10 @@ unsafe impl Send for TransactionIter<'_> {}
 
 pub struct TransactionIter<'a> {
     inner: MergingIter<'a>,
-    ptr: BufPtr,
+    write_buf_ptr: Option<BufPtr>,
+    min: Bound<Bytes>,
     max: Bound<Bytes>,
-    seek_buf: Option<KeyValue>,
+    is_seeked: bool,
 }
 
 impl<'a> Iter<'a> for TransactionIter<'a> {
@@ -229,8 +221,22 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
 
     #[inline]
     fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
-        if let Some(item) = self.seek_buf.take() {
-            return Ok(Some(item));
+        if !self.is_seeked {
+            self.is_seeked = true;
+
+            match &self.min {
+                Bound::Included(key) => return self.inner.seek(Seek::Backward(key.as_slice())),
+                Bound::Excluded(key) => {
+                    if let Some(kv) = self.inner.seek(Seek::Backward(key.as_slice()))? {
+                        if kv.0 != key {
+                            return Ok(Some(kv));
+                        }
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                Bound::Unbounded => (),
+            };
         }
 
         let option = match &self.max {
@@ -262,7 +268,9 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
 impl Drop for TransactionIter<'_> {
     #[inline]
     fn drop(&mut self) {
-        unsafe { drop(Box::from_raw(self.ptr.0.as_ptr())) }
+        if let Some(buf_prt) = &self.write_buf_ptr {
+            unsafe { drop(Box::from_raw(buf_prt.0.as_ptr())) }
+        }
     }
 }
 

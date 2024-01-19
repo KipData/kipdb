@@ -355,20 +355,65 @@ impl MemTable {
         option_seq: Option<i64>,
     ) -> Vec<KeyValue> {
         let inner = self.inner.lock();
+        let de_dupe_merge_sort_fn = |mem: Vec<KeyValue>, immut_mem: Vec<KeyValue>| {
+            assert!(mem.is_sorted_by_key(|(k, _)| k));
+            assert!(mem.iter().all_unique());
+            assert!(immut_mem.is_sorted_by_key(|(k, _)| k));
+            assert!(immut_mem.iter().all_unique());
 
-        inner
-            ._immut
-            .as_ref()
-            .map(|mem_map| Self::_range_scan(mem_map, min, max, option_seq))
-            .unwrap_or_default()
-            .into_iter()
-            .chain(Self::_range_scan(&inner._mem, min, max, option_seq))
-            .rev()
-            .unique_by(|(key, _)| key.clone())
-            .collect_vec()
+            let mut merged = Vec::with_capacity(mem.len() + immut_mem.len());
+            let (mut mem_iter, mut immut_mem_iter) = (mem.into_iter(), immut_mem.into_iter());
+            let (mut mem_current, mut immut_mem_current) = (mem_iter.next(), immut_mem_iter.next());
+
+            while let (Some(mem_item), Some(immut_mem_item)) =
+                (mem_current.take(), immut_mem_current.take())
+            {
+                if mem_item.0 < immut_mem_item.0 {
+                    merged.push(mem_item);
+                    immut_mem_current = Some(immut_mem_item);
+
+                    mem_current = mem_iter.next();
+                    if mem_current.is_none() {
+                        break;
+                    }
+                } else if mem_item.0 > immut_mem_item.0 {
+                    merged.push(immut_mem_item);
+                    mem_current = Some(mem_item);
+
+                    immut_mem_current = immut_mem_iter.next();
+                    if immut_mem_current.is_none() {
+                        break;
+                    }
+                } else {
+                    merged.push(mem_item);
+                }
+            }
+
+            if let Some(kv) = mem_current {
+                merged.push(kv)
+            }
+            if let Some(kv) = immut_mem_current {
+                merged.push(kv)
+            }
+            // one of the two is empty
+            mem_iter
+                .chain(immut_mem_iter)
+                .for_each(|kv| merged.push(kv));
+
+            assert!(merged.is_sorted_by_key(|(k, _)| k));
+            assert!(merged.iter().all_unique());
+            merged
+        };
+        let mut mem_scan = Self::_range_scan(&inner._mem, min, max, option_seq);
+
+        if let Some(immut) = &inner._immut {
+            let immut_scan = Self::_range_scan(immut, min, max, option_seq);
+
+            mem_scan = de_dupe_merge_sort_fn(mem_scan, immut_scan);
+        }
+        mem_scan
     }
 
-    /// Tips: 返回的数据为倒序
     fn _range_scan(
         mem_map: &MemMap,
         min: Bound<&[u8]>,
@@ -395,7 +440,7 @@ impl MemTable {
         let min_key = to_internal_key(&min, i64::MIN, i64::MAX);
         let max_key = to_internal_key(&max, i64::MAX, i64::MIN);
 
-        mem_map
+        let mut scan = mem_map
             .range(min_key.as_ref(), max_key.as_ref())
             .rev()
             .filter(|(InternalKey { seq_id, .. }, _)| {
@@ -403,7 +448,12 @@ impl MemTable {
             })
             .unique_by(|(internal_key, _)| &internal_key.key)
             .map(|(key, value)| (key.key.clone(), value.clone()))
-            .collect_vec()
+            .collect_vec();
+        scan.reverse();
+
+        assert!(scan.is_sorted_by_key(|(k, _)| k));
+        assert!(scan.iter().all_unique());
+        scan
     }
 }
 

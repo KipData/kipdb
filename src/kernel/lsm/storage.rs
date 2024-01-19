@@ -63,12 +63,12 @@ static GEN_BUF: AtomicI64 = AtomicI64::new(0);
 /// 基于LSM的KV Store存储内核
 /// Leveled Compaction压缩算法
 pub struct KipStorage {
-    inner: Arc<StoreInner>,
+    pub(crate) inner: Arc<StoreInner>,
     /// 多进程文件锁
     /// 避免多进程进行数据读写
     lock_file: LockFile,
     /// Compactor 通信器
-    compactor_tx: Sender<CompactTask>,
+    pub(crate) compactor_tx: Sender<CompactTask>,
 }
 
 pub(crate) struct StoreInner {
@@ -233,7 +233,7 @@ impl KipStorage {
         })
     }
 
-    fn mem_table(&self) -> &MemTable {
+    pub(crate) fn mem_table(&self) -> &MemTable {
         &self.inner.mem_table
     }
 
@@ -244,17 +244,7 @@ impl KipStorage {
     /// 创建事务
     #[inline]
     pub async fn new_transaction(&self, check_type: CheckType) -> Transaction {
-        let _ = self.mem_table().tx_count.fetch_add(1, Ordering::Release);
-
-        Transaction {
-            store_inner: Arc::clone(&self.inner),
-            version: self.current_version().await,
-            compactor_tx: self.compactor_tx.clone(),
-
-            seq_id: Sequence::create(),
-            write_buf: None,
-            check_type,
-        }
+        Transaction::new(self, check_type).await
     }
 
     #[inline]
