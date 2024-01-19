@@ -334,7 +334,7 @@ mod tests {
             .read(true)
             .open(file_path.clone())?;
 
-        let data = vec![
+        let data = [
             "abcdefghi".as_bytes().to_vec(),    // fits one block of 17
             "123456789012".as_bytes().to_vec(), // spans two blocks of 17
             "0101010101010101010101".as_bytes().to_vec(),

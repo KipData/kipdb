@@ -368,24 +368,26 @@ impl MemTable {
             while let (Some(mem_item), Some(immut_mem_item)) =
                 (mem_current.take(), immut_mem_current.take())
             {
-                if mem_item.0 < immut_mem_item.0 {
-                    merged.push(mem_item);
-                    immut_mem_current = Some(immut_mem_item);
+                match mem_item.0.cmp(&immut_mem_item.0) {
+                    Ordering::Less => {
+                        merged.push(mem_item);
+                        immut_mem_current = Some(immut_mem_item);
 
-                    mem_current = mem_iter.next();
-                    if mem_current.is_none() {
-                        break;
+                        mem_current = mem_iter.next();
+                        if mem_current.is_none() {
+                            break;
+                        }
                     }
-                } else if mem_item.0 > immut_mem_item.0 {
-                    merged.push(immut_mem_item);
-                    mem_current = Some(mem_item);
+                    Ordering::Greater => {
+                        merged.push(immut_mem_item);
+                        mem_current = Some(mem_item);
 
-                    immut_mem_current = immut_mem_iter.next();
-                    if immut_mem_current.is_none() {
-                        break;
+                        immut_mem_current = immut_mem_iter.next();
+                        if immut_mem_current.is_none() {
+                            break;
+                        }
                     }
-                } else {
-                    merged.push(mem_item);
+                    Ordering::Equal => merged.push(mem_item),
                 }
             }
 

@@ -73,6 +73,7 @@ impl<K: Hash, V> Hash for KeyRef<K, V> {
 impl<K: Eq, V> Eq for KeyRef<K, V> {}
 
 impl<K: Eq, V> PartialEq<Self> for KeyRef<K, V> {
+    #[allow(clippy::unconditional_recursion)]
     fn eq(&self, other: &Self) -> bool {
         unsafe { self.0.as_ref().key.eq(&other.0.as_ref().key) }
     }
