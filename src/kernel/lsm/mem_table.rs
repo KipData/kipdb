@@ -5,18 +5,16 @@ use crate::kernel::lsm::storage::{Config, Gen, Sequence};
 use crate::kernel::lsm::table::ss_table::block::{Entry, Value};
 use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 use crate::kernel::KernelResult;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use itertools::Itertools;
 use parking_lot::Mutex;
 use skiplist::{skipmap, SkipMap};
 use std::cmp::Ordering;
 use std::collections::Bound;
-use std::io::Cursor;
 use std::mem;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::Arc;
-use std::vec::IntoIter;
 
 pub(crate) const DEFAULT_WAL_PATH: &str = "wal";
 
@@ -170,19 +168,20 @@ macro_rules! check_count {
 
 impl MemTable {
     pub(crate) fn new(config: &Config) -> KernelResult<Self> {
-        let (log_loader, log_bytes, log_gen) = LogLoader::reload(
+        let (log_loader, log_entry, log_gen) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, None),
             config.wal_io_type,
-            |bytes| Ok(mem::take(bytes)),
+            |bytes| {
+                Entry::<Value>::decode(&mut bytes.reader())
+                    .map(|Entry { key, item, .. }| (InternalKey::new_with_seq(key, 0), item.bytes))
+            },
         )?;
         let log_writer = (log_loader.writer(log_gen)?, log_gen);
         // Q: 为什么INIT_SEQ作为Seq id?
         // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
         // 因此不会影响Version的读取顺序
-        let mem_map = MemMap::from_iter(
-            logs_decode(log_bytes)?.map(|(key, value)| (InternalKey::new_with_seq(key, 0), value)),
-        );
+        let mem_map = MemMap::from_iter(log_entry);
         let (trigger_type, threshold) = config.minor_trigger_with_threshold;
 
         Ok(MemTable {
@@ -219,12 +218,15 @@ impl MemTable {
     ///
     /// 插入时不会去除重复键值，而是进行追加
     pub(crate) fn insert_data(&self, data: KeyValue) -> KernelResult<bool> {
-        let (key, value) = data.clone();
         let mut inner = self.inner.lock();
 
-        inner.trigger.item_process(&data);
+        let _ = inner
+            .log_writer
+            .0
+            .add_record(&data_to_bytes(data.clone())?)?;
 
-        let _ = inner.log_writer.0.add_record(&data_to_bytes(data)?)?;
+        inner.trigger.item_process(&data);
+        let (key, value) = data;
         let _ = inner._mem.insert(InternalKey::new(key), value);
 
         Ok(inner.trigger.is_exceeded())
@@ -459,22 +461,12 @@ impl MemTable {
     }
 }
 
-pub(crate) fn logs_decode(
-    log_bytes: Vec<Vec<u8>>,
-) -> KernelResult<IntoIter<(Bytes, Option<Bytes>)>> {
-    let flatten_bytes = log_bytes.into_iter().flatten().collect_vec();
-    Entry::<Value>::batch_decode(&mut Cursor::new(flatten_bytes)).map(|vec| {
-        vec.into_iter()
-            .map(|(_, Entry { key, item, .. })| (key, item.bytes))
-            .rev()
-            .unique_by(|(key, _)| key.clone())
-            .sorted_by_key(|(key, _)| key.clone())
-    })
-}
-
 pub(crate) fn data_to_bytes(data: KeyValue) -> KernelResult<Vec<u8>> {
-    let (key, value) = data;
-    Entry::new(0, key.len(), key, Value::from(value)).encode()
+    let (key, value) = data.clone();
+    let mut bytes = Vec::new();
+
+    Entry::new(0, key.len(), key, Value::from(value)).encode(&mut bytes)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]

@@ -1,13 +1,13 @@
 use crate::kernel::io::IoReader;
 use crate::kernel::KernelResult;
-use serde::{Deserialize, Serialize};
+use integer_encoding::{FixedIntReader, FixedIntWriter};
 use std::io::SeekFrom;
 
 /// Footer序列化长度定长
 /// 注意Footer序列化时，需要使用类似BinCode这样的定长序列化框架，否则若类似Rmp的话会导致Footer在不同数据时，长度不一致
 pub(crate) const TABLE_FOOTER_SIZE: usize = 21;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 #[repr(C, align(32))]
 pub(crate) struct Footer {
     pub(crate) level: u8,
@@ -20,13 +20,28 @@ pub(crate) struct Footer {
 
 impl Footer {
     /// 从对应文件的IOHandler中将Footer读取出来
-    pub(crate) fn read_to_file(reader: &mut dyn IoReader) -> KernelResult<Self> {
-        let mut buf = [0; TABLE_FOOTER_SIZE];
-
+    pub(crate) fn read_to_file(mut reader: &mut dyn IoReader) -> KernelResult<Self> {
         let _ = reader.seek(SeekFrom::End(-(TABLE_FOOTER_SIZE as i64)))?;
-        let _ = reader.read(&mut buf)?;
 
-        Ok(bincode::deserialize(&buf)?)
+        Ok(Footer {
+            level: reader.read_fixedint()?,
+            index_offset: reader.read_fixedint()?,
+            index_len: reader.read_fixedint()?,
+            meta_offset: reader.read_fixedint()?,
+            meta_len: reader.read_fixedint()?,
+            size_of_disk: reader.read_fixedint()?,
+        })
+    }
+
+    pub fn to_raw(&self, bytes: &mut Vec<u8>) -> KernelResult<()> {
+        bytes.write_fixedint(self.level)?;
+        bytes.write_fixedint(self.index_offset)?;
+        bytes.write_fixedint(self.index_len)?;
+        bytes.write_fixedint(self.meta_offset)?;
+        bytes.write_fixedint(self.meta_len)?;
+        bytes.write_fixedint(self.size_of_disk)?;
+
+        Ok(())
     }
 }
 
@@ -37,6 +52,7 @@ mod test {
 
     #[test]
     fn test_footer() -> KernelResult<()> {
+        let mut bytes = Vec::new();
         let info = Footer {
             level: 0,
             index_offset: 0,
@@ -45,8 +61,9 @@ mod test {
             meta_len: 0,
             size_of_disk: 0,
         };
+        info.to_raw(&mut bytes)?;
 
-        assert_eq!(bincode::serialize(&info)?.len(), TABLE_FOOTER_SIZE);
+        assert_eq!(bytes.len(), TABLE_FOOTER_SIZE);
 
         Ok(())
     }

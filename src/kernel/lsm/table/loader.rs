@@ -1,20 +1,18 @@
 use crate::kernel::io::{IoFactory, IoType};
 use crate::kernel::lsm::compactor::LEVEL_0;
 use crate::kernel::lsm::log::LogLoader;
-use crate::kernel::lsm::mem_table::{logs_decode, KeyValue};
+use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::storage::Config;
 use crate::kernel::lsm::table::btree_table::BTreeTable;
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::lsm::table::scope::Scope;
-use crate::kernel::lsm::table::ss_table::block::BlockCache;
+use crate::kernel::lsm::table::ss_table::block::{BlockCache, Entry, Value};
 use crate::kernel::lsm::table::ss_table::SSTable;
 use crate::kernel::lsm::table::{BoxTable, Table, TableType};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::KernelResult;
-use bytes::Bytes;
-use itertools::Itertools;
+use bytes::{Buf, Bytes};
 use std::collections::hash_map::RandomState;
-use std::mem;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -88,9 +86,10 @@ impl TableLoader {
                             "[LSMStore][Load Table: {}][try to reload with wal]: {:?}",
                             gen, err
                         );
-                        let reload_data =
-                            logs_decode(self.wal.load(*gen, |bytes| Ok(mem::take(bytes)))?)?
-                                .collect_vec();
+                        let reload_data = self.wal.load(*gen, |bytes| {
+                            Entry::<Value>::decode(&mut bytes.reader())
+                                .map(|Entry { key, item, .. }| (key, item.bytes))
+                        })?;
 
                         Box::new(BTreeTable::new(LEVEL_0, *gen, reload_data))
                     }

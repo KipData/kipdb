@@ -14,7 +14,6 @@ use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::Bytes;
 use core::slice::SlicePattern;
-use itertools::Itertools;
 use parking_lot::Mutex;
 use std::io::SeekFrom;
 use std::sync::Arc;
@@ -73,29 +72,21 @@ impl SSTable {
             index_restart_interval,
             data_restart_interval,
         };
-        let (data_bytes, index_bytes) = builder.build().await?;
-        let meta_bytes = meta.to_raw();
+        let (mut bytes, data_bytes_len, index_bytes_len) = builder.build().await?;
+        meta.to_raw(&mut bytes)?;
+
         let footer = Footer {
             level: level as u8,
-            index_offset: data_bytes.len() as u32,
-            index_len: index_bytes.len() as u32,
-            meta_offset: (data_bytes.len() + index_bytes.len()) as u32,
-            meta_len: meta_bytes.len() as u32,
-            size_of_disk: (data_bytes.len()
-                + index_bytes.len()
-                + meta_bytes.len()
-                + TABLE_FOOTER_SIZE) as u32,
+            index_offset: data_bytes_len as u32,
+            index_len: index_bytes_len as u32,
+            meta_offset: (data_bytes_len + index_bytes_len) as u32,
+            meta_len: (bytes.len() - data_bytes_len + index_bytes_len) as u32,
+            size_of_disk: (bytes.len() + TABLE_FOOTER_SIZE) as u32,
         };
+        footer.to_raw(&mut bytes)?;
+
         let mut writer = io_factory.writer(gen, io_type)?;
-        writer.write_all(
-            data_bytes
-                .into_iter()
-                .chain(index_bytes)
-                .chain(meta_bytes)
-                .chain(bincode::serialize(&footer)?)
-                .collect_vec()
-                .as_mut(),
-        )?;
+        writer.write_all(&mut bytes)?;
         writer.flush()?;
         info!("[SsTable: {}][create][MetaBlock]: {:?}", gen, meta);
 

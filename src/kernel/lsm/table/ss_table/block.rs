@@ -4,14 +4,12 @@ use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::KernelResult;
 use crate::KernelError;
 use bytes::{Buf, BufMut, Bytes};
-use futures::future;
-use integer_encoding::{FixedInt, VarIntReader, VarIntWriter};
+use integer_encoding::{FixedInt, FixedIntWriter, VarIntReader, VarIntWriter};
 use itertools::Itertools;
 use lz4::Decoder;
 use std::cmp::min;
-use std::collections::Bound;
 use std::io::{Cursor, Read, Write};
-use std::{cmp, mem};
+use std::mem;
 
 /// BlockCache类型 可同时缓存两种类型
 ///
@@ -58,15 +56,13 @@ where
         }
     }
 
-    pub(crate) fn encode(&self) -> KernelResult<Vec<u8>> {
-        let mut buf = Vec::new();
+    pub(crate) fn encode(&self, bytes: &mut Vec<u8>) -> KernelResult<()> {
+        bytes.write_varint(self.unshared_len as u32)?;
+        bytes.write_varint(self.shared_len as u32)?;
+        bytes.write_all(&self.key)?;
+        self.item.encode(bytes)?;
 
-        let _ignore = buf.write_varint(self.unshared_len as u32)?;
-        let _ignore1 = buf.write_varint(self.shared_len as u32)?;
-        let _ignore2 = buf.write(&self.key)?;
-        let _ignore3 = buf.write(&self.item.encode()?);
-
-        Ok(buf)
+        Ok(())
     }
 
     pub(crate) fn batch_decode(cursor: &mut Cursor<Vec<u8>>) -> KernelResult<Vec<(usize, Self)>> {
@@ -138,7 +134,7 @@ pub(crate) trait BlockItem: Sized + Clone {
     where
         T: Read + ?Sized;
 
-    fn encode(&self) -> KernelResult<Vec<u8>>;
+    fn encode(&self, bytes: &mut Vec<u8>) -> KernelResult<()>;
 }
 
 impl BlockItem for Value {
@@ -158,13 +154,13 @@ impl BlockItem for Value {
         Ok(Value { value_len, bytes })
     }
 
-    fn encode(&self) -> KernelResult<Vec<u8>> {
-        let mut buf = Vec::new();
-        let _ = buf.write_varint(self.value_len as u32)?;
+    fn encode(&self, bytes: &mut Vec<u8>) -> KernelResult<()> {
+        bytes.write_varint(self.value_len as u32)?;
+
         if let Some(value) = &self.bytes {
-            let _ = buf.write(value)?;
+            bytes.write_all(value)?;
         }
-        Ok(buf)
+        Ok(())
     }
 }
 
@@ -179,12 +175,11 @@ impl BlockItem for Index {
         Ok(Index { offset, len })
     }
 
-    fn encode(&self) -> KernelResult<Vec<u8>> {
-        let mut buf = Vec::new();
-        let _ = buf.write_varint(self.offset)?;
-        let _ = buf.write_varint(self.len as u32)?;
+    fn encode(&self, bytes: &mut Vec<u8>) -> KernelResult<()> {
+        bytes.write_varint(self.offset)?;
+        bytes.write_varint(self.len as u32)?;
 
-        Ok(buf)
+        Ok(())
     }
 }
 
@@ -203,17 +198,14 @@ pub(crate) struct MetaBlock {
 }
 
 impl MetaBlock {
-    pub(crate) fn to_raw(&self) -> Vec<u8> {
-        let mut bytes = u32::encode_fixed_vec(self.len as u32);
+    pub(crate) fn to_raw(&self, bytes: &mut Vec<u8>) -> KernelResult<()> {
+        bytes.write_fixedint(self.len as u32)?;
+        bytes.write_fixedint(self.index_restart_interval as u32)?;
+        bytes.write_fixedint(self.data_restart_interval as u32)?;
 
-        bytes.append(&mut u32::encode_fixed_vec(
-            self.index_restart_interval as u32,
-        ));
-        bytes.append(&mut u32::encode_fixed_vec(
-            self.data_restart_interval as u32,
-        ));
-        bytes.append(&mut self.filter.to_raw());
-        bytes
+        self.filter.to_raw(bytes)?;
+
+        Ok(())
     }
 
     pub(crate) fn from_raw(bytes: &[u8]) -> Self {
@@ -388,34 +380,29 @@ impl BlockBuilder {
     }
 
     /// 构建多个Block连续序列化组合成的两个Bytes 前者为多个DataBlock，后者为单个IndexBlock
-    pub(crate) async fn build(mut self) -> KernelResult<(Vec<u8>, Vec<u8>)> {
+    pub(crate) async fn build(mut self) -> KernelResult<(Vec<u8>, usize, usize)> {
         self._build();
 
-        let encode_block_futures = self
-            .vec_block
-            .into_iter()
-            .map(|(block, last_key)| async move {
-                block
-                    .encode(self.options.compress_type)
-                    .map(|block_bytes| ((last_key, block_bytes.len()), block_bytes))
-            });
         let mut blocks_bytes = vec![];
-        let mut offset = 0;
-        let indexes = future::try_join_all(encode_block_futures)
-            .await?
-            .into_iter()
-            .map(|((last_key, len), mut data_bytes)| {
-                let index = Index::new(offset, len);
+        let mut offset = 0u32;
 
-                blocks_bytes.append(&mut data_bytes);
-                offset += len as u32;
-                (last_key, index)
-            })
-            .collect_vec();
-        let indexes_bytes =
-            Block::new(indexes, self.options.index_restart_interval).encode(CompressType::None)?;
+        let mut indexes = Vec::with_capacity(self.vec_block.len());
 
-        Ok((blocks_bytes, indexes_bytes))
+        for (block, last_key) in self.vec_block {
+            block.encode(self.options.compress_type, &mut blocks_bytes)?;
+
+            let len = blocks_bytes.len() - offset as usize;
+
+            indexes.push((last_key, Index::new(offset, len)));
+            offset += len as u32;
+        }
+        let data_bytes_len = blocks_bytes.len();
+
+        Block::new(indexes, self.options.index_restart_interval)
+            .encode(CompressType::None, &mut blocks_bytes)?;
+        let index_bytes_len = blocks_bytes.len() - data_bytes_len;
+
+        Ok((blocks_bytes, data_bytes_len, index_bytes_len))
     }
 }
 
@@ -529,59 +516,29 @@ where
         })
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn range(&self, min: Bound<&[u8]>, max: Bound<&[u8]>) -> Vec<T> {
-        let last_index = self.entry_len();
-        let start_index = match min {
-            Bound::Excluded(key) => self
-                .binary_search(key)
-                .map(|index| cmp::min(last_index, index + 1)),
-            Bound::Included(key) => self.binary_search(key),
-            Bound::Unbounded => Ok(0),
-        }
-        .unwrap_or_else(|index| index);
-        let end_index = cmp::min(
-            last_index,
-            match max {
-                Bound::Excluded(key) => {
-                    self.binary_search(key).map(|index| index.saturating_sub(1))
-                }
-                Bound::Included(key) => self.binary_search(key),
-                Bound::Unbounded => Ok(last_index),
-            }
-            .unwrap_or_else(|index| index)
-                + 1,
-        );
-
-        if start_index >= end_index {
-            return Vec::new();
-        }
-
-        self.vec_entry[start_index..end_index]
-            .iter()
-            .map(|(_, Entry { item, .. })| item)
-            .cloned()
-            .collect_vec()
-    }
-
     /// 序列化后进行压缩
     ///
     /// 可选LZ4与不压缩
-    pub(crate) fn encode(&self, compress_type: CompressType) -> KernelResult<Vec<u8>> {
-        let buf = self.to_raw()?;
-        Ok(match compress_type {
-            CompressType::None => buf,
+    pub(crate) fn encode(
+        &self,
+        compress_type: CompressType,
+        bytes: &mut Vec<u8>,
+    ) -> KernelResult<()> {
+        match compress_type {
+            CompressType::None => self.to_raw(bytes)?,
             CompressType::LZ4 => {
-                let mut encoder = lz4::EncoderBuilder::new()
-                    .level(4)
-                    .build(Vec::with_capacity(buf.len()).writer())?;
-                let _ = encoder.write(&buf[..])?;
+                let mut buf = Vec::new();
+                self.to_raw(&mut buf)?;
 
-                let (writer, result) = encoder.finish();
+                let mut encoder = lz4::EncoderBuilder::new().level(4).build(bytes.writer())?;
+                let _ = encoder.write(&buf[..])?;
+                let (_, result) = encoder.finish();
+
                 result?;
-                writer.into_inner()
             }
-        })
+        }
+
+        Ok(())
     }
 
     /// 解压后反序列化
@@ -624,20 +581,14 @@ where
     /// 序列化该Block
     ///
     /// 与from_raw对应，序列化时会生成crc_code用于反序列化时校验
-    pub(crate) fn to_raw(&self) -> KernelResult<Vec<u8>> {
-        let mut bytes_block = Vec::with_capacity(DEFAULT_BLOCK_SIZE);
+    pub(crate) fn to_raw(&self, bytes: &mut Vec<u8>) -> KernelResult<()> {
+        let start = bytes.len();
+        for (_, entry) in &self.vec_entry {
+            entry.encode(bytes)?;
+        }
+        bytes.append(&mut crc32fast::hash(&bytes[start..]).encode_fixed_vec());
 
-        bytes_block.append(
-            &mut self
-                .vec_entry
-                .iter()
-                .flat_map(|(_, entry)| entry.encode())
-                .flatten()
-                .collect_vec(),
-        );
-        bytes_block.append(&mut crc32fast::hash(&bytes_block).encode_fixed_vec());
-
-        Ok(bytes_block)
+        Ok(())
     }
 }
 
@@ -697,16 +648,12 @@ fn longest_shared_len<T>(sharding: Vec<&KeyValue<T>>) -> usize {
 #[cfg(test)]
 mod tests {
     use crate::kernel::lsm::table::ss_table::block::{
-        Block, BlockBuilder, BlockItem, BlockOptions, CompressType, Entry, Index, Value,
+        Block, BlockBuilder, BlockOptions, CompressType, Entry, Index, Value,
     };
     use crate::kernel::utils::lru_cache::LruCache;
     use crate::kernel::KernelResult;
     use bincode::Options;
     use bytes::Bytes;
-    use itertools::Itertools;
-    use rand::Rng;
-    use std::collections::Bound;
-    use std::fmt::Debug;
     use std::io::Cursor;
 
     #[test]
@@ -723,14 +670,12 @@ mod tests {
             Bytes::from(vec![b'1']),
             Value::from(Some(Bytes::from(vec![b'1']))),
         );
+        let mut bytes = Vec::new();
 
-        let bytes_vec_entry = entry1
-            .encode()?
-            .into_iter()
-            .chain(entry2.encode()?)
-            .collect_vec();
+        entry1.encode(&mut bytes)?;
+        entry2.encode(&mut bytes)?;
 
-        let vec_entry = Entry::batch_decode(&mut Cursor::new(bytes_vec_entry))?;
+        let vec_entry = Entry::batch_decode(&mut Cursor::new(bytes))?;
 
         assert_eq!(vec![(0, entry1), (1, entry2)], vec_entry);
 
@@ -759,10 +704,10 @@ mod tests {
 
         let block = builder.vec_block[0].0.clone();
 
-        let (block_bytes, index_bytes) = builder.build().await?;
+        let (full_bytes, data_len, _) = builder.build().await?;
 
         let index_block = Block::<Index>::decode(
-            index_bytes,
+            full_bytes[data_len..].to_vec(),
             CompressType::None,
             options.index_restart_interval,
         )?;
@@ -774,7 +719,7 @@ mod tests {
             let data_block = cache.get_or_insert(index_block.find_with_upper(key), |index| {
                 let &Index { offset, len } = index;
                 let target_block = Block::<Value>::decode(
-                    block_bytes[offset as usize..offset as usize + len].to_vec(),
+                    full_bytes[offset as usize..offset as usize + len].to_vec(),
                     options.compress_type,
                     options.data_restart_interval,
                 )?;
@@ -794,54 +739,7 @@ mod tests {
             options.data_restart_interval,
         )?;
 
-        for _ in 0..1000 {
-            test_block_range(&block)?;
-        }
-
         Ok(())
-    }
-
-    fn test_block_range<T: BlockItem + Eq + Debug>(block: &Block<T>) -> KernelResult<()> {
-        let all_item = block
-            .vec_entry
-            .iter()
-            .cloned()
-            .map(|(_, entry)| entry.item)
-            .collect_vec();
-
-        let mut rng = rand::thread_rng();
-        let rand_max_idx: usize = rng.gen_range(2..all_item.len() - 1);
-        let rand_min_idx: usize = rng.gen_range(0..rand_max_idx - 1);
-
-        let min_key = full_key(block, &block.vec_entry, rand_min_idx);
-        let max_key = full_key(block, &block.vec_entry, rand_max_idx);
-
-        let excluded_vec = block.range(Bound::Excluded(&min_key), Bound::Excluded(&max_key));
-
-        let included_vec = block.range(Bound::Included(&min_key), Bound::Included(&max_key));
-
-        let unbounded_vec = block.range(Bound::Unbounded, Bound::Unbounded);
-
-        assert_eq!(
-            all_item[rand_min_idx + 1..rand_max_idx].to_vec(),
-            excluded_vec
-        );
-        assert_eq!(
-            all_item[rand_min_idx..rand_max_idx + 1].to_vec(),
-            included_vec
-        );
-        assert_eq!(all_item, unbounded_vec);
-
-        Ok(())
-    }
-
-    fn full_key<T: BlockItem + Eq + Debug>(
-        block: &Block<T>,
-        all_entry: &[(usize, Entry<T>)],
-        index: usize,
-    ) -> Vec<u8> {
-        let entry = &all_entry[index].1;
-        [block.shared_key_prefix(index, entry.shared_len), &entry.key].concat()
     }
 
     fn test_block_serialization_(
@@ -849,11 +747,10 @@ mod tests {
         compress_type: CompressType,
         restart_interval: usize,
     ) -> KernelResult<()> {
-        let de_block = Block::decode(
-            block.encode(compress_type)?,
-            compress_type,
-            restart_interval,
-        )?;
+        let mut bytes = Vec::new();
+        block.encode(compress_type, &mut bytes)?;
+
+        let de_block = Block::decode(bytes, compress_type, restart_interval)?;
         assert_eq!(block, de_block);
 
         Ok(())

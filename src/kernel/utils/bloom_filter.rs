@@ -1,12 +1,10 @@
-use integer_encoding::FixedInt;
+use crate::kernel::KernelResult;
+use integer_encoding::{FixedInt, FixedIntWriter};
 use itertools::Itertools;
+use rand::random;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::marker::PhantomData;
 use std::slice;
-
-pub(crate) const DEFAULT_HASH_SEED_1: u64 = 31;
-
-pub(crate) const DEFAULT_HASH_SEED_2: u64 = 37;
 
 // https://rust-algo.club/collections/bloom_filter/
 #[derive(Debug, Default)]
@@ -21,10 +19,7 @@ impl<T: ?Sized> BloomFilter<T> {
     pub fn new(len: usize, err_rate: f64) -> Self {
         let bits_count = Self::optimal_bits_count(len, err_rate);
         let hash_fn_count = Self::optimal_hashers_count(err_rate);
-        let hashers = [
-            FixedHasher::new(DEFAULT_HASH_SEED_1),
-            FixedHasher::new(DEFAULT_HASH_SEED_2),
-        ];
+        let hashers = [FixedHasher::new(random()), FixedHasher::new(random())];
 
         Self {
             bits: BitVector::new(bits_count),
@@ -85,20 +80,22 @@ impl<T: ?Sized> BloomFilter<T> {
         (-1f64 * err_rate.log2()).ceil() as u64
     }
 
-    pub fn to_raw(&self) -> Vec<u8> {
-        let mut bytes = u64::encode_fixed_vec(self.hash_fn_count);
+    pub fn to_raw(&self, bytes: &mut Vec<u8>) -> KernelResult<()> {
+        bytes.write_fixedint(self.hash_fn_count)?;
+        self.hashers[0].to_raw(bytes);
+        self.hashers[1].to_raw(bytes);
+        self.bits.to_raw(bytes);
 
-        bytes.append(&mut self.bits.to_raw());
-        bytes
+        Ok(())
     }
 
     pub fn from_raw(bytes: &[u8]) -> Self {
         let hash_fn_count = u64::decode_fixed(&bytes[0..8]);
-        let bits = BitVector::from_raw(&bytes[8..]);
         let hashers = [
-            FixedHasher::new(DEFAULT_HASH_SEED_1),
-            FixedHasher::new(DEFAULT_HASH_SEED_2),
+            FixedHasher::from_raw(&bytes[8..16]),
+            FixedHasher::from_raw(&bytes[16..24]),
         ];
+        let bits = BitVector::from_raw(&bytes[24..]);
 
         BloomFilter {
             bits,
@@ -146,13 +143,12 @@ impl BitVector {
         self.len == 0
     }
 
-    pub fn to_raw(&self) -> Vec<u8> {
-        let mut bytes = u64::encode_fixed_vec(self.len);
+    pub fn to_raw(&self, bytes: &mut Vec<u8>) {
+        bytes.append(&mut u64::encode_fixed_vec(self.len));
 
         for bits in &self.bit_groups {
             bytes.append(&mut bits.encode_fixed_vec());
         }
-        bytes
     }
 
     pub fn from_raw(bytes: &[u8]) -> Self {
@@ -175,24 +171,35 @@ impl FixedHasher {
     pub fn new(seed: u64) -> Self {
         FixedHasher { seed }
     }
+
+    pub fn to_raw(&self, bytes: &mut Vec<u8>) {
+        bytes.append(&mut u64::encode_fixed_vec(self.seed))
+    }
+
+    pub fn from_raw(bytes: &[u8]) -> Self {
+        FixedHasher {
+            seed: u64::decode_fixed(bytes),
+        }
+    }
 }
 
 impl Hasher for FixedHasher {
+    fn finish(&self) -> u64 {
+        self.seed
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         let mut hasher = DefaultHasher::new();
         self.seed.hash(&mut hasher);
         bytes.hash(&mut hasher);
         self.seed = hasher.finish();
     }
-
-    fn finish(&self) -> u64 {
-        self.seed
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::kernel::utils::bloom_filter::{BitVector, BloomFilter};
+    use crate::kernel::KernelResult;
     use rand::Rng;
     use std::collections::HashSet;
 
@@ -202,7 +209,9 @@ mod tests {
 
         vector.set_bit(99, true);
 
-        let bytes = vector.to_raw();
+        let mut bytes = Vec::new();
+
+        vector.to_raw(&mut bytes);
         let vector = BitVector::from_raw(&bytes);
 
         for i in 0..98 {
@@ -224,16 +233,20 @@ mod tests {
     }
 
     #[test]
-    fn bloom_filter_serialization() {
+    fn bloom_filter_serialization() -> KernelResult<()> {
         let mut bf = BloomFilter::new(100, 0.01);
 
         bf.insert(&1);
 
-        let bytes = bf.to_raw();
+        let mut bytes = Vec::new();
+        bf.to_raw(&mut bytes)?;
+
         let bf = BloomFilter::from_raw(&bytes);
 
         assert!(bf.contains(&1));
         assert!(!bf.contains(&2));
+
+        Ok(())
     }
 
     #[test]
