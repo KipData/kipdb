@@ -20,11 +20,12 @@ fn test_version_clean() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let config = Config::new(temp_dir.into_path());
 
-        let (wal, _, _) = LogLoader::reload(
+        let (wal, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_VERSION_PATH, Some(1)),
             IoType::Direct,
-            |_| Ok(()),
+            &mut vec![0],
+            |_, _| Ok(()),
         )?;
 
         // 注意：将ss_table的创建防止VersionStatus的创建前
@@ -72,18 +73,24 @@ fn test_version_clean() -> KernelResult<()> {
         ver_status.log_and_apply(vec_edit_3, 2).await?;
 
         // 测试对比快照
-        let (_, snapshot, _) = LogLoader::reload(
+        let mut snapshot = Vec::new();
+        let (_, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_VERSION_PATH, None),
             IoType::Direct,
-            |bytes| Ok(bincode::deserialize::<Vec<VersionEdit>>(bytes)?),
+            &mut snapshot,
+            |bytes, records| {
+                records.append(&mut bincode::deserialize::<Vec<VersionEdit>>(bytes)?);
+
+                Ok(())
+            },
         )?;
 
         assert_eq!(
             snapshot,
             vec![
-                vec![VersionEdit::NewFile((vec![scope_2], 0), 0, meta_2)],
-                vec![VersionEdit::DeleteFile((vec![2], 0), meta_2)],
+                VersionEdit::NewFile((vec![scope_2], 0), 0, meta_2),
+                VersionEdit::DeleteFile((vec![2], 0), meta_2),
             ]
         );
 
@@ -118,11 +125,12 @@ fn test_version_apply_and_log() -> KernelResult<()> {
     tokio_test::block_on(async move {
         let config = Config::new(temp_dir.into_path());
 
-        let (wal, _, _) = LogLoader::reload(
+        let (wal, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_VERSION_PATH, Some(1)),
             IoType::Direct,
-            |_| Ok(()),
+            &mut vec![0],
+            |_, _| Ok(()),
         )?;
 
         // 注意：将ss_table的创建防止VersionStatus的创建前

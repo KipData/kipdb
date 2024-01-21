@@ -259,11 +259,12 @@ mod tests {
             config.dir_path.join(DEFAULT_SS_TABLE_PATH),
             FileExtension::SSTable,
         )?);
-        let (log_loader, _, _) = LogLoader::reload(
+        let (log_loader, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |_| Ok(()),
+            &mut vec![0],
+            |_, _| Ok(()),
         )?;
         let sst_loader = TableLoader::new(config.clone(), sst_factory.clone(), log_loader)?;
 

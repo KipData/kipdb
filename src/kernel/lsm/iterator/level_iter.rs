@@ -103,11 +103,12 @@ mod tests {
         tokio_test::block_on(async move {
             let config = Config::new(temp_dir.into_path());
 
-            let (wal, _, _) = LogLoader::reload(
+            let (wal, _) = LogLoader::reload(
                 config.path(),
                 (DEFAULT_WAL_PATH, Some(1)),
                 IoType::Direct,
-                |_| Ok(()),
+                &mut vec![0],
+                |_, _| Ok(()),
             )?;
 
             // 注意：将ss_table的创建防止VersionStatus的创建前

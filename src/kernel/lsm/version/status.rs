@@ -8,7 +8,6 @@ use crate::kernel::lsm::version::{
     snapshot_gen, Version, DEFAULT_SS_TABLE_PATH, DEFAULT_VERSION_PATH,
 };
 use crate::kernel::KernelResult;
-use itertools::Itertools;
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -42,16 +41,25 @@ impl VersionStatus {
             config.path().join(DEFAULT_VERSION_PATH),
             FileExtension::Log,
         )?);
-        let (ver_log_loader, vec_batch_log, log_gen) = LogLoader::reload(
+        let mut version_logs = Vec::new();
+        let (ver_log_loader, log_gen) = LogLoader::reload(
             config.path(),
             (DEFAULT_VERSION_PATH, Some(snapshot_gen(&log_factory)?)),
             IoType::Direct,
-            |bytes| Ok(bincode::deserialize::<Vec<VersionEdit>>(bytes)?),
+            &mut version_logs,
+            |bytes, records| {
+                records.append(&mut bincode::deserialize::<Vec<VersionEdit>>(bytes)?);
+
+                Ok(())
+            },
         )?;
-        let vec_log = vec_batch_log.into_iter().flatten().collect_vec();
-        let edit_approximate_count = AtomicUsize::new(vec_log.len());
+        let edit_approximate_count = AtomicUsize::new(version_logs.len());
         let (clean_tx, clean_rx) = unbounded_channel();
-        let version = Arc::new(Version::load_from_log(vec_log, &ss_table_loader, clean_tx)?);
+        let version = Arc::new(Version::load_from_log(
+            version_logs,
+            &ss_table_loader,
+            clean_tx,
+        )?);
         let mut cleaner = Cleaner::new(&ss_table_loader, clean_rx);
 
         let _ignore = tokio::spawn(async move {

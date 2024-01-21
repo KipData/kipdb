@@ -1,6 +1,6 @@
 [package]
 name = "kip_db"
-version = "0.1.2-alpha.23"
+version = "0.1.2-alpha.23.fix4"
 edition = "2021"
 authors = ["Kould <kould2333@gmail.com>"]
 description = "轻量级、异步 基于LSM Leveled Compaction K-V数据库"
@@ -60,7 +60,6 @@ parking_lot = "0.12.1"
 crc32fast = "1.3.2"
 skiplist = "0.5.1"
 fslock = "0.2.1"
-once_cell = "1.19.0"
 rand = "0.8.5"
 # grpc
 tonic = { version = "0.10.2", optional = true }

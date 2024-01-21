@@ -13,7 +13,8 @@ pub struct VersionIter<'a> {
 
 impl<'a> VersionIter<'a> {
     pub(crate) fn new(version: &'a Version) -> KernelResult<VersionIter<'a>> {
-        let vec_iter = Self::merging_with_version(version)?;
+        let mut vec_iter = Vec::new();
+        Self::merging_with_version(version, &mut vec_iter)?;
 
         Ok(Self {
             merge_iter: MergingIter::new(vec_iter)?,
@@ -22,20 +23,19 @@ impl<'a> VersionIter<'a> {
 
     pub(crate) fn merging_with_version(
         version: &'a Version,
-    ) -> KernelResult<Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>> {
-        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> = Vec::new();
-
+        iter_vec: &mut Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
+    ) -> KernelResult<()> {
         for table in version.tables_by_level_0() {
-            vec_iter.push(table.iter()?);
+            iter_vec.push(table.iter()?);
         }
 
         for level in 1..MAX_LEVEL - 1 {
             if let Ok(level_iter) = LevelIter::new(version, level) {
-                vec_iter.push(Box::new(level_iter));
+                iter_vec.push(Box::new(level_iter));
             }
         }
 
-        Ok(vec_iter)
+        Ok(())
     }
 }
 

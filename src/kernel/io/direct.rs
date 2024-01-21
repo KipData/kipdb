@@ -25,7 +25,11 @@ impl DirectIoReader {
         extension: Arc<FileExtension>,
     ) -> KernelResult<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
-        let fs = File::open(path)?;
+        let fs = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(path)?;
 
         Ok(DirectIoReader {
             gen,

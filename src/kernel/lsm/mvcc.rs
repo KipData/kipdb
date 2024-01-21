@@ -11,7 +11,6 @@ use crate::KernelError;
 use bytes::Bytes;
 use core::slice::SlicePattern;
 use itertools::Itertools;
-use once_cell::sync::OnceCell;
 use skiplist::SkipMap;
 use std::collections::Bound;
 use std::ptr::NonNull;
@@ -38,7 +37,6 @@ pub struct Transaction {
     check_type: CheckType,
 
     write_buf: Option<SkipMap<Bytes, Option<Bytes>>>,
-    mem_buf: OnceCell<BufPtr>,
 }
 
 impl Transaction {
@@ -53,7 +51,6 @@ impl Transaction {
             seq_id: Sequence::create(),
             write_buf: None,
             check_type,
-            mem_buf: OnceCell::new(),
         }
     }
 
@@ -143,6 +140,10 @@ impl Transaction {
         min: Bound<&[u8]>,
         max: Bound<&[u8]>,
     ) -> KernelResult<TransactionIter> {
+        let mut write_buf_ptr = None;
+        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> =
+            Vec::with_capacity(3);
+
         let option_write_buf = self.write_buf.as_ref().map(|buf| {
             buf.range(
                 min.map(Bytes::copy_from_slice).as_ref(),
@@ -151,16 +152,6 @@ impl Transaction {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect_vec()
         });
-
-        let mem_ptr = self.mem_buf.get_or_init(|| {
-            let kvs = self.mem_table().range_scan(min, max, Some(self.seq_id));
-
-            BufPtr(Box::leak(Box::new(kvs)).into())
-        });
-        let mut write_buf_ptr = None;
-        let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> =
-            Vec::with_capacity(3);
-
         if let Some(write_buf) = option_write_buf {
             let buf_ptr = BufPtr(Box::leak(Box::new(write_buf)).into());
             let buf_iter = unsafe {
@@ -173,22 +164,44 @@ impl Transaction {
             write_buf_ptr = Some(buf_ptr);
             vec_iter.push(Box::new(buf_iter));
         }
+
+        let mem_buf = self.mem_table().range_scan(min, max, Some(self.seq_id));
+        let mem_buf_ptr = BufPtr(Box::leak(Box::new(mem_buf)).into());
+
         vec_iter.push(Box::new(unsafe {
             BufIter {
-                inner: mem_ptr.0.as_ref(),
+                inner: mem_buf_ptr.0.as_ref(),
                 pos: 0,
             }
         }));
-        vec_iter.push(Box::new(VersionIter::new(&self.version)?));
+        VersionIter::merging_with_version(&self.version, &mut vec_iter)?;
 
-        let inner = MergingIter::new(vec_iter)?;
+        let mut inner = MergingIter::new(vec_iter)?;
+        let mut init_buf = None;
+
+        match &min {
+            Bound::Included(key) => {
+                init_buf = inner
+                    .seek(Seek::Backward(key.as_slice()))?
+                    .and_then(|data| (data.0 >= key).then_some(data));
+            }
+            Bound::Excluded(key) => {
+                init_buf = inner
+                    .seek(Seek::Backward(key.as_slice()))?
+                    .and_then(|data| (data.0 > key).then_some(data));
+            }
+            Bound::Unbounded => (),
+        };
 
         Ok(TransactionIter {
             inner,
-            min: min.map(Bytes::copy_from_slice),
             max: max.map(Bytes::copy_from_slice),
+
             write_buf_ptr,
-            is_seeked: false,
+            mem_buf_ptr,
+
+            is_overed: false,
+            init_buf,
         })
     }
 }
@@ -197,10 +210,6 @@ impl Drop for Transaction {
     #[inline]
     fn drop(&mut self) {
         let _ = self.mem_table().tx_count.fetch_sub(1, Ordering::Release);
-
-        if let Some(mem_ptr) = self.mem_buf.take() {
-            unsafe { drop(Box::from_raw(mem_ptr.0.as_ptr())) }
-        }
     }
 }
 
@@ -210,10 +219,13 @@ unsafe impl Send for TransactionIter<'_> {}
 
 pub struct TransactionIter<'a> {
     inner: MergingIter<'a>,
+
     write_buf_ptr: Option<BufPtr>,
-    min: Bound<Bytes>,
+    mem_buf_ptr: BufPtr,
+
     max: Bound<Bytes>,
-    is_seeked: bool,
+    init_buf: Option<KeyValue>,
+    is_overed: bool,
 }
 
 impl<'a> Iter<'a> for TransactionIter<'a> {
@@ -221,35 +233,20 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
 
     #[inline]
     fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
-        if !self.is_seeked {
-            self.is_seeked = true;
-
-            match &self.min {
-                Bound::Included(key) => return self.inner.seek(Seek::Backward(key.as_slice())),
-                Bound::Excluded(key) => {
-                    if let Some(kv) = self.inner.seek(Seek::Backward(key.as_slice()))? {
-                        if kv.0 != key {
-                            return Ok(Some(kv));
-                        }
-                    } else {
-                        return Ok(None);
-                    }
-                }
-                Bound::Unbounded => (),
-            };
+        if self.is_overed {
+            return Ok(None);
         }
+        let mut item = self.init_buf.take();
 
+        if item.is_none() {
+            item = self.inner.try_next()?;
+        }
         let option = match &self.max {
-            Bound::Included(key) => self
-                .inner
-                .try_next()?
-                .and_then(|data| (data.0 <= key).then_some(data)),
-            Bound::Excluded(key) => self
-                .inner
-                .try_next()?
-                .and_then(|data| (data.0 < key).then_some(data)),
-            Bound::Unbounded => self.inner.try_next()?,
+            Bound::Included(key) => item.and_then(|data| (data.0 <= key).then_some(data)),
+            Bound::Excluded(key) => item.and_then(|data| (data.0 < key).then_some(data)),
+            Bound::Unbounded => item,
         };
+        self.is_overed = option.is_none();
 
         Ok(option)
     }
@@ -261,6 +258,8 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
 
     #[inline]
     fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
+        self.init_buf = None;
+
         self.inner.seek(seek)
     }
 }
@@ -271,6 +270,7 @@ impl Drop for TransactionIter<'_> {
         if let Some(buf_prt) = &self.write_buf_ptr {
             unsafe { drop(Box::from_raw(buf_prt.0.as_ptr())) }
         }
+        unsafe { drop(Box::from_raw(self.mem_buf_ptr.0.as_ptr())) }
     }
 }
 

@@ -5,12 +5,13 @@ use crate::kernel::lsm::storage::{Config, Gen, Sequence};
 use crate::kernel::lsm::table::ss_table::block::{Entry, Value};
 use crate::kernel::lsm::trigger::{Trigger, TriggerFactory};
 use crate::kernel::KernelResult;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use itertools::Itertools;
 use parking_lot::Mutex;
 use skiplist::{skipmap, SkipMap};
 use std::cmp::Ordering;
 use std::collections::Bound;
+use std::io::Cursor;
 use std::mem;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Acquire;
@@ -168,20 +169,27 @@ macro_rules! check_count {
 
 impl MemTable {
     pub(crate) fn new(config: &Config) -> KernelResult<Self> {
-        let (log_loader, log_entry, log_gen) = LogLoader::reload(
+        let mut log_records = Vec::new();
+        let (log_loader, log_gen) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, None),
             config.wal_io_type,
-            |bytes| {
-                Entry::<Value>::decode(&mut bytes.reader())
-                    .map(|Entry { key, item, .. }| (InternalKey::new_with_seq(key, 0), item.bytes))
+            &mut log_records,
+            |bytes, records| {
+                for (_, Entry { key, item, .. }) in
+                    Entry::<Value>::batch_decode(&mut Cursor::new(mem::take(bytes)))?
+                {
+                    records.push((InternalKey::new_with_seq(key, 0), item.bytes));
+                }
+
+                Ok(())
             },
         )?;
         let log_writer = (log_loader.writer(log_gen)?, log_gen);
         // Q: 为什么INIT_SEQ作为Seq id?
         // A: 因为此处是当存在有停机异常时使用wal恢复数据,此处也不存在有Version(VersionStatus的初始化在此代码之后)
         // 因此不会影响Version的读取顺序
-        let mem_map = MemMap::from_iter(log_entry);
+        let mem_map = MemMap::from_iter(log_records);
         let (trigger_type, threshold) = config.minor_trigger_with_threshold;
 
         Ok(MemTable {

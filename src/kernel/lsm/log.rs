@@ -25,15 +25,16 @@ impl LogLoader {
         wal_dir_path: &Path,
         path_name: (&str, Option<i64>),
         io_type: IoType,
+        records: &mut Vec<R>,
         fn_decode: F,
-    ) -> KernelResult<(Self, Vec<R>, i64)>
+    ) -> KernelResult<(Self, i64)>
     where
-        F: Fn(&mut Vec<u8>) -> KernelResult<R>,
+        F: Fn(&mut Vec<u8>, &mut Vec<R>) -> KernelResult<()>,
     {
         let (loader, log_gen) = Self::_reload(wal_dir_path, path_name, io_type)?;
-        let reload_data = loader.load(log_gen, fn_decode).unwrap_or(Vec::new());
+        loader.load(log_gen, records, fn_decode)?;
 
-        Ok((loader, reload_data, log_gen))
+        Ok((loader, log_gen))
     }
 
     fn _reload(
@@ -58,20 +59,24 @@ impl LogLoader {
     }
 
     /// 通过Gen载入数据进行读取
-    pub(crate) fn load<F, R>(&self, gen: i64, fn_decode: F) -> KernelResult<Vec<R>>
+    pub(crate) fn load<F, R>(
+        &self,
+        gen: i64,
+        records: &mut Vec<R>,
+        fn_decode: F,
+    ) -> KernelResult<()>
     where
-        F: Fn(&mut Vec<u8>) -> KernelResult<R>,
+        F: Fn(&mut Vec<u8>, &mut Vec<R>) -> KernelResult<()>,
     {
         let mut reader = LogReader::new(self.factory.reader(gen, self.io_type)?);
-        let mut vec_data = Vec::new();
         let mut buf = vec![0; 128];
 
         // 当数据排列有误时仅恢复已正常读取的数据
         while reader.read(&mut buf).unwrap_or(0) > 0 {
-            vec_data.push(fn_decode(&mut buf)?);
+            fn_decode(&mut buf, records)?;
         }
 
-        Ok(vec_data)
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -371,14 +376,14 @@ mod tests {
     #[test]
     fn test_log_loader() -> KernelResult<()> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
         let config = Config::new(temp_dir.into_path());
 
-        let (loader, _, _) = LogLoader::reload(
+        let (loader, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |bytes| Ok(bytes.clone()),
+            &mut vec![0],
+            |_, _| Ok(()),
         )?;
 
         let mut writer = loader.writer(1)?;
@@ -390,14 +395,25 @@ mod tests {
 
         drop(loader);
 
-        let (wal, reload_data_1, log_gen) = LogLoader::reload(
+        let mut reload_data_1 = Vec::new();
+        let (wal, log_gen) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |bytes| Ok(bytes.clone()),
+            &mut reload_data_1,
+            |bytes, records| {
+                records.push(mem::take(bytes));
+
+                Ok(())
+            },
         )?;
 
-        let reload_data_2 = wal.load(1, |bytes| Ok(mem::take(bytes)))?;
+        let mut reload_data_2 = Vec::new();
+        wal.load(1, &mut reload_data_2, |bytes, records| {
+            records.push(mem::take(bytes));
+
+            Ok(())
+        })?;
 
         assert_eq!(log_gen, 1);
         assert_eq!(reload_data_1, vec![b"kip_key_1", b"kip_key_2"]);

@@ -11,8 +11,10 @@ use crate::kernel::lsm::table::ss_table::SSTable;
 use crate::kernel::lsm::table::{BoxTable, Table, TableType};
 use crate::kernel::utils::lru_cache::ShardingLruCache;
 use crate::kernel::KernelResult;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use std::collections::hash_map::RandomState;
+use std::io::Cursor;
+use std::mem;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -86,9 +88,15 @@ impl TableLoader {
                             "[LSMStore][Load Table: {}][try to reload with wal]: {:?}",
                             gen, err
                         );
-                        let reload_data = self.wal.load(*gen, |bytes| {
-                            Entry::<Value>::decode(&mut bytes.reader())
-                                .map(|Entry { key, item, .. }| (key, item.bytes))
+                        let mut reload_data = Vec::new();
+                        self.wal.load(*gen, &mut reload_data, |bytes, records| {
+                            for (_, Entry { key, item, .. }) in
+                                Entry::<Value>::batch_decode(&mut Cursor::new(mem::take(bytes)))?
+                            {
+                                records.push((key, item.bytes));
+                            }
+
+                            Ok(())
                         })?;
 
                         Box::new(BTreeTable::new(LEVEL_0, *gen, reload_data))
@@ -171,11 +179,12 @@ mod tests {
         )?);
         let mut vec_data = Vec::new();
         let times = 2333;
-        let (log_loader, _, _) = LogLoader::reload(
+        let (log_loader, _) = LogLoader::reload(
             config.path(),
             (DEFAULT_WAL_PATH, Some(1)),
             IoType::Buf,
-            |_| Ok(()),
+            &mut vec![0],
+            |_, _| Ok(()),
         )?;
         let mut log_writer = log_loader.writer(1)?;
 

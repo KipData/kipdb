@@ -25,7 +25,13 @@ impl BufIoReader {
     ) -> KernelResult<Self> {
         let path = extension.path_with_gen(&dir_path, gen);
 
-        let reader = BufReaderWithPos::new(File::open(path)?)?;
+        let reader = BufReaderWithPos::new(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .read(true)
+                .open(path)?,
+        )?;
 
         Ok(BufIoReader {
             gen,
