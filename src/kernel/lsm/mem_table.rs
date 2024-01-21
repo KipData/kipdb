@@ -366,6 +366,17 @@ impl MemTable {
     ) -> Vec<KeyValue> {
         let inner = self.inner.lock();
         let de_dupe_merge_sort_fn = |mem: Vec<KeyValue>, immut_mem: Vec<KeyValue>| {
+            let fn_push = |results: &mut Vec<KeyValue>, item: &mut Option<KeyValue>, new_item| {
+                if let Some(item) = mem::replace(item, new_item) {
+                    if !matches!(
+                        results.last().and_then(|(key, _)| Some(key == &item.0)),
+                        Some(true)
+                    ) {
+                        results.push(item)
+                    }
+                }
+            };
+
             assert!(mem.is_sorted_by_key(|(k, _)| k));
             assert!(mem.iter().all_unique());
             assert!(immut_mem.is_sorted_by_key(|(k, _)| k));
@@ -375,29 +386,22 @@ impl MemTable {
             let (mut mem_iter, mut immut_mem_iter) = (mem.into_iter(), immut_mem.into_iter());
             let (mut mem_current, mut immut_mem_current) = (mem_iter.next(), immut_mem_iter.next());
 
-            while let (Some(mem_item), Some(immut_mem_item)) =
-                (mem_current.take(), immut_mem_current.take())
-            {
-                match mem_item.0.cmp(&immut_mem_item.0) {
-                    Ordering::Less => {
-                        merged.push(mem_item);
-                        immut_mem_current = Some(immut_mem_item);
-
-                        mem_current = mem_iter.next();
-                        if mem_current.is_none() {
-                            break;
-                        }
-                    }
+            while mem_current.is_some() && immut_mem_current.is_some() {
+                match mem_current
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .cmp(&immut_mem_current.as_ref().unwrap().0)
+                {
+                    Ordering::Less => fn_push(&mut merged, &mut mem_current, mem_iter.next()),
                     Ordering::Greater => {
-                        merged.push(immut_mem_item);
-                        mem_current = Some(mem_item);
+                        fn_push(&mut merged, &mut immut_mem_current, immut_mem_iter.next())
+                    }
+                    Ordering::Equal => {
+                        fn_push(&mut merged, &mut mem_current, mem_iter.next());
 
                         immut_mem_current = immut_mem_iter.next();
-                        if immut_mem_current.is_none() {
-                            break;
-                        }
                     }
-                    Ordering::Equal => merged.push(mem_item),
                 }
             }
 
