@@ -1,6 +1,6 @@
 pub(crate) mod iter;
 
-use crate::kernel::lsm::iterator::Iter;
+use crate::kernel::lsm::iterator::SeekIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::btree_table::iter::BTreeTableIter;
 use crate::kernel::lsm::table::Table;
@@ -55,7 +55,8 @@ impl Table for BTreeTable {
     #[allow(clippy::todo)]
     fn iter<'a>(
         &'a self,
-    ) -> crate::kernel::KernelResult<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
+    ) -> crate::kernel::KernelResult<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Send + Sync>>
+    {
         Ok(Box::new(BTreeTableIter::new(self)))
     }
 }

@@ -21,8 +21,10 @@ pub trait Iter<'a> {
     fn try_next(&mut self) -> KernelResult<Option<Self::Item>>;
 
     fn is_valid(&self) -> bool;
+}
 
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>>;
+pub trait SeekIter<'a>: Iter<'a> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<()>;
 }
 
 /// 向前迭代器

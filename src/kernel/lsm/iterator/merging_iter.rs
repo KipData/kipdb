@@ -1,10 +1,9 @@
-use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::KernelResult;
 use bytes::Bytes;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::ops::Bound::{Included, Unbounded};
 
 /// 用于取值以及对应的Iter下标
 /// 通过序号进行同值优先获取
@@ -28,14 +27,23 @@ impl Ord for IterKey {
     }
 }
 
-pub(crate) struct MergingIter<'a> {
-    vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
+struct InnerIter {
     map_buf: BTreeMap<IterKey, KeyValue>,
     pre_key: Option<Bytes>,
 }
 
+pub(crate) struct MergingIter<'a> {
+    vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
+    inner: InnerIter,
+}
+
+pub(crate) struct SeekMergingIter<'a> {
+    vec_iter: Vec<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Send + Sync>>,
+    inner: InnerIter,
+}
+
 impl<'a> MergingIter<'a> {
-    #[allow(dead_code, clippy::mutable_key_type)]
+    #[allow(clippy::mutable_key_type)]
     pub(crate) fn new(
         mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
     ) -> KernelResult<Self> {
@@ -43,86 +51,113 @@ impl<'a> MergingIter<'a> {
 
         for (num, iter) in vec_iter.iter_mut().enumerate() {
             if let Some(item) = iter.try_next()? {
-                Self::buf_map_insert(&mut map_buf, num, item);
+                InnerIter::buf_map_insert(&mut map_buf, num, item);
             }
         }
 
         Ok(MergingIter {
             vec_iter,
-            map_buf,
-            pre_key: None,
+            inner: InnerIter {
+                map_buf,
+                pre_key: None,
+            },
         })
     }
+}
+
+impl<'a> SeekMergingIter<'a> {
+    #[allow(clippy::mutable_key_type)]
+    pub(crate) fn new(
+        mut vec_iter: Vec<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Send + Sync>>,
+    ) -> KernelResult<Self> {
+        let mut map_buf = BTreeMap::new();
+
+        for (num, iter) in vec_iter.iter_mut().enumerate() {
+            if let Some(item) = iter.try_next()? {
+                InnerIter::buf_map_insert(&mut map_buf, num, item);
+            }
+        }
+
+        Ok(SeekMergingIter {
+            vec_iter,
+            inner: InnerIter {
+                map_buf,
+                pre_key: None,
+            },
+        })
+    }
+}
+
+macro_rules! is_valid {
+    ($vec_iter:expr) => {
+        $vec_iter
+            .iter()
+            .map(|iter| iter.is_valid())
+            .all(|is_valid| is_valid)
+    };
 }
 
 impl<'a> Iter<'a> for MergingIter<'a> {
     type Item = KeyValue;
 
     fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
-        while let Some((IterKey { num, .. }, old_item)) = self.map_buf.pop_first() {
-            if let Some(item) = self.vec_iter[num].try_next()? {
-                Self::buf_map_insert(&mut self.map_buf, num, item);
-            }
-
-            // 跳过重复元素
-            if let Some(key) = &self.pre_key {
-                if key == &old_item.0 {
-                    continue;
-                }
-            }
-            self.pre_key = Some(old_item.0.clone());
-
-            return Ok(Some(old_item));
-        }
-
-        Ok(None)
+        self.inner.try_next_1(&mut self.vec_iter)
     }
 
     fn is_valid(&self) -> bool {
-        self.vec_iter
-            .iter()
-            .map(|iter| iter.is_valid())
-            .all(|is_valid| is_valid)
-    }
-
-    #[allow(clippy::mutable_key_type)]
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
-        let mut seek_map = BTreeMap::new();
-
-        for (num, iter) in self.vec_iter.iter_mut().enumerate() {
-            if let Some(item) = iter.seek(seek)? {
-                Self::buf_map_insert(&mut seek_map, num, item);
-            }
-        }
-
-        if let Seek::Last = seek {
-            self.map_buf.clear();
-
-            // 有点复杂不是么
-            // 先弹出最小的元素
-            // 当多个Iter seek至最尾端后存在最小元素且最小元素的key有重复的情况下，去num（iter序号）最小的元素
-            // 当num为0时，则直接选择该最优先的iter的元素
-            Ok(seek_map.pop_last().map(|(IterKey { key, num }, item)| {
-                (num != 0)
-                    .then(|| {
-                        seek_map
-                            .range((Included(&IterKey { num: 0, key }), Unbounded))
-                            .next()
-                            .map(|(_, range_item)| range_item.clone())
-                    })
-                    .flatten()
-                    .unwrap_or(item)
-            }))
-        } else {
-            self.map_buf = seek_map;
-
-            self.try_next()
-        }
+        is_valid!(&self.vec_iter)
     }
 }
 
-#[allow(clippy::mutable_key_type)]
-impl MergingIter<'_> {
+impl<'a> Iter<'a> for SeekMergingIter<'a> {
+    type Item = KeyValue;
+
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
+        self.inner.try_next_2(&mut self.vec_iter)
+    }
+
+    fn is_valid(&self) -> bool {
+        is_valid!(&self.vec_iter)
+    }
+}
+
+macro_rules! impl_try_next {
+    ($func:ident, $vec_iter:ty) => {
+        impl InnerIter {
+            fn $func(&mut self, vec_iter: &mut [$vec_iter]) -> KernelResult<Option<KeyValue>> {
+                while let Some((IterKey { num, .. }, old_item)) = self.map_buf.pop_first() {
+                    if let Some(item) = vec_iter[num].try_next()? {
+                        Self::buf_map_insert(&mut self.map_buf, num, item);
+                    }
+
+                    // 跳过重复元素
+                    if let Some(key) = &self.pre_key {
+                        if key == &old_item.0 {
+                            continue;
+                        }
+                    }
+                    self.pre_key = Some(old_item.0.clone());
+
+                    return Ok(Some(old_item));
+                }
+
+                Ok(None)
+            }
+        }
+    };
+}
+
+impl_try_next!(
+    try_next_1,
+    Box<dyn Iter<'_, Item = KeyValue> + '_ + Send + Sync>
+);
+impl_try_next!(
+    try_next_2,
+    Box<dyn SeekIter<'_, Item = KeyValue> + '_ + Send + Sync>
+);
+
+impl InnerIter {
+    #[allow(clippy::mutable_key_type)]
     fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, KeyValue>, num: usize, item: KeyValue) {
         let _ = seek_map.insert(
             IterKey {
@@ -134,11 +169,37 @@ impl MergingIter<'_> {
     }
 }
 
+impl<'a> SeekIter<'a> for SeekMergingIter<'a> {
+    #[allow(clippy::mutable_key_type)]
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<()> {
+        if let Seek::Last = seek {
+            self.inner.map_buf.clear();
+        } else {
+            let mut seek_map = BTreeMap::new();
+
+            for (num, iter) in self.vec_iter.iter_mut().enumerate() {
+                iter.seek(seek)?;
+
+                if let Some(item) = iter.try_next()? {
+                    InnerIter::buf_map_insert(&mut seek_map, num, item);
+                }
+            }
+
+            self.inner.map_buf = seek_map;
+        }
+
+        Ok(())
+    }
+}
+
+#[allow(clippy::mutable_key_type)]
+impl MergingIter<'_> {}
+
 #[cfg(test)]
 mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-    use crate::kernel::lsm::iterator::{Iter, Seek};
+    use crate::kernel::lsm::iterator::merging_iter::SeekMergingIter;
+    use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
     use crate::kernel::lsm::mem_table::KeyValue;
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::table::btree_table::iter::BTreeTableIter;
@@ -173,7 +234,7 @@ mod tests {
             Some((Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1'])))),
             Some((Bytes::from(vec![b'8']), None)),
             Some((Bytes::from(vec![b'1']), None)),
-            Some((Bytes::from(vec![b'8']), None)),
+            None,
             Some((Bytes::from(vec![b'6']), None)),
         ];
 
@@ -200,7 +261,7 @@ mod tests {
             Some((Bytes::from(vec![b'7']), Some(Bytes::from(vec![b'1'])))),
             Some((Bytes::from(vec![b'8']), None)),
             Some((Bytes::from(vec![b'1']), None)),
-            Some((Bytes::from(vec![b'8']), None)),
+            None,
             Some((Bytes::from(vec![b'6']), None)),
         ];
 
@@ -227,7 +288,7 @@ mod tests {
             None,
             None,
             Some((Bytes::from(vec![b'4']), Some(Bytes::from(vec![b'0'])))),
-            Some((Bytes::from(vec![b'6']), Some(Bytes::from(vec![b'0'])))),
+            None,
             Some((Bytes::from(vec![b'5']), None)),
         ];
 
@@ -270,7 +331,7 @@ mod tests {
 
         let mut sequence_iter = sequence.into_iter();
 
-        let mut merging_iter = MergingIter::new(vec![Box::new(bt_iter), Box::new(sst_iter)])?;
+        let mut merging_iter = SeekMergingIter::new(vec![Box::new(bt_iter), Box::new(sst_iter)])?;
 
         assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
@@ -284,20 +345,14 @@ mod tests {
 
         assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.seek(Seek::First)?,
-            sequence_iter.next().flatten()
-        );
+        merging_iter.seek(Seek::First)?;
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.seek(Seek::Last)?,
-            sequence_iter.next().flatten()
-        );
+        merging_iter.seek(Seek::Last)?;
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
-        assert_eq!(
-            merging_iter.seek(Seek::Backward(&[b'5']))?,
-            sequence_iter.next().flatten()
-        );
+        merging_iter.seek(Seek::Backward(&[b'5']))?;
+        assert_eq!(merging_iter.try_next()?, sequence_iter.next().flatten());
 
         Ok(())
     }

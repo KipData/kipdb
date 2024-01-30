@@ -1,5 +1,5 @@
 use crate::kernel::io::IoWriter;
-use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
 use crate::kernel::lsm::log::{LogLoader, LogWriter};
 use crate::kernel::lsm::storage::{Config, Gen, Sequence};
 use crate::kernel::lsm::table::ss_table::block::{Entry, Value};
@@ -114,30 +114,29 @@ impl<'a> Iter<'a> for MemMapIter<'a> {
     fn is_valid(&self) -> bool {
         true
     }
+}
 
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
+impl<'a> SeekIter<'a> for MemMapIter<'a> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<()> {
         self.prev_item = None;
-        self.iter = match seek {
-            Seek::First => Some(self.mem_map.iter()),
-            Seek::Last => None,
-            Seek::Backward(seek_key) => Some(self.mem_map.range(
-                Bound::Included(&InternalKey::new_with_seq(
-                    Bytes::copy_from_slice(seek_key),
-                    0,
-                )),
-                Bound::Unbounded,
-            )),
-        };
 
         if let Seek::Last = seek {
-            Ok(self
-                .mem_map
-                .iter()
-                .last()
-                .map(|(InternalKey { key, .. }, value)| (key.clone(), value.clone())))
+            self.iter = None;
         } else {
-            self.try_next()
+            self.iter = match seek {
+                Seek::First => Some(self.mem_map.iter()),
+                Seek::Last => None,
+                Seek::Backward(seek_key) => Some(self.mem_map.range(
+                    Bound::Included(&InternalKey::new_with_seq(
+                        Bytes::copy_from_slice(seek_key),
+                        0,
+                    )),
+                    Bound::Unbounded,
+                )),
+            };
         }
+
+        Ok(())
     }
 }
 
@@ -368,10 +367,7 @@ impl MemTable {
         let de_dupe_merge_sort_fn = |mem: Vec<KeyValue>, immut_mem: Vec<KeyValue>| {
             let fn_push = |results: &mut Vec<KeyValue>, item: &mut Option<KeyValue>, new_item| {
                 if let Some(item) = mem::replace(item, new_item) {
-                    if !matches!(
-                        results.last().and_then(|(key, _)| Some(key == &item.0)),
-                        Some(true)
-                    ) {
+                    if !matches!(results.last().map(|(key, _)| key == &item.0), Some(true)) {
                         results.push(item)
                     }
                 }
@@ -483,7 +479,7 @@ pub(crate) fn data_to_bytes(data: KeyValue) -> KernelResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::iterator::{Iter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
     use crate::kernel::lsm::mem_table::{
         data_to_bytes, InternalKey, KeyValue, MemMap, MemMapIter, MemTable,
     };
@@ -721,16 +717,14 @@ mod tests {
 
         assert_eq!(iter.try_next()?, Some((key_4_2.key.clone(), None)));
 
-        assert_eq!(iter.seek(Seek::First)?, Some((key_1_2.key.clone(), None)));
+        iter.seek(Seek::First)?;
+        assert_eq!(iter.try_next()?, Some((key_1_2.key.clone(), None)));
 
-        assert_eq!(iter.seek(Seek::Last)?, Some((key_4_2.key.clone(), None)));
-
+        iter.seek(Seek::Last)?;
         assert_eq!(iter.try_next()?, None);
 
-        assert_eq!(
-            iter.seek(Seek::Backward(&[b'3']))?,
-            Some((key_4_2.key.clone(), None))
-        );
+        iter.seek(Seek::Backward(&[b'3']))?;
+        assert_eq!(iter.try_next()?, Some((key_4_2.key.clone(), None)));
 
         Ok(())
     }

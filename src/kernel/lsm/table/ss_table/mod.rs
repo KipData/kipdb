@@ -1,5 +1,5 @@
 use crate::kernel::io::{IoFactory, IoReader, IoType};
-use crate::kernel::lsm::iterator::Iter;
+use crate::kernel::lsm::iterator::SeekIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::storage::Config;
 use crate::kernel::lsm::table::ss_table::block::{
@@ -86,7 +86,7 @@ impl SSTable {
         footer.to_raw(&mut bytes)?;
 
         let mut writer = io_factory.writer(gen, io_type)?;
-        writer.write_all(&mut bytes)?;
+        writer.write_all(&bytes)?;
         writer.flush()?;
         info!("[SsTable: {}][create][MetaBlock]: {:?}", gen, meta);
 
@@ -224,7 +224,9 @@ impl Table for SSTable {
         self.footer.level as usize
     }
 
-    fn iter<'a>(&'a self) -> KernelResult<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> {
+    fn iter<'a>(
+        &'a self,
+    ) -> KernelResult<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Send + Sync>> {
         Ok(SSTableIter::new(self).map(Box::new)?)
     }
 }

@@ -1,4 +1,4 @@
-use crate::kernel::lsm::iterator::Iter;
+use crate::kernel::lsm::iterator::SeekIter;
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::meta::TableMeta;
 use crate::kernel::KernelResult;
@@ -29,7 +29,9 @@ pub(crate) trait Table: Sync + Send {
 
     fn level(&self) -> usize;
 
-    fn iter<'a>(&'a self) -> KernelResult<Box<dyn Iter<'a, Item = KeyValue> + 'a + Sync + Send>>;
+    fn iter<'a>(
+        &'a self,
+    ) -> KernelResult<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Sync + Send>>;
 }
 
 /// 通过一组SSTable收集对应的Gen

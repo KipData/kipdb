@@ -1,4 +1,4 @@
-use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
+use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek, SeekIter};
 use crate::kernel::lsm::table::ss_table::block::{Block, BlockItem, Entry};
 use crate::kernel::KernelResult;
 use bytes::Bytes;
@@ -41,21 +41,23 @@ where
         (item_key, item.clone())
     }
 
-    fn offset_move(&mut self, offset: usize) -> Option<(Bytes, T)> {
+    fn offset_move(&mut self, offset: usize, is_seek: bool) -> Option<(Bytes, T)> {
         let block = self.block;
         let restart_interval = block.restart_interval();
 
         let old_offset = self.offset;
         self.offset = offset;
 
-        (offset > 0).then(|| {
-            let real_offset = offset - 1;
-            if old_offset - 1 / restart_interval != real_offset / restart_interval {
-                self.buf_shared_key =
-                    block.shared_key_prefix(real_offset, block.restart_shared_len(real_offset));
-            }
-            self.item()
-        })
+        (offset > 0 && offset < self.entry_len + 1)
+            .then(|| {
+                let real_offset = offset - 1;
+                if old_offset - 1 / restart_interval != real_offset / restart_interval {
+                    self.buf_shared_key =
+                        block.shared_key_prefix(real_offset, block.restart_shared_len(real_offset));
+                }
+                (!is_seek).then(|| self.item())
+            })
+            .flatten()
     }
 }
 
@@ -64,8 +66,8 @@ where
     V: Sync + Send + BlockItem,
 {
     fn try_prev(&mut self) -> KernelResult<Option<Self::Item>> {
-        Ok((self.is_valid() || self.offset == self.entry_len)
-            .then(|| self.offset_move(self.offset - 1))
+        Ok((self.is_valid() || self.offset == self.entry_len + 1)
+            .then(|| self.offset_move(self.offset - 1, false))
             .flatten())
     }
 }
@@ -78,30 +80,37 @@ where
 
     fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         Ok((self.is_valid() || self.offset == 0)
-            .then(|| self.offset_move(self.offset + 1))
+            .then(|| self.offset_move(self.offset + 1, false))
             .flatten())
     }
 
     fn is_valid(&self) -> bool {
-        self.offset > 0 && self.offset < self.entry_len
+        self.offset > 0 && self.offset <= self.entry_len
     }
+}
 
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
-        Ok(match seek {
+impl<'a, V> SeekIter<'a> for BlockIter<'a, V>
+where
+    V: Sync + Send + BlockItem,
+{
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<()> {
+        match seek {
             Seek::First => Some(0),
-            Seek::Last => Some(self.entry_len - 1),
+            Seek::Last => Some(self.entry_len + 1),
             Seek::Backward(key) => match self.block.binary_search(key) {
                 Ok(index) => Some(index),
                 Err(index) => (index < self.entry_len).then_some(index),
             },
         }
-        .and_then(|index| self.offset_move(index + 1)))
+        .and_then(|index| self.offset_move(index, true));
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
+    use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek, SeekIter};
     use crate::kernel::lsm::table::ss_table::block::{Block, Value, DEFAULT_DATA_RESTART_INTERVAL};
     use crate::kernel::lsm::table::ss_table::block_iter::BlockIter;
     use crate::kernel::KernelResult;
@@ -147,6 +156,11 @@ mod tests {
 
         assert_eq!(
             iterator.try_prev()?,
+            Some((Bytes::from(vec![b'4']), Value::from(None)))
+        );
+
+        assert_eq!(
+            iterator.try_prev()?,
             Some((
                 Bytes::from(vec![b'2']),
                 Value::from(Some(Bytes::from(vec![b'0'])))
@@ -160,26 +174,27 @@ mod tests {
 
         assert_eq!(iterator.try_prev()?, None);
 
+        iterator.seek(Seek::First)?;
         assert_eq!(
-            iterator.seek(Seek::First)?,
+            iterator.try_next()?,
             Some((Bytes::from(vec![b'1']), Value::from(None)))
         );
 
-        assert_eq!(
-            iterator.seek(Seek::Last)?,
-            Some((Bytes::from(vec![b'4']), Value::from(None)))
-        );
+        iterator.seek(Seek::Last)?;
+        assert_eq!(iterator.try_next()?, None);
 
+        iterator.seek(Seek::Backward(&[b'2']))?;
         assert_eq!(
-            iterator.seek(Seek::Backward(&[b'2']))?,
+            iterator.try_next()?,
             Some((
                 Bytes::from(vec![b'2']),
                 Value::from(Some(Bytes::from(vec![b'0'])))
             ))
         );
 
+        iterator.seek(Seek::Backward(&[b'3']))?;
         assert_eq!(
-            iterator.seek(Seek::Backward(&[b'3']))?,
+            iterator.try_next()?,
             Some((Bytes::from(vec![b'4']), Value::from(None)))
         );
 

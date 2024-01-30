@@ -1,6 +1,6 @@
 use crate::kernel::lsm::iterator::level_iter::LevelIter;
-use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::iterator::merging_iter::SeekMergingIter;
+use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::lsm::MAX_LEVEL;
@@ -8,7 +8,7 @@ use crate::kernel::KernelResult;
 
 /// Version键值对迭代器
 pub struct VersionIter<'a> {
-    merge_iter: MergingIter<'a>,
+    merge_iter: SeekMergingIter<'a>,
 }
 
 impl<'a> VersionIter<'a> {
@@ -17,13 +17,13 @@ impl<'a> VersionIter<'a> {
         Self::merging_with_version(version, &mut vec_iter)?;
 
         Ok(Self {
-            merge_iter: MergingIter::new(vec_iter)?,
+            merge_iter: SeekMergingIter::new(vec_iter)?,
         })
     }
 
     pub(crate) fn merging_with_version(
         version: &'a Version,
-        iter_vec: &mut Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
+        iter_vec: &mut Vec<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Send + Sync>>,
     ) -> KernelResult<()> {
         for table in version.tables_by_level_0() {
             iter_vec.push(table.iter()?);
@@ -49,8 +49,10 @@ impl<'a> Iter<'a> for VersionIter<'a> {
     fn is_valid(&self) -> bool {
         self.merge_iter.is_valid()
     }
+}
 
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
+impl<'a> SeekIter<'a> for VersionIter<'a> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<()> {
         self.merge_iter.seek(seek)
     }
 }

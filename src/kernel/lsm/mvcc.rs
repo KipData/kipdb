@@ -1,6 +1,6 @@
 use crate::kernel::lsm::compactor::CompactTask;
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::query_and_compaction;
 use crate::kernel::lsm::storage::{KipStorage, Sequence, StoreInner};
@@ -11,8 +11,8 @@ use crate::KernelError;
 use bytes::Bytes;
 use core::slice::SlicePattern;
 use itertools::Itertools;
-use skiplist::SkipMap;
-use std::collections::Bound;
+use std::collections::btree_map::Range;
+use std::collections::{BTreeMap, Bound};
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ pub struct Transaction {
     seq_id: i64,
     check_type: CheckType,
 
-    write_buf: Option<SkipMap<Bytes, Option<Bytes>>>,
+    write_buf: Option<BTreeMap<Bytes, Option<Bytes>>>,
 }
 
 impl Transaction {
@@ -54,8 +54,8 @@ impl Transaction {
         }
     }
 
-    fn write_buf_or_init(&mut self) -> &mut SkipMap<Bytes, Option<Bytes>> {
-        self.write_buf.get_or_insert_with(SkipMap::new)
+    fn write_buf_or_init(&mut self) -> &mut BTreeMap<Bytes, Option<Bytes>> {
+        self.write_buf.get_or_insert_with(BTreeMap::new)
     }
 
     /// 通过Key获取对应的Value
@@ -140,29 +140,16 @@ impl Transaction {
         min: Bound<&[u8]>,
         max: Bound<&[u8]>,
     ) -> KernelResult<TransactionIter> {
-        let mut write_buf_ptr = None;
         let mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>> =
             Vec::with_capacity(3);
 
-        let option_write_buf = self.write_buf.as_ref().map(|buf| {
-            buf.range(
+        if let Some(write_buf) = &self.write_buf {
+            let range = write_buf.range::<Bytes, (Bound<&Bytes>, Bound<&Bytes>)>((
                 min.map(Bytes::copy_from_slice).as_ref(),
                 max.map(Bytes::copy_from_slice).as_ref(),
-            )
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect_vec()
-        });
-        if let Some(write_buf) = option_write_buf {
-            let buf_ptr = BufPtr(Box::leak(Box::new(write_buf)).into());
-            let buf_iter = unsafe {
-                BufIter {
-                    inner: buf_ptr.0.as_ref(),
-                    pos: 0,
-                }
-            };
+            ));
 
-            write_buf_ptr = Some(buf_ptr);
-            vec_iter.push(Box::new(buf_iter));
+            vec_iter.push(Box::new(InnerIter { iter: range }));
         }
 
         let mem_buf = self.mem_table().range_scan(min, max, Some(self.seq_id));
@@ -174,34 +161,23 @@ impl Transaction {
                 pos: 0,
             }
         }));
-        VersionIter::merging_with_version(&self.version, &mut vec_iter)?;
-
-        let mut inner = MergingIter::new(vec_iter)?;
-        let mut init_buf = None;
+        let mut ver_iter = VersionIter::new(&self.version)?;
 
         match &min {
-            Bound::Included(key) => {
-                init_buf = inner
-                    .seek(Seek::Backward(key.as_slice()))?
-                    .and_then(|data| (data.0 >= key).then_some(data));
-            }
-            Bound::Excluded(key) => {
-                init_buf = inner
-                    .seek(Seek::Backward(key.as_slice()))?
-                    .and_then(|data| (data.0 > key).then_some(data));
+            Bound::Included(key) | Bound::Excluded(key) => {
+                ver_iter.seek(Seek::Backward(key.as_slice()))?;
             }
             Bound::Unbounded => (),
         };
+        vec_iter.push(Box::new(ver_iter));
 
         Ok(TransactionIter {
-            inner,
+            inner: MergingIter::new(vec_iter)?,
             max: max.map(Bytes::copy_from_slice),
-
-            write_buf_ptr,
             mem_buf_ptr,
-
             is_overed: false,
-            init_buf,
+            min: min.map(Bytes::copy_from_slice),
+            is_inited: false,
         })
     }
 }
@@ -219,13 +195,12 @@ unsafe impl Send for TransactionIter<'_> {}
 
 pub struct TransactionIter<'a> {
     inner: MergingIter<'a>,
-
-    write_buf_ptr: Option<BufPtr>,
     mem_buf_ptr: BufPtr,
 
+    min: Bound<Bytes>,
     max: Bound<Bytes>,
-    init_buf: Option<KeyValue>,
     is_overed: bool,
+    is_inited: bool,
 }
 
 impl<'a> Iter<'a> for TransactionIter<'a> {
@@ -236,11 +211,17 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
         if self.is_overed {
             return Ok(None);
         }
-        let mut item = self.init_buf.take();
+        let mut item = self.inner.try_next()?;
 
-        if item.is_none() {
-            item = self.inner.try_next()?;
+        if !self.is_inited {
+            item = match &self.min {
+                Bound::Included(key) => item.and_then(|data| (data.0 >= key).then_some(data)),
+                Bound::Excluded(key) => item.and_then(|data| (data.0 > key).then_some(data)),
+                Bound::Unbounded => item,
+            };
+            self.is_inited = true
         }
+
         let option = match &self.max {
             Bound::Included(key) => item.and_then(|data| (data.0 <= key).then_some(data)),
             Bound::Excluded(key) => item.and_then(|data| (data.0 < key).then_some(data)),
@@ -255,21 +236,11 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
     fn is_valid(&self) -> bool {
         self.inner.is_valid()
     }
-
-    #[inline]
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
-        self.init_buf = None;
-
-        self.inner.seek(seek)
-    }
 }
 
 impl Drop for TransactionIter<'_> {
     #[inline]
     fn drop(&mut self) {
-        if let Some(buf_prt) = &self.write_buf_ptr {
-            unsafe { drop(Box::from_raw(buf_prt.0.as_ptr())) }
-        }
         unsafe { drop(Box::from_raw(self.mem_buf_ptr.0.as_ptr())) }
     }
 }
@@ -277,6 +248,10 @@ impl Drop for TransactionIter<'_> {
 struct BufIter<'a> {
     inner: &'a Vec<KeyValue>,
     pos: usize,
+}
+
+struct InnerIter<'a> {
+    iter: Range<'a, Bytes, Option<Bytes>>,
 }
 
 impl<'a> Iter<'a> for BufIter<'a> {
@@ -293,20 +268,20 @@ impl<'a> Iter<'a> for BufIter<'a> {
     fn is_valid(&self) -> bool {
         self.pos < self.inner.len()
     }
+}
 
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
-        match seek {
-            Seek::First => self.pos = 0,
-            Seek::Last => self.pos = self.inner.len() - 1,
-            Seek::Backward(seek_key) => {
-                self.pos = self
-                    .inner
-                    .binary_search_by(|(key, _)| seek_key.cmp(key).reverse())
-                    .unwrap_or_else(|i| i);
-            }
-        };
+impl<'a> Iter<'a> for InnerIter<'a> {
+    type Item = KeyValue;
 
-        self.try_next()
+    fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
+        Ok(self
+            .iter
+            .next()
+            .map(|(key, value)| (key.clone(), value.clone())))
+    }
+
+    fn is_valid(&self) -> bool {
+        true
     }
 }
 

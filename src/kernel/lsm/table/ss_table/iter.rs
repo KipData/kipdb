@@ -1,4 +1,4 @@
-use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
+use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek, SeekIter};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::ss_table::block::{BlockType, Index, Value};
 use crate::kernel::lsm::table::ss_table::block_iter::BlockIter;
@@ -44,12 +44,11 @@ impl<'a> SSTableIter<'a> {
         Ok(BlockIter::new(block))
     }
 
-    fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> KernelResult<Option<KeyValue>> {
+    fn data_iter_seek(&mut self, seek: Seek<'_>, index: Index) -> KernelResult<()> {
         self.data_iter = Self::data_iter_init(self.ss_table, index)?;
-        Ok(self
-            .data_iter
-            .seek(seek)?
-            .map(|(key, value)| (key, value.bytes)))
+        self.data_iter.seek(seek)?;
+
+        Ok(())
     }
 }
 
@@ -58,7 +57,12 @@ impl<'a> ForwardIter<'a> for SSTableIter<'a> {
         match self.data_iter.try_prev()? {
             None => {
                 if let Some((_, index)) = self.index_iter.try_prev()? {
-                    self.data_iter_seek(Seek::Last, index)
+                    self.data_iter_seek(Seek::Last, index)?;
+
+                    Ok(self
+                        .data_iter
+                        .try_prev()?
+                        .map(|(key, value)| (key, value.bytes)))
                 } else {
                     Ok(None)
                 }
@@ -75,7 +79,12 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
         match self.data_iter.try_next()? {
             None => {
                 if let Some((_, index)) = self.index_iter.try_next()? {
-                    self.data_iter_seek(Seek::First, index)
+                    self.data_iter_seek(Seek::First, index)?;
+
+                    Ok(self
+                        .data_iter
+                        .try_next()?
+                        .map(|(key, value)| (key, value.bytes)))
                 } else {
                     Ok(None)
                 }
@@ -87,20 +96,27 @@ impl<'a> Iter<'a> for SSTableIter<'a> {
     fn is_valid(&self) -> bool {
         self.data_iter.is_valid()
     }
+}
 
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
-        if let Some((_, index)) = self.index_iter.seek(seek)? {
-            self.data_iter_seek(seek, index)
-        } else {
-            Ok(None)
+impl<'a> SeekIter<'a> for SSTableIter<'a> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<()> {
+        self.index_iter.seek(seek)?;
+
+        if let Some((_, index)) = self.index_iter.try_next()? {
+            self.data_iter_seek(seek, index)?;
         }
+        if matches!(seek, Seek::Last) {
+            self.data_iter.seek(Seek::Last)?;
+        }
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::kernel::io::{FileExtension, IoFactory, IoType};
-    use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek};
+    use crate::kernel::lsm::iterator::{ForwardIter, Iter, Seek, SeekIter};
     use crate::kernel::lsm::storage::Config;
     use crate::kernel::lsm::table::ss_table::iter::SSTableIter;
     use crate::kernel::lsm::table::ss_table::SSTable;
@@ -163,14 +179,14 @@ mod tests {
             assert_eq!(iterator.try_prev()?.unwrap(), vec_data[i]);
         }
 
-        assert_eq!(
-            iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(),
-            vec_data[114]
-        );
+        iterator.seek(Seek::Backward(&vec_data[114].0))?;
+        assert_eq!(iterator.try_next()?.unwrap(), vec_data[114]);
 
-        assert_eq!(iterator.seek(Seek::First)?.unwrap(), vec_data[0]);
+        iterator.seek(Seek::First)?;
+        assert_eq!(iterator.try_next()?.unwrap(), vec_data[0]);
 
-        assert_eq!(iterator.seek(Seek::Last)?.unwrap(), vec_data[times - 1]);
+        iterator.seek(Seek::Last)?;
+        assert_eq!(iterator.try_next()?, None);
 
         Ok(())
     }

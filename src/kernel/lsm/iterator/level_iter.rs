@@ -1,5 +1,5 @@
 use crate::kernel::lsm::compactor::LEVEL_0;
-use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::version::Version;
 use crate::kernel::KernelResult;
@@ -13,7 +13,7 @@ pub(crate) struct LevelIter<'a> {
     level_len: usize,
 
     offset: usize,
-    child_iter: Box<dyn Iter<'a, Item = KeyValue> + 'a + Sync + Send>,
+    child_iter: Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Sync + Send>,
 }
 
 impl<'a> LevelIter<'a> {
@@ -32,19 +32,19 @@ impl<'a> LevelIter<'a> {
         })
     }
 
-    fn child_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> KernelResult<Option<KeyValue>> {
+    fn child_iter_seek(&mut self, seek: Seek<'_>, offset: usize) -> KernelResult<()> {
         self.offset = offset;
         if self.is_valid() {
             if let Some(table) = self.version.table(self.level, offset) {
                 self.child_iter = table.iter()?;
-                return self.child_iter.seek(seek);
+                self.child_iter.seek(seek)?;
             }
         }
 
-        Ok(None)
+        Ok(())
     }
 
-    fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> KernelResult<Option<KeyValue>> {
+    fn seek_ward(&mut self, key: &[u8], seek: Seek<'_>) -> KernelResult<()> {
         let level = self.level;
 
         if level == LEVEL_0 {
@@ -59,7 +59,10 @@ impl<'a> Iter<'a> for LevelIter<'a> {
 
     fn try_next(&mut self) -> KernelResult<Option<Self::Item>> {
         match self.child_iter.try_next()? {
-            None => self.child_iter_seek(Seek::First, self.offset + 1),
+            None => {
+                self.child_iter_seek(Seek::First, self.offset + 1)?;
+                self.child_iter.try_next()
+            }
             Some(item) => Ok(Some(item)),
         }
     }
@@ -67,10 +70,12 @@ impl<'a> Iter<'a> for LevelIter<'a> {
     fn is_valid(&self) -> bool {
         self.offset < self.level_len
     }
+}
 
+impl<'a> SeekIter<'a> for LevelIter<'a> {
     /// Tips: Level 0的LevelIter不支持Seek
     /// 因为Level 0中的SSTable并非有序排列，其中数据范围是可能交错的
-    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<Option<Self::Item>> {
+    fn seek(&mut self, seek: Seek<'_>) -> KernelResult<()> {
         match seek {
             Seek::First => self.child_iter_seek(Seek::First, 0),
             Seek::Last => self.child_iter_seek(Seek::Last, self.level_len - 1),
@@ -83,7 +88,7 @@ impl<'a> Iter<'a> for LevelIter<'a> {
 mod tests {
     use crate::kernel::io::IoType;
     use crate::kernel::lsm::iterator::level_iter::LevelIter;
-    use crate::kernel::lsm::iterator::{Iter, Seek};
+    use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
     use crate::kernel::lsm::log::LogLoader;
     use crate::kernel::lsm::mem_table::DEFAULT_WAL_PATH;
     use crate::kernel::lsm::storage::Config;
@@ -161,19 +166,17 @@ mod tests {
                 assert_eq!(iterator.try_next()?.unwrap(), kv.clone());
             }
 
-            assert_eq!(
-                iterator.seek(Seek::Backward(&vec_data[114].0))?.unwrap(),
-                vec_data[114]
-            );
+            iterator.seek(Seek::Backward(&vec_data[114].0))?;
+            assert_eq!(iterator.try_next()?.unwrap(), vec_data[114]);
 
-            assert_eq!(
-                iterator.seek(Seek::Backward(&vec_data[2048].0))?.unwrap(),
-                vec_data[2048]
-            );
+            iterator.seek(Seek::Backward(&vec_data[2048].0))?;
+            assert_eq!(iterator.try_next()?.unwrap(), vec_data[2048]);
 
-            assert_eq!(iterator.seek(Seek::First)?.unwrap(), vec_data[0]);
+            iterator.seek(Seek::First)?;
+            assert_eq!(iterator.try_next()?.unwrap(), vec_data[0]);
 
-            assert_eq!(iterator.seek(Seek::Last)?.unwrap(), vec_data[3999]);
+            iterator.seek(Seek::Last)?;
+            assert_eq!(iterator.try_next()?, None);
 
             let mut iterator_level_0 = LevelIter::new(&version, 0)?;
 

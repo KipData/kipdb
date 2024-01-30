@@ -1,4 +1,4 @@
-use crate::kernel::lsm::iterator::{Iter, Seek};
+use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
 use crate::kernel::lsm::mem_table::KeyValue;
 use crate::kernel::lsm::table::btree_table::BTreeTable;
 use bytes::Bytes;
@@ -54,19 +54,13 @@ impl<'a> Iter<'a> for BTreeTableIter<'a> {
     fn is_valid(&self) -> bool {
         true
     }
+}
 
-    fn seek(&mut self, seek: Seek<'_>) -> crate::kernel::KernelResult<Option<Self::Item>> {
+impl<'a> SeekIter<'a> for BTreeTableIter<'a> {
+    fn seek(&mut self, seek: Seek<'_>) -> crate::kernel::KernelResult<()> {
         self._seek(seek);
 
-        if let Seek::Last = seek {
-            return Ok(self.table.inner.last_key_value().map(item_clone));
-        }
-
-        if let Some(iter) = self.inner.as_mut() {
-            Ok(iter.next().map(item_clone))
-        } else {
-            Ok(None)
-        }
+        Ok(())
     }
 }
 
@@ -101,11 +95,14 @@ mod tests {
 
         assert_eq!(iter.try_next()?, None);
 
-        assert_eq!(iter.seek(Seek::First)?, Some(vec[0].clone()));
+        iter.seek(Seek::First)?;
+        assert_eq!(iter.try_next()?, Some(vec[0].clone()));
 
-        assert_eq!(iter.seek(Seek::Backward(&[b'3']))?, Some(vec[2].clone()));
+        iter.seek(Seek::Backward(&[b'3']))?;
+        assert_eq!(iter.try_next()?, Some(vec[2].clone()));
 
-        assert_eq!(iter.seek(Seek::Last)?, Some(vec[5].clone()));
+        iter.seek(Seek::Last)?;
+        assert_eq!(iter.try_next()?, None);
 
         Ok(())
     }
