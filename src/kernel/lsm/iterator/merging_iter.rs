@@ -28,7 +28,7 @@ impl Ord for IterKey {
 }
 
 struct InnerIter {
-    map_buf: BTreeMap<IterKey, KeyValue>,
+    map_buf: BTreeMap<IterKey, Option<Bytes>>,
     pre_key: Option<Bytes>,
 }
 
@@ -125,20 +125,20 @@ macro_rules! impl_try_next {
     ($func:ident, $vec_iter:ty) => {
         impl InnerIter {
             fn $func(&mut self, vec_iter: &mut [$vec_iter]) -> KernelResult<Option<KeyValue>> {
-                while let Some((IterKey { num, .. }, old_item)) = self.map_buf.pop_first() {
+                while let Some((IterKey { num, key }, value)) = self.map_buf.pop_first() {
                     if let Some(item) = vec_iter[num].try_next()? {
                         Self::buf_map_insert(&mut self.map_buf, num, item);
                     }
 
                     // 跳过重复元素
-                    if let Some(key) = &self.pre_key {
-                        if key == &old_item.0 {
+                    if let Some(pre_key) = &self.pre_key {
+                        if pre_key == &key {
                             continue;
                         }
                     }
-                    self.pre_key = Some(old_item.0.clone());
+                    self.pre_key = Some(key.clone());
 
-                    return Ok(Some(old_item));
+                    return Ok(Some((key, value)));
                 }
 
                 Ok(None)
@@ -158,14 +158,12 @@ impl_try_next!(
 
 impl InnerIter {
     #[allow(clippy::mutable_key_type)]
-    fn buf_map_insert(seek_map: &mut BTreeMap<IterKey, KeyValue>, num: usize, item: KeyValue) {
-        let _ = seek_map.insert(
-            IterKey {
-                num,
-                key: item.0.clone(),
-            },
-            item,
-        );
+    fn buf_map_insert(
+        seek_map: &mut BTreeMap<IterKey, Option<Bytes>>,
+        num: usize,
+        (key, value): KeyValue,
+    ) {
+        let _ = seek_map.insert(IterKey { num, key }, value);
     }
 }
 
