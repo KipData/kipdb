@@ -189,7 +189,7 @@ PS D:\Workspace\kould\KipDB\target\release> ./cli batch-get kould kipdb
 ```
 
 ## Features🌠
-- Marjor Compation 
+- Major Compation 
   - 多级递增循环压缩 ✅
   - SSTable压缩状态互斥
     - 避免并行压缩时数据范围重复 ✅
