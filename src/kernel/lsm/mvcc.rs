@@ -214,14 +214,22 @@ impl<'a> Iter<'a> for TransactionIter<'a> {
         let mut item = self.inner.try_next()?;
 
         if !self.is_inited {
-            item = match &self.min {
-                Bound::Included(key) => item.and_then(|data| (data.0 >= key).then_some(data)),
-                Bound::Excluded(key) => item.and_then(|data| (data.0 > key).then_some(data)),
-                Bound::Unbounded => item,
-            };
+            loop {
+                if match &self.min {
+                    Bound::Included(key) => {
+                        !matches!(item.as_ref().map(|data| data.0 < key), Some(true))
+                    }
+                    Bound::Excluded(key) => {
+                        !matches!(item.as_ref().map(|data| data.0 <= key), Some(true))
+                    }
+                    Bound::Unbounded => true,
+                } {
+                    break;
+                }
+                item = self.inner.try_next()?;
+            }
             self.is_inited = true
         }
-
         let option = match &self.max {
             Bound::Included(key) => item.and_then(|data| (data.0 <= key).then_some(data)),
             Bound::Excluded(key) => item.and_then(|data| (data.0 < key).then_some(data)),
