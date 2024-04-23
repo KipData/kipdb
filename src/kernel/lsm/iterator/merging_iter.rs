@@ -29,7 +29,7 @@ impl Ord for IterKey {
 
 struct InnerIter {
     map_buf: BTreeMap<IterKey, Option<Bytes>>,
-    pre_key: Option<Bytes>,
+    next_buf: Option<KeyValue>,
 }
 
 pub(crate) struct MergingIter<'a> {
@@ -42,51 +42,38 @@ pub(crate) struct SeekMergingIter<'a> {
     inner: InnerIter,
 }
 
-impl<'a> MergingIter<'a> {
-    #[allow(clippy::mutable_key_type)]
-    pub(crate) fn new(
-        mut vec_iter: Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>,
-    ) -> KernelResult<Self> {
-        let mut map_buf = BTreeMap::new();
+macro_rules! impl_new {
+    ($struct_name:ident, $vec_iter_type:ty) => {
+        impl<'a> $struct_name<'a> {
+            #[allow(clippy::mutable_key_type)]
+            pub(crate) fn new(mut vec_iter: $vec_iter_type) -> KernelResult<Self> {
+                let mut map_buf = BTreeMap::new();
 
-        for (num, iter) in vec_iter.iter_mut().enumerate() {
-            if let Some(item) = iter.try_next()? {
-                InnerIter::buf_map_insert(&mut map_buf, num, item);
+                for (num, iter) in vec_iter.iter_mut().enumerate() {
+                    if let Some(item) = iter.try_next()? {
+                        InnerIter::buf_map_insert(&mut map_buf, num, item);
+                    }
+                }
+                let mut inner = InnerIter {
+                    map_buf,
+                    next_buf: None,
+                };
+                inner.init_next_buf();
+
+                Ok($struct_name { vec_iter, inner })
             }
         }
-
-        Ok(MergingIter {
-            vec_iter,
-            inner: InnerIter {
-                map_buf,
-                pre_key: None,
-            },
-        })
-    }
+    };
 }
 
-impl<'a> SeekMergingIter<'a> {
-    #[allow(clippy::mutable_key_type)]
-    pub(crate) fn new(
-        mut vec_iter: Vec<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Send + Sync>>,
-    ) -> KernelResult<Self> {
-        let mut map_buf = BTreeMap::new();
-
-        for (num, iter) in vec_iter.iter_mut().enumerate() {
-            if let Some(item) = iter.try_next()? {
-                InnerIter::buf_map_insert(&mut map_buf, num, item);
-            }
-        }
-
-        Ok(SeekMergingIter {
-            vec_iter,
-            inner: InnerIter {
-                map_buf,
-                pre_key: None,
-            },
-        })
-    }
-}
+impl_new!(
+    MergingIter,
+    Vec<Box<dyn Iter<'a, Item = KeyValue> + 'a + Send + Sync>>
+);
+impl_new!(
+    SeekMergingIter,
+    Vec<Box<dyn SeekIter<'a, Item = KeyValue> + 'a + Send + Sync>>
+);
 
 macro_rules! is_valid {
     ($vec_iter:expr) => {
@@ -121,26 +108,32 @@ impl<'a> Iter<'a> for SeekMergingIter<'a> {
     }
 }
 
+impl InnerIter {
+    fn init_next_buf(&mut self) {
+        self.next_buf = self
+            .map_buf
+            .first_key_value()
+            .map(|(key, value)| (key.key.clone(), value.clone()));
+    }
+}
+
 macro_rules! impl_try_next {
     ($func:ident, $vec_iter:ty) => {
         impl InnerIter {
             fn $func(&mut self, vec_iter: &mut [$vec_iter]) -> KernelResult<Option<KeyValue>> {
-                while let Some((IterKey { num, key }, value)) = self.map_buf.pop_first() {
-                    if let Some(item) = vec_iter[num].try_next()? {
-                        Self::buf_map_insert(&mut self.map_buf, num, item);
-                    }
-
-                    // 跳过重复元素
-                    if let Some(pre_key) = &self.pre_key {
-                        if pre_key == &key {
+                if let Some(item_buf) = self.next_buf.take() {
+                    while let Some((IterKey { num, key }, value)) = self.map_buf.pop_first() {
+                        if let Some(item) = vec_iter[num].try_next()? {
+                            Self::buf_map_insert(&mut self.map_buf, num, item);
+                        }
+                        if item_buf.0 == key {
                             continue;
                         }
+                        self.next_buf = Some((key, value));
+                        break;
                     }
-                    self.pre_key = Some(key.clone());
-
-                    return Ok(Some((key, value)));
+                    return Ok(Some(item_buf));
                 }
-
                 Ok(None)
             }
         }
@@ -185,6 +178,7 @@ impl<'a> SeekIter<'a> for SeekMergingIter<'a> {
 
             self.inner.map_buf = seek_map;
         }
+        self.inner.init_next_buf();
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 use crate::kernel::lsm::compactor::CompactTask;
 use crate::kernel::lsm::iterator::merging_iter::MergingIter;
-use crate::kernel::lsm::iterator::{Iter, Seek, SeekIter};
+use crate::kernel::lsm::iterator::{Iter, Seek};
 use crate::kernel::lsm::mem_table::{KeyValue, MemTable};
 use crate::kernel::lsm::query_and_compaction;
 use crate::kernel::lsm::storage::{KipStorage, Sequence, StoreInner};
@@ -161,15 +161,18 @@ impl Transaction {
                 pos: 0,
             }
         }));
-        let mut ver_iter = VersionIter::new(&self.version)?;
+        let mut vec_seek_iter = Vec::new();
+        VersionIter::merging_with_version(&self.version, &mut vec_seek_iter)?;
 
         match &min {
             Bound::Included(key) | Bound::Excluded(key) => {
-                ver_iter.seek(Seek::Backward(key.as_slice()))?;
+                for mut seek_iter in vec_seek_iter {
+                    seek_iter.seek(Seek::Backward(key.as_slice()))?;
+                    vec_iter.push(seek_iter as Box<dyn Iter<Item = KeyValue> + Send + Sync>)
+                }
             }
             Bound::Unbounded => (),
         };
-        vec_iter.push(Box::new(ver_iter));
 
         Ok(TransactionIter {
             inner: MergingIter::new(vec_iter)?,
