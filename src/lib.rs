@@ -2,6 +2,7 @@
 #![feature(cursor_remaining)]
 #![feature(slice_pattern)]
 #![feature(is_sorted)]
+#![feature(trait_upcasting)]
 
 extern crate core;
 

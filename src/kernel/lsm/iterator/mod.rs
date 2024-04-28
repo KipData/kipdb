@@ -28,6 +28,7 @@ pub trait SeekIter<'a>: Iter<'a> {
 }
 
 /// 向前迭代器
+#[allow(dead_code)]
 pub(crate) trait ForwardIter<'a>: Iter<'a> {
     fn try_prev(&mut self) -> KernelResult<Option<Self::Item>>;
 }
